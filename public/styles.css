@@ -1,0 +1,2646 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+  /* ── Light "studio" theme ──────────────────────────────────
+     Warm off-white canvas, clean white panels, one violet→indigo
+     accent family. All the incidental "overlay" effects route
+     through semantic tokens (--hairline, --hover-tint, --sunken…)
+     so the whole system stays consistent on a light base. */
+
+  --bg-color: #eeecf7;          /* soft lavender-grey page */
+  --surface: #ffffff;           /* panels — clean white */
+  --surface-2: #f8f7fd;         /* nested / subtle fills */
+  --surface-input: #f2f0fa;     /* sunken input wells */
+  --surface-card: #f7f6fd;      /* card backgrounds */
+
+  /* Overlay tints — dark ink at low alpha (the light-theme
+     equivalent of the old white-on-dark overlays) */
+  --hairline:    rgba(28, 25, 64, 0.10);   /* borders */
+  --hairline-2:  rgba(28, 25, 64, 0.06);   /* subtle borders */
+  --hover-tint:  rgba(28, 25, 64, 0.045);  /* hover backgrounds */
+  --press-tint:  rgba(28, 25, 64, 0.08);   /* active/pressed */
+  --sunken:      rgba(28, 25, 64, 0.05);   /* recessed wells */
+
+  --border-color:  var(--hairline);
+  --border-subtle: var(--hairline-2);
+
+  --text-primary:   #1c1936;    /* near-ink */
+  --text-secondary: #5c5878;
+  --text-muted:     #9a97ae;
+
+  --accent: #7c3aed;            /* vivid violet, great on white */
+  --accent-dim: #6d28d9;
+  --accent-deep: #6366f1;
+  --accent-soft: rgba(124, 58, 237, 0.10);   /* tinted chip fills */
+  --accent-glow: rgba(124, 58, 237, 0.28);
+  --iris: #d946ef;             /* magenta — AI features only */
+
+  --green: #10b981;
+  --green-soft: rgba(16, 185, 129, 0.12);
+  --red:   #ef4444;
+
+  --radius-xl: 20px;
+  --radius-lg: 14px;
+  --radius-md: 11px;
+  --radius-sm: 9px;
+
+  /* Soft, slightly violet-tinted elevation for a light UI */
+  --shadow-sm: 0 1px 2px rgba(28, 25, 64, 0.06), 0 2px 6px rgba(76, 29, 149, 0.05);
+  --shadow-md: 0 6px 16px rgba(76, 29, 149, 0.08), 0 2px 6px rgba(28, 25, 64, 0.05);
+  --shadow-lg: 0 22px 48px rgba(76, 29, 149, 0.12), 0 6px 16px rgba(28, 25, 64, 0.06);
+
+  --font-display: 'Poppins', 'Inter', sans-serif;
+
+  --nav-height: 56px;
+  --transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  --spring: cubic-bezier(0.34, 1.4, 0.4, 1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  /* Eliminates the grey/blue flash when an element is tapped on iOS */
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  /* Prevent Safari from inflating text 1.2× on iPhone landscape */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100vh;
+  /* dvh fixes the Safari URL-bar bug where 100vh overflows the viewport */
+  min-height: 100dvh;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Hairline overscroll bounce is fine; this just prevents horizontal slop */
+  overscroll-behavior-x: none;
+}
+
+/* ─── Atmosphere: slow aurora + film grain ───────────────────
+   Three blurred colour fields drift behind the UI. transform-only
+   animation (GPU-composited); the global prefers-reduced-motion rule
+   freezes them automatically. */
+.aurora {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.aurora i {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.55;
+  will-change: transform;
+}
+
+.aurora i {
+  opacity: 0.7;
+}
+.aurora i:nth-child(1) {
+  width: 46vw; height: 46vw;
+  left: -12vw; top: -18vw;
+  background: radial-gradient(circle, rgba(167, 139, 250, 0.55), transparent 66%);
+  animation: aurora-a 46s ease-in-out infinite alternate;
+}
+.aurora i:nth-child(2) {
+  width: 40vw; height: 40vw;
+  right: -12vw; bottom: -16vw;
+  background: radial-gradient(circle, rgba(129, 140, 248, 0.42), transparent 66%);
+  animation: aurora-b 58s ease-in-out infinite alternate;
+}
+.aurora i:nth-child(3) {
+  width: 28vw; height: 28vw;
+  left: 46vw; top: 30vh;
+  background: radial-gradient(circle, rgba(244, 171, 252, 0.32), transparent 66%);
+  animation: aurora-c 70s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-a { to { transform: translate(9vw, 7vh) scale(1.15); } }
+@keyframes aurora-b { to { transform: translate(-8vw, -6vh) scale(1.1); } }
+@keyframes aurora-c { to { transform: translate(-12vw, 9vh) scale(1.25); } }
+
+/* Fine grain to kill gradient banding. On a light base, darken very
+   slightly (multiply) instead of the old white noise. */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.018 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+body.auth-checking .app-nav,
+body.auth-checking .fab,
+body.auth-checking .app-shell,
+body.auth-blocked .app-nav,
+body.auth-blocked .fab,
+body.auth-blocked .app-shell {
+  display: none;
+}
+
+body.auth-ready .agent-auth-gate {
+  display: none;
+}
+
+.agent-auth-gate {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.agent-auth-card {
+  width: min(520px, 100%);
+  padding: 28px;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-lg);
+}
+
+.agent-auth-kicker {
+  display: inline-flex;
+  margin-bottom: 12px;
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.agent-auth-card h1 {
+  margin: 0 0 10px;
+  font-size: clamp(2rem, 5vw, 3rem);
+  line-height: 0.95;
+  letter-spacing: -0.05em;
+}
+
+.agent-auth-card p {
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.65;
+}
+
+.agent-auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.agent-auth-primary {
+  text-decoration: none;
+}
+
+/* ─── Login form ─────────────────────────────────────────────── */
+
+.login-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.login-form[hidden] { display: none; }
+
+.login-field {
+  display: grid;
+  gap: 6px;
+}
+
+.login-field span {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.login-field input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--surface-input);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+.login-field input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+#login-submit { justify-self: start; }
+
+/* ─── Role badge ─────────────────────────────────────────────── */
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(124, 58, 237, 0.14);
+  color: var(--accent-dim, #7c3aed);
+  border: 1px solid rgba(124, 58, 237, 0.3);
+}
+
+/* QA is the role that can change other people's work — worth telling apart at
+   a glance from the writer accounts. */
+.role-badge.is-qa {
+  background: rgba(16, 152, 110, 0.14);
+  color: #10986e;
+  border-color: rgba(16, 152, 110, 0.32);
+}
+
+/* ─── Saved posts ────────────────────────────────────────────── */
+
+.library-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: start center;
+  padding: 76px 18px 24px;
+  background: rgba(10, 10, 15, 0.55);
+  backdrop-filter: blur(6px);
+  overflow-y: auto;
+}
+
+.library-panel[hidden] { display: none; }
+
+.library-sheet {
+  width: min(880px, 100%);
+  padding: 22px;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-lg);
+}
+
+.library-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+
+.library-header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+  letter-spacing: -0.03em;
+}
+
+.library-subtitle {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.library-header-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.library-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.library-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--hairline);
+  background: var(--hover-tint);
+}
+
+.library-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.library-item-title {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-item-meta {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.library-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.library-item-actions .btn-ghost {
+  padding: 7px 12px;
+  font-size: 0.76rem;
+}
+
+.library-empty {
+  padding: 26px 4px;
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 0.88rem;
+}
+
+/* A writer cannot edit anyone else's post, so the controls that would fail
+   server-side are not offered in the first place. */
+body[data-role="writer"] .qa-only { display: none; }
+
+/* ─── Touch & a11y baseline ────────────────────────────────── */
+
+/* Eliminates the 300 ms double-tap-to-zoom delay on every clickable element */
+button,
+a,
+input[type="range"],
+input[type="color"],
+.preset-btn,
+.stock-item,
+.mode-tab,
+.upload-zone,
+.color-circle {
+  touch-action: manipulation;
+}
+
+/* Focus-visible rings for keyboard users (no rings on mouse click) */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+button:focus-visible,
+.preset-btn:focus-visible,
+.mode-tab:focus-visible,
+.btn-ghost:focus-visible,
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible {
+  outline-offset: 3px;
+}
+
+/* Respect users who turn down motion in their OS settings */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+  .btn-primary:hover,
+  .btn-ghost:hover {
+    transform: none;
+  }
+}
+
+/* ─── Navbar ─────────────────────────────────────────────────── */
+.app-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: calc(var(--nav-height) + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  /* Full-bleed bar (background + border span the viewport); the horizontal
+     gutter lives on .nav-inner so nav content aligns with the app-shell. */
+  display: flex;
+  border-bottom: 1px solid var(--border-color);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+/* Centered inner rail — mirrors .app-shell's width + auto margins so the logo
+   lines up with the first column and the actions with the preview's right edge.
+   The two side groups (logo, actions) flex-grow equally, which pins the middle
+   view-tabs to the true center regardless of how wide either side is. */
+.nav-inner {
+  width: min(1380px, 100vw - 40px);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-logo {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.nav-logo-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, var(--accent) 0%, #5d5df0 100%);
+  border-radius: 8px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: white;
+  box-shadow: 0 4px 12px rgba(155, 114, 239, 0.35);
+  flex-shrink: 0;
+}
+
+.nav-badge {
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  padding: 3px 9px;
+  border-radius: 100px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.nav-actions {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.nav-link {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.nav-link:hover {
+  color: var(--text-primary);
+}
+
+.nav-session {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 5px 4px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-input) 82%, transparent);
+}
+
+.nav-account {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 160px;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.1;
+}
+
+.nav-account-label {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.nav-account-name {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-logout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 800;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+
+.nav-logout:hover {
+  background: var(--press-tint);
+  color: var(--text-primary);
+}
+
+.nav-account[hidden],
+.nav-logout[hidden] {
+  display: none;
+}
+
+@media (max-width: 980px) {
+  .nav-badge {
+    display: none;
+  }
+
+  .nav-actions {
+    gap: 10px;
+  }
+}
+
+/* ─── Typography ─────────────────────────────────────────────── */
+h1 {
+  font-family: var(--font-display);
+  font-size: 1.65rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.12;
+  background: linear-gradient(150deg, #2a1a52 0%, #6d28d9 55%, #7c3aed 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 6px;
+}
+
+p.desc {
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+  line-height: 1.6;
+  max-width: 96%;
+}
+
+/* Compact hero inside the narrow controls column — the panel is a tool,
+   not a landing page, so the heading stays quiet. */
+.panel-copy { margin-bottom: 4px; }
+.panel-copy h1 {
+  font-size: 1.2rem;
+  line-height: 1.15;
+  margin-bottom: 4px;
+}
+.panel-copy .desc { font-size: 0.79rem; }
+
+/* ─── Layout — 3-column grid ─────────────────────────────────── */
+.app-shell {
+  width: min(1380px, 100vw - 40px);
+  margin: 22px auto 48px;
+  display: grid;
+  /* Proportional, not two pinned narrow columns beside a greedy preview.
+     The preview holds a row of short cards in a scroller, so handing it
+     every leftover pixel left 260px of dead space while the editing
+     columns stayed cramped at ~245px with 12-row textareas in them. */
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.5fr);
+  gap: 16px;
+  align-items: start;
+}
+
+/* ─── Panels — clean white cards on the lavender canvas ──────── */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  overflow: hidden;
+}
+
+/* Staggered entrance — panels rise softly into place on first paint */
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.992); }
+  to   { opacity: 1; transform: none; }
+}
+.controls-panel { animation: panel-in 0.55s var(--spring) 0.05s both; }
+.image-panel    { animation: panel-in 0.55s var(--spring) 0.12s both; }
+.preview-panel  { animation: panel-in 0.55s var(--spring) 0.19s both; }
+
+.controls-panel { padding: 22px 22px 26px; }
+
+.image-panel {
+  position: sticky;
+  top: calc(var(--nav-height) + 14px);
+  max-height: calc(100vh - var(--nav-height) - 36px);
+  overflow-y: auto;
+  padding: 22px 20px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 58, 237, 0.28) transparent;
+}
+
+.image-panel::-webkit-scrollbar { width: 4px; }
+.image-panel::-webkit-scrollbar-track { background: transparent; }
+.image-panel::-webkit-scrollbar-thumb {
+  background: rgba(124, 58, 237, 0.25);
+  border-radius: 4px;
+}
+
+.preview-panel {
+  position: sticky;
+  top: calc(var(--nav-height) + 14px);
+  /* Shrink to the cards rather than filling the viewport. max-height keeps
+     it scrollable if the rail ever grows past the screen. */
+  max-height: calc(100vh - var(--nav-height) - 36px);
+  display: flex;
+  flex-direction: column;
+  padding: 22px;
+}
+
+/* Panel headings are quiet overlines — the content is the hero */
+.panel-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+/* ─── Section header (flat, no card) ─────────────────────────── */
+.section {
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.section:first-of-type {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: none;
+}
+
+.section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  display: block;
+}
+
+/* ─── Accordion sections ──────────────────────────────────────
+   Tap-to-expand groups so the controls panel stays compact on every
+   screen size. Animation uses the grid-template-rows: 0fr → 1fr trick
+   which gives smooth CSS-only height transitions in all modern browsers. */
+
+.acc-list { display: flex; flex-direction: column; gap: 6px; }
+
+.acc {
+  border-top: 1px solid var(--border-subtle);
+}
+.acc-list > .acc:first-child { border-top: none; }
+
+.acc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% + 16px);
+  margin-inline: -8px;
+  padding: 12px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.87rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: var(--transition);
+}
+
+.acc-head:hover { color: var(--text-primary); background: var(--hover-tint); }
+
+.acc-title { flex: 1; }
+
+.acc-meta {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--hover-tint);
+  border: 1px solid var(--hairline);
+  padding: 3px 9px;
+  border-radius: 100px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.acc-chevron {
+  color: var(--text-secondary);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+}
+
+.acc[data-open="true"] > .acc-head .acc-chevron {
+  transform: rotate(0deg);
+}
+.acc[data-open="false"] > .acc-head .acc-chevron {
+  transform: rotate(-90deg);
+}
+
+/* Smooth height collapse using grid-template-rows trick */
+.acc-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.acc[data-open="false"] > .acc-body {
+  grid-template-rows: 0fr;
+}
+
+.acc-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+.acc[data-open="true"] > .acc-body > .acc-inner {
+  /* Padding only when open — keeps the closed height truly 0 */
+  padding-bottom: 14px;
+}
+
+.acc-subtitle {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 14px 0 8px;
+}
+.acc-inner > :first-child + .acc-subtitle,
+.acc-inner > .acc-subtitle:first-child { margin-top: 2px; }
+
+.acc-subgroup { margin-top: 16px; }
+
+/* ─── Mode Tabs ──────────────────────────────────────────────── */
+.mode-tabs {
+  display: flex;
+  gap: 3px;
+  background: var(--surface-input);
+  border: 1px solid var(--border-color);
+  border-radius: 100px;
+  padding: 4px;
+  margin-top: 16px;
+}
+
+.mode-tab {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 100px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.83rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.mode-tab:hover {
+  color: var(--text-primary);
+  background: var(--hover-tint);
+}
+
+.mode-tab.active {
+  background: linear-gradient(135deg, rgba(155, 114, 239, 0.26), rgba(80, 80, 230, 0.16));
+  color: var(--accent-dim);
+  box-shadow: 0 0 0 1px rgba(155, 114, 239, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+/* ─── Form / Inputs ──────────────────────────────────────────── */
+.form-group { margin-top: 14px; }
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.field label,
+.field-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+input[type="url"],
+input[type="text"],
+textarea {
+  width: 100%;
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.87rem;
+  padding: 10px 12px;
+  transition: var(--transition);
+  outline: none;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 70px;
+  line-height: 1.55;
+}
+
+#write-detail,
+#detail-edit {
+  font-weight: 700;
+}
+
+input[type="url"]:focus,
+input[type="text"]:focus,
+textarea:focus {
+  border-color: rgba(155, 114, 239, 0.5);
+  background: var(--surface-input);
+  box-shadow: 0 0 0 3px rgba(155, 114, 239, 0.1);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: rgba(136, 136, 168, 0.36);
+}
+
+/* ─── Buttons ─────────────────────────────────────────────────── */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  /* Oversized gradient pans across on hover — feels alive without motion noise */
+  background: linear-gradient(115deg, #8b5cf6 0%, #6366f1 40%, #8b5cf6 80%, #a78bfa 100%);
+  background-size: 240% 100%;
+  background-position: 0% 0;
+  color: white;
+  border: none;
+  padding: 11px 18px;
+  border-radius: var(--radius-md);
+  font-weight: 700;
+  font-size: 0.86rem;
+  cursor: pointer;
+  transition: background-position 0.5s ease, transform 0.18s var(--spring), box-shadow 0.25s ease;
+  box-shadow: 0 4px 18px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  width: 100%;
+  letter-spacing: -0.01em;
+  font-family: inherit;
+}
+
+.btn-primary:hover {
+  background-position: 95% 0;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 26px rgba(139, 92, 246, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.btn-primary:active { transform: translateY(0) scale(0.985); }
+
+.btn-secondary {
+  background: var(--hover-tint);
+  border: 1px solid var(--hairline);
+  color: var(--text-secondary);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: inherit;
+  width: 100%;
+}
+
+.btn-secondary:hover {
+  background: var(--hover-tint);
+  border-color: var(--hairline);
+  color: var(--text-primary);
+}
+
+/* ─── Preset Buttons (Tags) ──────────────────────────────────── */
+.preset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preset-btn {
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+  color: var(--text-secondary);
+  padding: 6px 11px;
+  border-radius: 100px;
+  font-size: 0.77rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: inherit;
+}
+
+.preset-btn:hover {
+  border-color: var(--hairline);
+  color: var(--text-primary);
+  background: var(--hover-tint);
+}
+
+.preset-btn.active {
+  background: rgba(155, 114, 239, 0.13);
+  border-color: rgba(155, 114, 239, 0.55);
+  color: var(--accent-dim);
+}
+
+/* ─── Aspect-ratio chips ──────────────────────────────────── */
+.ratio-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.ratio-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 9px 4px 8px;
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition: var(--transition);
+}
+
+.ratio-btn:hover {
+  border-color: var(--hairline);
+  color: var(--text-primary);
+  background: var(--hover-tint);
+}
+
+.ratio-btn.active {
+  background: rgba(155, 114, 239, 0.13);
+  border-color: rgba(155, 114, 239, 0.55);
+  color: var(--accent-dim);
+}
+
+.ratio-icon {
+  display: block;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+  opacity: 0.9;
+}
+.ratio-icon[data-shape="9-16"]  { width: 11px; height: 18px; }
+.ratio-icon[data-shape="4-5"]   { width: 14px; height: 17px; }
+.ratio-icon[data-shape="1-1"]   { width: 16px; height: 16px; }
+.ratio-icon[data-shape="16-9"]  { width: 20px; height: 11px; }
+
+.ratio-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.ratio-sub {
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+/* ─── Sliders ─────────────────────────────────────────────────── */
+.slider-container {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.slider-label {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 5px;
+  background: rgba(28, 25, 64, 0.1);
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+  cursor: pointer;
+  transition: var(--transition);
+  box-shadow: 0 1px 4px rgba(76, 29, 149, 0.28);
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 0 5px rgba(124, 58, 237, 0.16), 0 1px 4px rgba(76, 29, 149, 0.28);
+}
+
+/* ─── File Upload ────────────────────────────────────────────── */
+/* display:flex (labels are inline by default — that fragmented the dashed
+   border around block children). Flex guarantees the icon + text stack
+   stays inside the border on every browser. */
+.upload-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  min-height: 92px;
+  background: var(--surface-input);
+  border: 1.5px dashed var(--hairline);
+  border-radius: var(--radius-md);
+  padding: 16px 12px;
+  text-align: center;
+  transition: var(--transition);
+  cursor: pointer;
+}
+
+.upload-zone:hover {
+  border-color: rgba(155, 114, 239, 0.5);
+  background: rgba(155, 114, 239, 0.05);
+}
+
+.upload-zone.is-dragover,
+.upload-zone:focus-visible {
+  border-color: rgba(124, 58, 237, 0.7);
+  background: rgba(124, 58, 237, 0.08);
+  box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.12);
+}
+
+.upload-zone:hover .upload-icon { color: var(--accent); transform: translateY(-1px); }
+
+.upload-zone input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.upload-icon {
+  color: var(--text-muted);
+  transition: var(--transition);
+  pointer-events: none;
+}
+
+.upload-text {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  pointer-events: none;
+  font-weight: 500;
+}
+
+.upload-text em {
+  font-style: normal;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.upload-hint {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  pointer-events: none;
+  letter-spacing: 0.02em;
+}
+
+.upload-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.upload-action-btn {
+  min-height: 36px;
+  padding: 0 14px;
+}
+
+.upload-shortcut {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+/* ─── Stock Grid ─────────────────────────────────────────────── */
+.stock-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.stock-item {
+  aspect-ratio: 3/4;
+  border-radius: var(--radius-sm);
+  background-size: cover;
+  background-position: center;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: var(--transition);
+}
+
+.stock-item:hover {
+  transform: scale(1.04);
+  border-color: var(--hairline);
+}
+
+.stock-item.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(155, 114, 239, 0.28);
+}
+
+/* ─── Color Picker ───────────────────────────────────────────── */
+.color-picker-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.color-circle {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--hairline);
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  overflow: hidden;
+  transition: var(--transition);
+  flex-shrink: 0;
+}
+
+.color-circle:hover {
+  transform: scale(1.1);
+  border-color: var(--hairline);
+}
+
+.color-circle input[type="color"] {
+  width: 200%;
+  height: 200%;
+  border: none;
+  padding: 0;
+  margin: -50%;
+  cursor: pointer;
+}
+
+.color-hex {
+  font-family: 'SF Mono', 'Fira Code', 'Menlo', monospace;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  background: var(--surface-input);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  letter-spacing: 0.05em;
+}
+
+/* ─── Preview panel ──────────────────────────────────────────── */
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.preview-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.preview-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-mode-toggle {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--surface-input);
+  border: 1px solid var(--border-color);
+}
+
+.preview-mode-btn {
+  appearance: none;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 600 0.72rem/1 'Inter', sans-serif;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: var(--transition);
+  letter-spacing: 0.01em;
+}
+
+.preview-mode-btn:hover { color: var(--text-primary); }
+
+.preview-mode-btn.active {
+  background: rgba(155, 114, 239, 0.18);
+  color: var(--accent-dim);
+  box-shadow: 0 0 0 1px rgba(155, 114, 239, 0.35);
+}
+
+/* Save draft — sized down to sit on the header line beside the pixel badge,
+   rather than at the weight of the per-card Download buttons. */
+.preview-save {
+  padding: 6px 11px;
+  font-size: 0.74rem;
+  border-radius: 7px;
+}
+
+.preview-save.is-saved {
+  color: var(--accent-dim, #7c3aed);
+  border-color: rgba(124, 58, 237, 0.4);
+  background: rgba(124, 58, 237, 0.1);
+}
+
+.preview-save.is-error {
+  color: #d64545;
+  border-color: rgba(214, 69, 69, 0.4);
+  background: rgba(214, 69, 69, 0.08);
+}
+
+.preview-pixels {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  background: var(--surface-input);
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border-color);
+  letter-spacing: 0.03em;
+}
+
+/* Soft neutral stage — the dark poster pops against a light lavender well */
+.canvas-container {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background:
+    radial-gradient(ellipse 65% 55% at 50% 40%, rgba(124, 58, 237, 0.06) 0%, transparent 70%),
+    linear-gradient(180deg, #efeefa 0%, #e6e3f4 100%);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--hairline-2);
+  box-shadow: inset 0 1px 6px rgba(28, 25, 64, 0.06);
+  overflow: hidden;
+  padding: 20px;
+}
+
+canvas {
+  /* Canvas keeps its intrinsic aspect ratio from the width/height attributes
+     (which we update on every aspect-ratio change). The browser auto-fits it
+     into the container as long as we set explicit max-width/max-height. */
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 12px;
+  box-shadow: 0 20px 48px rgba(28, 25, 64, 0.28), 0 0 0 1px rgba(28, 25, 64, 0.08);
+  cursor: grab;
+}
+
+canvas.dragging { cursor: grabbing; }
+
+/* ─── Export block — one primary action, two secondary variants ── */
+.download-wrap {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn-export { width: 100%; }
+
+.export-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+/* Quiet secondary buttons — outline only, no competing fills */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 14px;
+  background: var(--hover-tint);
+  color: var(--text-secondary);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: var(--transition);
+  letter-spacing: -0.005em;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--hover-tint);
+  border-color: var(--hairline);
+}
+
+.btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-ghost .x-glyph { font-size: 0.95rem; line-height: 1; }
+.btn-ghost svg { opacity: 0.75; }
+
+#x-download-status a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+#x-download-status { margin-top: 2px; min-height: 1em; text-align: center; }
+
+/* ─── Utilities ──────────────────────────────────────────────── */
+.hidden { display: none !important; }
+
+.status-text {
+  font-size: 0.76rem;
+  margin-top: 9px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.status-text.success { color: var(--green); }
+.status-text.error   { color: var(--red);   }
+
+.helper-text {
+  font-size: 0.73rem;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  display: block;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+
+/* ─── Navbar view switcher (Poster | Article) ─────────────── */
+.view-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  background: var(--surface-input);
+  border: 1px solid var(--border-color);
+  border-radius: 100px;
+  padding: 3px;
+}
+
+.view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: 0;
+  border-radius: 100px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+
+.view-tab svg { opacity: 0.75; flex-shrink: 0; }
+.view-tab.active svg { opacity: 1; }
+
+.view-tab:hover { color: var(--text-primary); }
+
+.view-tab.active {
+  background: linear-gradient(135deg, rgba(155, 114, 239, 0.28), rgba(80, 80, 230, 0.18));
+  color: var(--accent-dim);
+  box-shadow: 0 0 0 1px rgba(155, 114, 239, 0.32);
+}
+
+/* Hide poster chrome when the Article view is active */
+body.view-article .app-shell,
+body.view-article .fab,
+body.view-article .sheet-backdrop,
+body.view-article .edit-sheet { display: none !important; }
+
+/* ─── Article writer view ─────────────────────────────────── */
+.article-shell {
+  width: min(760px, 100vw - 32px);
+  margin: 28px auto 60px;
+}
+
+.article-panel { padding: 32px 30px 34px; }
+
+.article-intro { margin-bottom: 6px; }
+.article-intro .btn-primary { margin-top: 18px; max-width: 320px; }
+
+.article-result {
+  margin-top: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: article-in 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* display:flex above would defeat the hidden attribute — restore it */
+.article-result[hidden] { display: none; }
+
+@keyframes article-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.article-block {
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px 16px;
+}
+
+.article-block-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.article-block-label {
+  flex: 1;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.char-count {
+  font-family: monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: var(--surface-input);
+  border: 1px solid var(--border-color);
+  padding: 2px 8px;
+  border-radius: 100px;
+}
+.char-count.over { color: var(--red); border-color: rgba(248, 113, 113, 0.4); }
+
+.copy-btn {
+  padding: 5px 12px;
+  border-radius: 100px;
+  border: 1px solid var(--hairline);
+  background: var(--hover-tint);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.copy-btn:hover { color: var(--text-primary); background: var(--hover-tint); }
+.copy-btn.copied {
+  color: var(--green);
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.article-headline {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+}
+
+.article-bullets {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.article-bullets li {
+  position: relative;
+  padding-left: 18px;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.article-bullets li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0.55em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.article-tweet {
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+
+.article-flags { border-color: rgba(248, 113, 113, 0.25); }
+.article-flags .article-bullets li::before { background: var(--red); }
+.article-flags .article-bullets li { color: var(--text-secondary); font-size: 0.85rem; }
+
+/* ── Article (Text) page typography ──────────────────────────────
+   The editorial copy uses Poppins at a heavier weight than the tool's
+   Inter UI — a distinct, sturdier voice for the written article.
+   Scoped to #article-view so the Poster page is untouched. */
+#article-view { font-family: var(--font-display); }
+#article-view .article-intro .desc { font-weight: 500; }
+#article-view .article-headline {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.28;
+}
+#article-view .article-bullets li {
+  font-weight: 500;
+  line-height: 1.55;
+}
+#article-view .article-tweet { font-weight: 500; }
+#article-view .article-block-label { font-weight: 700; }
+#article-view .copy-btn,
+#article-view .btn-secondary { font-weight: 600; }
+
+/* ─── AI Enhance button (gpt-image-1) ─────────────────────── */
+.btn-ai {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, rgba(155, 114, 239, 0.16), rgba(80, 80, 230, 0.1));
+  border: 1px solid rgba(155, 114, 239, 0.4);
+  border-radius: var(--radius-md);
+  color: var(--accent-dim);
+  font-family: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.btn-ai:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(155, 114, 239, 0.26), rgba(80, 80, 230, 0.18));
+  border-color: rgba(155, 114, 239, 0.6);
+  transform: translateY(-1px);
+}
+.btn-ai:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-ai.working .ai-spark { animation: spark-spin 1s linear infinite; display: inline-block; }
+@keyframes spark-spin { to { transform: rotate(360deg); } }
+
+/* ─── Mobile bottom-sheet system ─────────────────────────────
+   Desktop: .edit-sheet is invisible to layout (display:contents),
+   .fab and .sheet-backdrop are fully hidden.
+   Mobile:  see the @media block — sheet slides up from the bottom,
+   backdrop dims the rest, FAB toggles open/close.
+*/
+.edit-sheet { display: contents; }
+.sheet-handle { display: none; }
+.fab,
+.sheet-backdrop { display: none; }
+
+/* ─── Responsive ─────────────────────────────────────────────── */
+
+/* Tablet — controls + image panels collapse into the left column,
+   preview spans the right side across both rows. */
+@media (max-width: 1100px) {
+  .app-shell {
+    /* Same rebalance as desktop: the left column stacks BOTH the controls
+       and the image panel, so pinning it to 270px while the preview took
+       every remaining pixel was the worst split of the three. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    grid-template-rows: auto auto;
+    gap: 14px;
+  }
+  .controls-panel { grid-column: 1; grid-row: 1; }
+  .image-panel    { grid-column: 1; grid-row: 2; position: static; max-height: none; }
+  .preview-panel  { grid-column: 2; grid-row: 1 / 3; }
+}
+
+/* Mobile — single column, preview at top, controls below.
+   Putting the preview first matches user expectation: see the result,
+   then scroll to edit. */
+@media (max-width: 760px) {
+  body {
+    /* Allow mobile browsers' native pull-to-refresh and clean scrolling */
+    overflow-x: hidden;
+  }
+
+  .app-nav {
+    height: 50px;
+    padding: 0;
+  }
+  /* Match the mobile .app-shell gutter (100vw - 14px) so the logo sits
+     directly above the poster card's left edge. */
+  .nav-inner {
+    width: calc(100vw - 14px);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    gap: 8px;
+  }
+  .nav-logo { font-size: 0.85rem; gap: 8px; }
+  .nav-logo-mark { width: 26px; height: 26px; font-size: 0.68rem; }
+  /* Tight navbar: drop the wordmark + badge so the view tabs fit */
+  .nav-logo-text { display: none; }
+  .nav-badge { display: none; }
+  /* Trim the tab pill and keep the account controls compact on phones. */
+  .view-tab { padding: 6px 11px; font-size: 0.75rem; }
+  .nav-link { display: none; }
+  .nav-session {
+    max-width: 148px;
+    gap: 7px;
+    padding: 3px 4px 3px 9px;
+  }
+  .nav-account { max-width: 64px; }
+  .nav-account-label { display: none; }
+  .nav-account-name { font-size: 0.72rem; }
+  .nav-logout {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 0.72rem;
+  }
+
+  /* Article view on mobile */
+  .article-shell { width: calc(100vw - 20px); margin: 12px auto 40px; }
+  .article-panel { padding: 20px 16px 24px; }
+  .article-intro h1 { font-size: 1.45rem; }
+
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    gap: 0;
+    width: calc(100vw - 14px);
+    margin: 8px auto calc(18px + env(safe-area-inset-bottom));
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* Only the preview is in the document flow on mobile — the editor
+     panels move into the bottom sheet and only show when the FAB is tapped. */
+  .preview-panel  { grid-column: 1; grid-row: 1; order: 1; }
+
+  /* PREVIEW takes the full visible area above the action bar */
+  .preview-panel {
+    position: static;
+    z-index: 20;
+    padding: 12px;
+    height: auto;
+    max-height: none;
+  }
+
+  .preview-header { margin-bottom: 10px; }
+  .preview-title  { font-size: 0.85rem; }
+  .preview-header-actions { gap: 6px; }
+  .preview-mode-btn { font-size: 0.62rem; padding: 5px 8px; }
+  .preview-pixels { font-size: 0.7rem; padding: 3px 8px; }
+
+  .canvas-container {
+    padding: 10px;
+    max-height: calc(100dvh - 50px - 152px - env(safe-area-inset-bottom));
+    border-radius: 14px;
+  }
+  canvas {
+    max-height: calc(100dvh - 50px - 172px - env(safe-area-inset-bottom));
+    border-radius: 10px;
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255,255,255,0.04);
+  }
+
+  /* ─── Bottom sheet (controls + image panels, hidden until FAB tap) ─── */
+  .edit-sheet {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 80;
+    max-height: 88vh;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.98);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    border-top: 1px solid var(--hairline);
+    border-radius: 22px 22px 0 0;
+    box-shadow: 0 -16px 44px rgba(28, 25, 64, 0.18);
+    padding-bottom: env(safe-area-inset-bottom);
+    /* Slide off-screen by default */
+    transform: translateY(102%);
+    transition: transform 0.36s cubic-bezier(0.32, 0.72, 0, 1);
+    pointer-events: none;
+  }
+  body.sheet-open .edit-sheet {
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  /* Sheet header bar — drag pill + title + close.
+     Sticky-top inside the sheet so the close button is always reachable
+     no matter how far the user has scrolled the sheet content. */
+  .sheet-handle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 62px;
+    padding: 18px 14px 12px;
+    flex-shrink: 0;
+    position: relative;
+    touch-action: none;        /* let JS take full control during swipe */
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .sheet-handle:active { cursor: grabbing; }
+
+  .sheet-handle-pill {
+    position: absolute;
+    top: 8px; left: 50%;
+    transform: translateX(-50%);
+    width: 44px;
+    height: 5px;
+    background: rgba(28, 25, 64, 0.18);
+    border-radius: 100px;
+    transition: background 0.2s, transform 0.2s;
+  }
+  .sheet-handle:active .sheet-handle-pill {
+    background: rgba(28, 25, 64, 0.34);
+    transform: translateX(-50%) scaleY(1.4);
+  }
+
+  .sheet-title {
+    margin-left: 2px;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+    padding-right: 54px;
+  }
+
+  .sheet-close {
+    position: absolute;
+    top: 12px;
+    right: max(14px, env(safe-area-inset-right));
+    z-index: 4;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 1px solid var(--hairline);
+    background: var(--surface-input);
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: var(--transition);
+    flex-shrink: 0;
+    box-shadow: var(--shadow-sm);
+  }
+  .sheet-close:active { transform: scale(0.92); }
+  .sheet-close:hover { color: var(--text-primary); background: var(--press-tint); }
+  .sheet-close svg {
+    width: 18px;
+    height: 18px;
+    pointer-events: none;
+  }
+
+  /* Editor panels lose their card styling inside the sheet — sheet IS the card */
+  .edit-sheet .glass-panel {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-radius: 0;
+    padding: 4px 16px;
+  }
+  .edit-sheet .controls-panel,
+  .edit-sheet .image-panel {
+    overflow: visible;
+  }
+  /* The two panels stack and scroll TOGETHER inside the sheet */
+  .edit-sheet > .controls-panel,
+  .edit-sheet > .image-panel {
+    flex: 0 0 auto;
+  }
+  .edit-sheet {
+    /* Make the inner area scrollable */
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .edit-sheet > .sheet-handle {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--hairline);
+    padding-bottom: 10px;
+  }
+
+  /* Hide the controls-panel header copy on mobile (h1 + desc) — not needed in
+     the sheet. Mode tabs + form still show. */
+  .edit-sheet .panel-copy { display: none; }
+  .edit-sheet .panel-title { display: none; }
+
+  h1 { font-size: 1.45rem; line-height: 1.05; }
+  p.desc { font-size: 0.82rem; max-width: 100%; margin-bottom: 8px; }
+
+  /* ─── Floating Action Button (FAB) ─── */
+  .fab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    right: 16px;
+    bottom: calc(96px + env(safe-area-inset-bottom));
+    z-index: 70;
+    width: 54px;
+    height: 54px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent) 0%, #5d5df0 100%);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 10px 28px rgba(155, 114, 239, 0.42), 0 4px 12px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.18);
+    transition: transform 0.25s cubic-bezier(0.32, 0.72, 0, 1),
+                box-shadow 0.25s,
+                opacity 0.2s;
+  }
+  .fab:active { transform: scale(0.94); }
+  body.sheet-open .fab {
+    /* Hide FAB while sheet is open — close button + backdrop are the way out */
+    transform: scale(0) rotate(180deg);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Backdrop behind the sheet */
+  .sheet-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 75;
+    background: var(--surface-input);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
+  body.sheet-open .sheet-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  body.sheet-open { overflow: hidden; }
+
+  /* ─── Download actions below preview on mobile ─── */
+  .download-wrap {
+    position: static;
+    z-index: auto;
+    margin: 10px 0 0;
+    padding: 0;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-top: 0;
+  }
+  .download-wrap .btn-primary,
+  .download-wrap .btn-ghost {
+    margin: 0;
+    min-height: 46px;
+  }
+  .download-wrap #x-download-status {
+    margin: 2px 4px 0;
+    font-size: 0.72rem;
+  }
+
+  /* Accordion polish for mobile — slightly larger tap area */
+  .acc-head { padding: 16px 4px; font-size: 0.95rem; min-height: 48px; }
+  .acc-meta { font-size: 0.7rem; }
+
+  /* iOS auto-zooms text inputs whose font-size < 16px on focus.
+     Bump all form fields to 16px on mobile to suppress that. */
+  input[type="url"],
+  input[type="text"],
+  textarea {
+    font-size: 16px;
+    padding: 12px 14px;
+  }
+  textarea { min-height: 80px; }
+
+  /* Touch-target minimums (Apple HIG: 44px, Material: 48dp) */
+  .btn-primary,
+  .btn-secondary,
+  .btn-ghost {
+    min-height: 44px;
+    padding: 12px 18px;
+    font-size: 0.92rem;
+  }
+  .mode-tab    { min-height: 40px; font-size: 0.9rem; }
+  .preset-btn  { min-height: 36px; padding: 8px 14px; font-size: 0.85rem; }
+
+  /* Bigger slider thumb for finger control */
+  input[type="range"]::-webkit-slider-thumb {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* Stock grid: keep 3 columns on phones, but slightly tighter */
+  .stock-grid { gap: 6px; }
+
+  /* Status text shouldn't overflow on narrow screens */
+  .status-text { word-break: break-word; }
+}
+
+/* Small phones (≤ 380 px) — squeeze a bit more */
+@media (max-width: 380px) {
+  .app-shell {
+    width: calc(100vw - 14px);
+    gap: 10px;
+  }
+  .controls-panel { padding: 14px 14px 16px; }
+  .image-panel    { padding: 12px 14px 16px; }
+  h1 { font-size: 1.32rem; }
+
+  /* Give the centered nav tabs a little more room from the side items. */
+  .nav-inner { gap: 6px; }
+  .view-tab { padding: 6px 9px; font-size: 0.72rem; }
+  .nav-link { display: none; }
+  .nav-session {
+    max-width: 132px;
+    gap: 6px;
+    padding-left: 8px;
+  }
+  .nav-account { max-width: 52px; }
+  .nav-logout {
+    padding: 0 8px;
+    font-size: 0.7rem;
+  }
+  .stock-grid { grid-template-columns: repeat(2, 1fr); }
+
+  .download-wrap { gap: 6px; }
+
+  .canvas-container { max-height: 44vh; }
+  canvas { max-height: calc(44vh - 16px); }
+  .preview-panel { top: 56px; }
+}
+
+/* Touch hover suppression — `:hover` styles linger on tap on touch
+   devices, looking like the button is stuck. Disable for non-hover inputs. */
+@media (hover: none) {
+  .btn-primary:hover,
+  .btn-secondary:hover,
+  .btn-ghost:hover,
+  .preset-btn:hover,
+  .stock-item:hover,
+  .mode-tab:hover {
+    transform: none;
+    filter: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   FINISH LAYER — display type, AI iridescence, motion, chrome
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Display face on identity + key headings */
+.nav-logo,
+.sheet-title,
+.preview-title,
+.article-headline {
+  font-family: var(--font-display);
+}
+
+/* Text selection matches the brand */
+::selection {
+  background: rgba(167, 139, 250, 0.35);
+  color: #fff;
+}
+
+/* Thin violet scrollbars everywhere (WebKit + Firefox) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(167, 139, 250, 0.28) transparent;
+}
+*::-webkit-scrollbar { width: 5px; height: 5px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(167, 139, 250, 0.28);
+  border-radius: 10px;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(167, 139, 250, 0.45); }
+
+/* ─── AI Enhance — iridescent gradient border + shimmer sweep ── */
+.btn-ai {
+  position: relative;
+  background:
+    linear-gradient(rgba(13, 13, 20, 0.92), rgba(13, 13, 20, 0.92)) padding-box,
+    linear-gradient(120deg, #a78bfa, #6366f1 40%, #f0abfc 80%, #a78bfa) border-box;
+  border: 1px solid transparent;
+  color: #d8ccff;
+  overflow: hidden;
+}
+
+.btn-ai::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 42%, rgba(255, 255, 255, 0.14) 50%, transparent 58%);
+  transform: translateX(-110%);
+  transition: transform 0.7s ease;
+  pointer-events: none;
+}
+
+.btn-ai:hover:not(:disabled) {
+  transform: translateY(-1px);
+  color: #fff;
+  box-shadow: 0 6px 22px rgba(167, 139, 250, 0.22);
+}
+.btn-ai:hover:not(:disabled)::before { transform: translateX(110%); }
+
+.btn-ai .ai-spark { color: var(--iris); }
+
+/* ─── Accordion content fades in as the row expands ── */
+.acc-inner {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.28s ease 0.08s, transform 0.28s ease 0.08s;
+}
+.acc[data-open="true"] > .acc-body > .acc-inner {
+  opacity: 1;
+  transform: none;
+}
+
+/* ─── View switch cross-fade (Poster ↔ Article) ── */
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+.article-shell:not([hidden]) { animation: view-in 0.4s var(--spring) both; }
+body.view-poster-return .app-shell { animation: view-in 0.4s var(--spring) both; }
+
+/* ─── FAB attention pulse (mobile) — three soft rings then rest ── */
+@keyframes fab-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.45); }
+  70%  { box-shadow: 0 0 0 16px rgba(167, 139, 250, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(167, 139, 250, 0); }
+}
+.fab:not(:hover) { animation: fab-pulse 2.6s ease-out 1.2s 3; }
+
+/* ─── Inputs sharpen on focus with a soft outer bloom ── */
+input[type="url"]:focus,
+input[type="text"]:focus,
+textarea:focus {
+  box-shadow:
+    0 0 0 3px rgba(167, 139, 250, 0.14),
+    0 4px 20px rgba(167, 139, 250, 0.08);
+}
+
+/* ─── Stock thumbs get a springier hover ── */
+.stock-item {
+  transition: transform 0.22s var(--spring), border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.stock-item:hover { transform: scale(1.055) rotate(0.4deg); }
+
+/* ─── Ratio chips pop on select ── */
+.ratio-btn { transition: transform 0.2s var(--spring), background 0.18s ease, border-color 0.18s ease, color 0.18s ease; }
+.ratio-btn:active { transform: scale(0.94); }
+.ratio-btn.active { transform: translateY(-1px); }
+
+/* ─── Nav wordmark hover glint ── */
+.nav-logo-mark { transition: transform 0.25s var(--spring), box-shadow 0.25s ease; }
+.nav-logo:hover .nav-logo-mark {
+  transform: rotate(-6deg) scale(1.06);
+  box-shadow: 0 6px 18px rgba(167, 139, 250, 0.5);
+}
+
+/* Aurora: calm it down on small screens (fill-rate) */
+@media (max-width: 760px) {
+  .aurora i { filter: blur(60px); opacity: 0.4; }
+  body::after { opacity: 0.35; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DARK THEME — default. Light stays available via the navbar toggle
+   (documentElement[data-theme] is set before paint by an inline
+   script in <head>; choice persists in localStorage "pix-theme").
+   Everything token-based flips automatically; the handful of
+   literal light values are overridden below.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+:root[data-theme="dark"] {
+  --bg-color: #0b0a13;
+  --surface: rgba(20, 19, 30, 0.86);
+  --surface-2: #16151f;
+  --surface-input: rgba(255, 255, 255, 0.055);
+  --surface-card: rgba(255, 255, 255, 0.035);
+
+  --hairline:    rgba(255, 255, 255, 0.10);
+  --hairline-2:  rgba(255, 255, 255, 0.06);
+  --hover-tint:  rgba(255, 255, 255, 0.05);
+  --press-tint:  rgba(255, 255, 255, 0.10);
+  --sunken:      rgba(0, 0, 0, 0.30);
+
+  --text-primary:   #f1effa;
+  --text-secondary: #a3a0c0;
+  --text-muted:     #625f80;
+
+  --accent: #a78bfa;
+  --accent-dim: #c9b4ff;        /* "readable accent" — light on dark */
+  --accent-deep: #818cf8;
+  --accent-soft: rgba(167, 139, 250, 0.16);
+  --accent-glow: rgba(167, 139, 250, 0.26);
+  --iris: #f0abfc;
+
+  --green: #34d399;
+  --green-soft: rgba(52, 211, 153, 0.14);
+  --red: #fb7185;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 24px 56px rgba(0, 0, 0, 0.55);
+}
+
+/* ── Literal light values that need explicit dark counterparts ── */
+
+:root[data-theme="dark"] .app-nav {
+  background: rgba(11, 10, 19, 0.85);
+}
+
+:root[data-theme="dark"] .glass-panel {
+  background: rgba(20, 19, 30, 0.8);
+}
+
+:root[data-theme="dark"] h1 {
+  background: linear-gradient(155deg, #ffffff 0%, #d8c6ff 55%, #a78bfa 100%);
+  -webkit-background-clip: text;
+}
+
+:root[data-theme="dark"] .canvas-container {
+  background:
+    radial-gradient(ellipse 65% 55% at 50% 40%, rgba(167, 139, 250, 0.06) 0%, transparent 70%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.4) 100%);
+  box-shadow: inset 0 1px 8px rgba(0, 0, 0, 0.3);
+}
+
+:root[data-theme="dark"] canvas {
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+:root[data-theme="dark"] input[type="range"] {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Grain: white noise reads correctly on a dark base */
+:root[data-theme="dark"] body::after {
+  opacity: 0.3;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.04 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Aurora pastels glow harder on ink — pull the opacity back a touch */
+:root[data-theme="dark"] .aurora i { opacity: 0.5; }
+
+/* Mobile bottom sheet */
+:root[data-theme="dark"] .edit-sheet {
+  background: rgba(17, 16, 26, 0.97);
+  box-shadow: 0 -16px 44px rgba(0, 0, 0, 0.6);
+}
+:root[data-theme="dark"] .edit-sheet > .sheet-handle {
+  background: rgba(17, 16, 26, 0.94);
+}
+:root[data-theme="dark"] .sheet-handle-pill {
+  background: rgba(255, 255, 255, 0.22);
+}
+:root[data-theme="dark"] .sheet-handle:active .sheet-handle-pill {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* ── Navbar theme toggle ── */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  background: var(--surface-input);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.theme-toggle:hover {
+  color: var(--text-primary);
+  background: var(--press-tint);
+  transform: rotate(-12deg);
+}
+
+/* Show the icon for the theme you'd switch TO */
+.theme-toggle .icon-sun  { display: none; }
+.theme-toggle .icon-moon { display: block; }
+:root[data-theme="dark"] .theme-toggle .icon-sun  { display: block; }
+:root[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Slide 2 video — source tabs, trim controls, preview
+   All colours come from the semantic tokens, so light/dark follow
+   the theme automatically with no per-theme overrides needed.
+   ═══════════════════════════════════════════════════════════════ */
+
+.video-source-tabs {
+  display: flex;
+  gap: 3px;
+  background: var(--surface-input);
+  border: 1px solid var(--border-color);
+  border-radius: 100px;
+  padding: 3px;
+  margin-bottom: 12px;
+}
+
+.video-source-tab {
+  flex: 1;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 100px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.video-source-tab:hover { color: var(--text-primary); }
+
+.video-source-tab.active {
+  background: linear-gradient(135deg, rgba(155, 114, 239, 0.28), rgba(80, 80, 230, 0.18));
+  color: var(--accent-dim);
+  box-shadow: 0 0 0 1px rgba(155, 114, 239, 0.32);
+}
+
+.video-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.video-url-row input[type="url"] { flex: 1 1 auto; min-width: 0; }
+
+/* .btn-secondary is width:100% globally, which would starve the input to a
+   stub — reset it so the button hugs its label and the field takes the rest. */
+.video-url-row .btn-secondary {
+  flex: 0 0 auto;
+  width: auto;
+  padding-inline: 18px;
+  white-space: nowrap;
+}
+
+/* Local-file drop zone — label wraps a hidden input so the whole box clicks */
+.video-file-drop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 20px 14px;
+  border: 1.5px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--sunken);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  transition: var(--transition);
+}
+
+.video-file-drop:hover,
+.video-file-drop.dragover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.video-file-drop svg { opacity: 0.7; flex-shrink: 0; }
+
+.video-preview {
+  width: 100%;
+  max-height: 240px;
+  margin: 4px 0 14px;
+  border-radius: var(--radius-md);
+  background: #000;
+  display: block;
+}
+
+/* Trim time readout — start on the left, end on the right, duration centred */
+.trim-readout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.trim-duration {
+  padding: 3px 10px;
+  border-radius: 100px;
+  background: var(--accent-soft);
+  color: var(--accent-dim);
+  font-weight: 700;
+}
+
+.trim-duration.over-limit {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--red);
+}
+
+.trim-actions {
+  display: flex;
+  gap: 6px;
+  margin: 10px 0 14px;
+}
+
+.trim-actions .btn-tiny {
+  flex: 1;
+  padding: 7px 8px;
+  font-size: 0.74rem;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 14px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+#video-export-btn { width: 100%; }
+
+/* Export-in-progress feedback. A clip export runs 5-30s (download + encode);
+   without a visible working state the button looks inert and reads as broken. */
+#video-export-btn.working {
+  opacity: 1;                 /* override the generic :disabled dimming */
+  cursor: progress;
+}
+
+#video-export-btn.working .export-icon {
+  animation: export-spin 0.9s linear infinite;
+  transform-origin: 50% 50%;
+}
+
+@keyframes export-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Indeterminate bar — the encode gives no percentage, so this conveys
+   "still working" rather than a fake progress value. */
+.export-progress {
+  height: 3px;
+  margin-top: 8px;
+  border-radius: 100px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+.export-progress-bar {
+  height: 100%;
+  width: 35%;
+  border-radius: 100px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-deep));
+  animation: export-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes export-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(340%); }
+}
+
+/* Per-bullet character count. The editorial spec is a tight band, so each
+   bullet shows its own length — an average would hide one bad bullet. */
+.article-bullets li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.bullet-count {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 1px 7px;
+  border-radius: 100px;
+  background: var(--sunken);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.bullet-count.over {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--red);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Preview rail — every output visible at once
+   Four cards is past what fits comfortably in a column, so the rail
+   is always a scroller with arrows rather than a grid that squeezes
+   cards below legibility. Scroll-snap keeps a card centred.
+   ═══════════════════════════════════════════════════════════════ */
+
+.preview-rail {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
+}
+
+.preview-rail::-webkit-scrollbar { height: 6px; }
+.preview-rail::-webkit-scrollbar-track { background: transparent; }
+.preview-rail::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 100px;
+}
+
+.preview-card {
+  margin: 0;
+  flex: 0 0 clamp(165px, 31%, 215px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  scroll-snap-align: start;
+}
+
+.preview-card-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.preview-card-num,
+.preview-card-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-dim);
+  font-size: 0.66rem;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.preview-card-glyph { font-size: 0.6rem; }
+
+.preview-rail .canvas-container { padding: 7px; }
+.preview-rail canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.preview-card-dl {
+  width: 100%;
+  padding: 7px 8px;
+  font-size: 0.73rem;
+  justify-content: center;
+}
+
+/* ── Arrows ── */
+.rail-nav { display: inline-flex; gap: 4px; }
+
+.rail-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  background: var(--surface-input);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.rail-arrow:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.rail-arrow:disabled { opacity: 0.3; cursor: default; }
+.rail-arrow[hidden] { display: none; }
+
+.preview-status:empty { display: none; }
+.preview-status { margin-top: 10px; }
+
+@media (max-width: 760px) {
+  .preview-card { flex: 0 0 min(72vw, 260px); }
+}
+
+/* The video card is draggable to reframe the crop. */
+#video-canvas { cursor: grab; touch-action: none; }
+#video-canvas.dragging { cursor: grabbing; }

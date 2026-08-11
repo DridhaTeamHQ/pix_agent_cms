@@ -72,6 +72,10 @@
       <path d="M5 2.5v4h5v-4M4.5 14.5v-4h7v4" fill="none" stroke="currentColor"
             stroke-width="1.5" stroke-linejoin="round"/>
     </symbol>
+    <symbol id="i-check" viewBox="0 0 16 16">
+      <path d="M3 8.6l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
     <symbol id="i-moon" viewBox="0 0 16 16">
       <path d="M13.5 9.8A6 6 0 0 1 6.2 2.5a6 6 0 1 0 7.3 7.3z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/>
     </symbol>
@@ -101,10 +105,16 @@
           <svg width="14" height="14" aria-hidden="true"><use href="#i-doc"/></svg>
           Article
         </button>
+        <!-- One page, two readings: QA reviews and approves everyone's posts,
+             a writer sees their own. The server scopes the list by role; the
+             label just says which of the two you are looking at. -->
+        <button type="button" class="view-tab" data-view="review" role="tab" aria-selected="false">
+          <svg width="14" height="14" aria-hidden="true"><use href="#i-check"/></svg>
+          <span id="review-tab-label">Review</span>
+        </button>
       </div>
 
       <div class="nav-actions">
-        <button type="button" class="nav-link" id="library-open">Saved posts</button>
         <div class="nav-session">
           <div class="nav-account" id="account-box" hidden>
             <span class="nav-account-name" id="account-name">—</span>
@@ -142,25 +152,6 @@
         </label>
         <button type="submit" class="btn-primary" id="login-submit">Sign in</button>
       </form>
-    </div>
-  </section>
-
-  <!-- Saved posts. A writer sees their own; QA sees everyone's and can open
-       any of them for editing. -->
-  <section id="library-panel" class="library-panel" hidden aria-label="Saved posts">
-    <div class="library-sheet">
-      <header class="library-header">
-        <div>
-          <h2 id="library-title">Saved posts</h2>
-          <p class="library-subtitle" id="library-subtitle">Your saved posts.</p>
-        </div>
-        <div class="library-header-actions">
-          <button type="button" class="btn-ghost" id="library-refresh">Refresh</button>
-          <button type="button" class="btn-ghost" id="library-close" aria-label="Close">Close</button>
-        </div>
-      </header>
-      <p class="status-text" id="library-status" role="status" aria-live="polite"></p>
-      <ul class="library-list" id="library-list"></ul>
     </div>
   </section>
 
@@ -655,6 +646,28 @@
         <button type="button" id="article-copy-all" class="btn-secondary">📋 Copy Everything</button>
       </div>
 
+    </div>
+  </section>
+
+  <!-- ═══ VIEW 3: QA review (QA accounts only) ═══ -->
+  <section class="review-shell" id="review-view" hidden>
+    <div class="glass-panel review-panel">
+      <header class="review-intro">
+        <h1 id="review-title">Review<br>and approve.</h1>
+        <p class="desc" id="review-desc">Every post the writers have saved. Open one to edit it, then approve it when it is ready to publish.</p>
+      </header>
+
+      <div class="review-toolbar">
+        <div class="review-filters qa-only" id="review-filters" role="tablist" aria-label="Filter">
+          <button type="button" class="review-filter active" data-filter="all" role="tab" aria-selected="true">All</button>
+          <button type="button" class="review-filter" data-filter="pending" role="tab" aria-selected="false">Pending</button>
+          <button type="button" class="review-filter" data-filter="approved" role="tab" aria-selected="false">Approved</button>
+        </div>
+        <button type="button" class="btn-ghost" id="review-refresh">Refresh</button>
+      </div>
+
+      <p class="status-text" id="review-status" role="status" aria-live="polite"></p>
+      <ul class="review-list" id="review-list"></ul>
     </div>
   </section>
 

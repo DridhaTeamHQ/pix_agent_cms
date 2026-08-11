@@ -273,6 +273,19 @@ const state = {
      have to scrape it back out of the DOM. */
   pixId: null,
   article: null,
+  // Uploads already pushed to storage, remembered against their exact source
+  // so pressing Save repeatedly uploads once.
+  storedImageFor: null,
+  storedImageUrl: null,
+  storedVideoFor: null,
+  storedVideoUrl: null,
+  // The last MP4 the server rendered, kept so Export then Save does not
+  // encode the same range twice.
+  renderedClip: null,
+  // Set the moment the writer edits the headline or paragraph by hand, so the
+  // AI writer landing later cannot overwrite it.
+  headlineTouched: false,
+  detailTouched: false,
   scrapedTitle: "",         // the headline as scraped, before the AI rewrite
   imageQuery: "",           // AI-picked image search query from the scrape
   sourceImageUrl: null,     // og:image of the source article
@@ -504,6 +517,9 @@ function applySession(user) {
   if (accountBox) accountBox.hidden = !user;
   if (logoutBtn) logoutBtn.hidden = !user;
   setAuthState(user ? "ready" : "blocked", user ? "" : "Sign in to continue.");
+  syncReviewCopy();
+  // Whoever just signed in gets their own list, not the previous user's.
+  if (user && document.body.classList.contains("view-review")) loadReviewQueue();
 }
 
 function setAuthState(status, message) {
@@ -727,6 +743,7 @@ writeApplyBtn.addEventListener("click", async () => {
 // Live sync: write-headline → headline-edit → poster
 writeHeadline.addEventListener("input", () => {
   state.headline = writeHeadline.value;
+  state.headlineTouched = true;
   headlineEdit.value = writeHeadline.value;
   setWriteStatus("");
   renderPoster();
@@ -735,6 +752,7 @@ writeHeadline.addEventListener("input", () => {
 writeDetail.addEventListener("input", (event) => {
   const text = event.inputType === "insertLineBreak" ? formatDetailBulletField(writeDetail) : writeDetail.value;
   state.detailText = limitDetailTextClient(text);
+  state.detailTouched = true;
   if (detailEdit) detailEdit.value = state.detailText;
   setWriteStatus("");
   renderPoster();
@@ -1007,6 +1025,7 @@ if (downloadButton) downloadButton.addEventListener("click", async () => {
 // Headline live edit
 headlineEdit.addEventListener("input", () => {
   state.headline = headlineEdit.value;
+  state.headlineTouched = true;
   writeHeadline.value = headlineEdit.value;
   // Editing the headline used to overwrite the paragraph whenever a
   // heuristic guessed the paragraph "was" the headline. The guess misfired,
@@ -1018,6 +1037,7 @@ if (detailEdit) {
   detailEdit.addEventListener("input", (event) => {
     const text = event.inputType === "insertLineBreak" ? formatDetailBulletField(detailEdit) : detailEdit.value;
     state.detailText = limitDetailTextClient(text);
+    state.detailTouched = true;
     writeDetail.value = state.detailText;
     renderPoster();
   });
@@ -3581,10 +3601,16 @@ function setStatus(message, type) {
 
 const viewTabs = document.getElementById("view-tabs");
 const articleView = document.getElementById("article-view");
+const reviewView = document.getElementById("review-view");
 
 function setView(view) {
+  // Signed out, there is nothing to list.
+  if (view === "review" && !state.user) view = "poster";
+
   document.body.classList.toggle("view-article", view === "article");
+  document.body.classList.toggle("view-review", view === "review");
   if (articleView) articleView.hidden = view !== "article";
+  if (reviewView) reviewView.hidden = view !== "review";
   if (viewTabs) {
     viewTabs.querySelectorAll(".view-tab").forEach(t => {
       const active = t.dataset.view === view;
@@ -3592,8 +3618,9 @@ function setView(view) {
       t.setAttribute("aria-selected", active ? "true" : "false");
     });
   }
-  // The mobile edit sheet makes no sense on the article view — drop it
-  if (view === "article") setSheetOpen(false);
+  // The mobile edit sheet makes no sense away from the poster — drop it
+  if (view !== "poster") setSheetOpen(false);
+  if (view === "review") loadReviewQueue();
 }
 
 if (viewTabs) {
@@ -3651,12 +3678,16 @@ async function generateArticle({ applyToSlides = false } = {}) {
     state.article = data;
 
     if (applyToSlides) {
-      if (data.headline) {
+      // The writer can be typing while this request is in flight — the scrape
+      // fires it and it lands ~10s later. Overwriting an edit made in that
+      // window silently threw it away, and [highlight brackets] added right
+      // after a scrape were the usual casualty.
+      if (data.headline && !state.headlineTouched) {
         state.headline = data.headline;
         if (headlineEdit) headlineEdit.value = data.headline;
         if (writeHeadline) writeHeadline.value = data.headline;
       }
-      if (Array.isArray(data.bullets) && data.bullets.length) {
+      if (Array.isArray(data.bullets) && data.bullets.length && !state.detailTouched) {
         // Bulleted, one per line — drawPixTextScreen already renders a
         // bullet glyph for lines starting with a dash.
         const block = data.bullets.map((b) => `- ${b}`).join("\n");
@@ -4230,6 +4261,49 @@ if (videoFileDrop) {
 }
 
 /* ── Export ── */
+/* Render the trim range to an MP4 on the server.
+ *
+ * Shared by Export and Save. Save stores the *trimmed* clip rather than the
+ * source: the source can be a 17-minute file far over Supabase's per-file
+ * limit, while the clip is the part that was actually chosen — and it is what
+ * gets published.
+ */
+async function renderTrimmedClip({ width, height, onStatus = () => {} } = {}) {
+  const size = (width && height) ? { width, height } : videoTargetSize();
+  const duration = state.trimEnd - state.trimStart;
+  const overlay = await renderVideoOverlayPng(size.width, size.height);
+
+  const form = new FormData();
+  form.append("start", String(state.trimStart));
+  form.append("end", String(state.trimEnd));
+  form.append("width", String(size.width));
+  form.append("height", String(size.height));
+  form.append("mute", state.videoMuted ? "true" : "false");
+  // ffmpeg must crop the same slice the preview showed, or the exported clip
+  // is framed differently from what was approved on screen.
+  form.append("focusX", String(state.videoFocus?.x ?? 0.5));
+  form.append("focusY", String(state.videoFocus?.y ?? 0.5));
+  if (overlay) form.append("overlay", overlay, "overlay.png");
+  if (state.videoFile) {
+    form.append("video", state.videoFile, state.videoFile.name);
+    onStatus(`Uploading and encoding ${duration.toFixed(1)}s… this can take a few minutes.`);
+  } else {
+    form.append("url", state.videoUrl);
+    onStatus(`Downloading and encoding ${duration.toFixed(1)}s… this can take a few minutes.`);
+  }
+
+  // No AbortController timeout: a long download plus encode legitimately runs
+  // for minutes, and aborting here would kill work the server is still doing
+  // without telling it to stop.
+  // No Content-Type header — the browser sets the multipart boundary.
+  const res = await fetch("/api/video/clip", { method: "POST", body: form });
+  if (!res.ok) throw new Error(await mediaErrorMessage(res));
+
+  const blob = await res.blob();
+  if (blob.size < 1000) throw new Error("The encoder returned an empty file.");
+  return blob;
+}
+
 async function exportVideoClip() {
   if (state.videoExporting) return;
   const duration = state.trimEnd - state.trimStart;
@@ -4243,36 +4317,7 @@ async function exportVideoClip() {
 
   try {
     const { width, height } = videoTargetSize();
-    const overlay = await renderVideoOverlayPng(width, height);
-
-    const form = new FormData();
-    form.append("start", String(state.trimStart));
-    form.append("end", String(state.trimEnd));
-    form.append("width", String(width));
-    form.append("height", String(height));
-    form.append("mute", state.videoMuted ? "true" : "false");
-    // ffmpeg must crop the same slice the preview showed, or the exported
-    // clip is framed differently from what was approved on screen.
-    form.append("focusX", String(state.videoFocus?.x ?? 0.5));
-    form.append("focusY", String(state.videoFocus?.y ?? 0.5));
-    if (overlay) form.append("overlay", overlay, "overlay.png");
-    if (state.videoFile) {
-      form.append("video", state.videoFile, state.videoFile.name);
-      setVideoStatus(`Uploading and encoding ${duration.toFixed(1)}s… this can take a few minutes.`);
-    } else {
-      form.append("url", state.videoUrl);
-      setVideoStatus(`Downloading and encoding ${duration.toFixed(1)}s… this can take a few minutes.`);
-    }
-
-    // No AbortController timeout: a long download plus encode legitimately
-    // runs for minutes, and aborting here would kill work the server is
-    // still doing without telling it to stop.
-    // No Content-Type header — the browser sets the multipart boundary.
-    const res = await fetch("/api/video/clip", { method: "POST", body: form });
-    if (!res.ok) throw new Error(await mediaErrorMessage(res));
-
-    const blob = await res.blob();
-    if (blob.size < 1000) throw new Error("The encoder returned an empty file.");
+    const blob = await renderTrimmedClip({ width, height, onStatus: setVideoStatus });
 
     const title = (state.videoMeta && state.videoMeta.title) || state.headline || "pix-clip";
     const link = document.createElement("a");
@@ -4284,6 +4329,10 @@ async function exportVideoClip() {
     setTimeout(() => URL.revokeObjectURL(link.href), 10000);
 
     setVideoStatus(`Exported ${(blob.size / 1048576).toFixed(1)} MB · ${width}×${height}`, "success");
+
+    // The encode is done and paid for; keep it so Save can store this exact
+    // clip without re-rendering it.
+    state.renderedClip = { blob, key: videoClipKey() };
   } catch (err) {
     // A dropped connection surfaces as a bare "Failed to fetch", which tells
     // the user nothing — name the likely cause.
@@ -4609,6 +4658,13 @@ let pixSaveInFlight = null;
 function startNewPix() {
   state.pixId = null;
   state.article = null;
+  state.storedImageFor = null;
+  state.storedImageUrl = null;
+  state.storedVideoFor = null;
+  state.storedVideoUrl = null;
+  state.renderedClip = null;
+  state.headlineTouched = false;
+  state.detailTouched = false;
   state.sourceUrl = "";
   state.articleText = "";
   state.scrapedTitle = "";
@@ -4636,6 +4692,11 @@ async function savePixToLibrary() {
   // the second request into creating a duplicate row.
   const run = async () => {
     try {
+      // Uploads first: the row stores URLs, and a data: URL has none.
+      const mediaProblems = await ensureMediaUploaded((message) => {
+        if (savePixLabel) savePixLabel.textContent = message;
+      });
+      if (savePixLabel) savePixLabel.textContent = "Saving…";
       const response = await fetch(PIX_SAVE_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4651,8 +4712,14 @@ async function savePixToLibrary() {
         return { ok: false, error: data.error || `Save failed (${response.status}).` };
       }
       state.pixId = data.id || state.pixId;
+      markPixSaved();
       console.log(`[pix] saved ${data.id}`);
-      return { ok: true, id: data.id, created: data.created };
+      return {
+        ok: true,
+        id: data.id,
+        created: data.created,
+        warning: mediaProblems.length ? mediaProblems.join("; ") : null,
+      };
     } catch (err) {
       console.warn("[pix] not saved:", err.message);
       return { ok: false, error: err.message || "Save failed." };
@@ -4704,7 +4771,14 @@ function collectPixPayload() {
 function describeMainImage() {
   const src = state.mainImage?.src || "";
   if (!src) return { url: null, source: null };
-  if (src.startsWith("data:")) return { url: null, source: "upload" };
+  if (src.startsWith("data:")) {
+    // An upload or an AI enhance. It has a URL only once it has been pushed
+    // to storage — see ensureMediaUploaded, which Save runs first.
+    return {
+      url: state.storedImageFor === src ? state.storedImageUrl : null,
+      source: "upload",
+    };
+  }
 
   let url = src;
   try {
@@ -4756,6 +4830,11 @@ function collectDesignSnapshot() {
     video: {
       sourceKind: state.videoSourceKind,
       url: state.videoUrl || null,
+      // The bucket copy: the rendered clip, already cut to the range below
+      // and with the caption burned in. `url` above is the original link,
+      // which for a scraped clip is a signed URL that expires within hours.
+      storedUrl: state.storedVideoUrl || null,
+      storedTrimmed: Boolean(state.storedVideoUrl),
       title: state.videoMeta?.title || null,
       trimStart: state.trimStart,
       trimEnd: state.trimEnd,
@@ -4801,7 +4880,11 @@ if (savePixBtn) {
       // "Updated" rather than "Saved" when this post is already in the
       // library, so pressing Save twice does not look like it made two.
       showState(result.created ? "Saved" : "Updated", "is-saved");
-      setPostStatus(result.created ? "Saved to your library." : "Saved — library copy updated.", "success");
+      if (result.warning) {
+        setPostStatus(`Saved, but the ${result.warning}.`, "error");
+      } else {
+        setPostStatus(result.created ? "Saved to your library." : "Saved — library copy updated.", "success");
+      }
     } else {
       showState("Not saved", "is-error");
       setPostStatus(result?.error || "Could not save this post.", "error");
@@ -4809,132 +4892,10 @@ if (savePixBtn) {
   });
 }
 
-/* ── Saved posts ───────────────────────────────────────────────────────────
-   The library is the other half of Save: without a way back in, a saved post
-   is write-only. A writer sees their own posts; QA sees everyone's and is the
-   only role that can open someone else's or delete anything.
-
-   The list the server returns is already scoped by role — this panel does not
-   filter anything itself, it only renders what it was given. */
-
-const libraryPanel = document.getElementById("library-panel");
-const libraryList = document.getElementById("library-list");
-const libraryStatus = document.getElementById("library-status");
-const librarySubtitle = document.getElementById("library-subtitle");
-const libraryOpenBtn = document.getElementById("library-open");
-const libraryCloseBtn = document.getElementById("library-close");
-const libraryRefreshBtn = document.getElementById("library-refresh");
-
-function setLibraryStatus(message, kind) {
-  if (!libraryStatus) return;
-  libraryStatus.textContent = message || "";
-  libraryStatus.className = "status-text" + (kind ? ` ${kind}` : "");
-}
-
-function openLibrary() {
-  if (!libraryPanel) return;
-  libraryPanel.hidden = false;
-  if (librarySubtitle) {
-    librarySubtitle.textContent = state.user?.role === "qa"
-      ? "Every saved post. You can open and edit any of them."
-      : "Your saved posts.";
-  }
-  loadLibrary();
-}
-
-function closeLibrary() {
-  if (libraryPanel) libraryPanel.hidden = true;
-}
-
-if (libraryOpenBtn) libraryOpenBtn.addEventListener("click", openLibrary);
-if (libraryCloseBtn) libraryCloseBtn.addEventListener("click", closeLibrary);
-if (libraryRefreshBtn) libraryRefreshBtn.addEventListener("click", loadLibrary);
-
-// Click-outside and Escape both close, so the panel never traps anyone.
-if (libraryPanel) {
-  libraryPanel.addEventListener("click", (event) => {
-    if (event.target === libraryPanel) closeLibrary();
-  });
-}
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && libraryPanel && !libraryPanel.hidden) closeLibrary();
-});
-
-async function loadLibrary() {
-  if (!libraryList) return;
-  setLibraryStatus("Loading…");
-  libraryList.innerHTML = "";
-
-  try {
-    const response = await fetch("/api/pix?limit=100", { credentials: "same-origin" });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      if (response.status === 401) return handleSignedOut();
-      setLibraryStatus(payload.error || `Could not load posts (${response.status}).`, "error");
-      return;
-    }
-
-    const posts = payload.posts || [];
-    setLibraryStatus(posts.length ? `${posts.length} post${posts.length === 1 ? "" : "s"}.` : "");
-    if (!posts.length) {
-      const empty = document.createElement("li");
-      empty.className = "library-empty";
-      empty.textContent = "Nothing saved yet. Build a post and press Save.";
-      libraryList.appendChild(empty);
-      return;
-    }
-    posts.forEach((post) => libraryList.appendChild(renderLibraryItem(post)));
-  } catch (err) {
-    setLibraryStatus(err.message || "Could not load posts.", "error");
-  }
-}
-
-function renderLibraryItem(post) {
-  const li = document.createElement("li");
-  li.className = "library-item";
-
-  const main = document.createElement("div");
-  main.className = "library-item-main";
-
-  const title = document.createElement("span");
-  title.className = "library-item-title";
-  title.textContent = post.headline || "(untitled)";
-
-  const meta = document.createElement("span");
-  meta.className = "library-item-meta";
-  meta.textContent = [
-    post.user_name || "unknown",
-    formatLibraryDate(post.updated_at || post.created_at),
-    hostOf(post.source_url),
-    post.id === state.pixId ? "open now" : "",
-  ].filter(Boolean).join(" · ");
-
-  main.append(title, meta);
-
-  const actions = document.createElement("div");
-  actions.className = "library-item-actions";
-
-  const open = document.createElement("button");
-  open.type = "button";
-  open.className = "btn-ghost";
-  open.textContent = canEditPost(post) ? "Open" : "View";
-  open.addEventListener("click", () => openSavedPost(post.id));
-  actions.appendChild(open);
-
-  // Deleting is QA-only server-side; offering the button to a writer would
-  // only ever produce a 403.
-  if (state.user?.role === "qa") {
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "btn-ghost qa-only";
-    del.textContent = "Delete";
-    del.addEventListener("click", () => deleteSavedPost(post, li));
-    actions.appendChild(del);
-  }
-
-  li.append(main, actions);
-  return li;
-}
+/* ── Opening a saved post ──────────────────────────────────────────────────
+   The list itself lives on the Review page (one page, scoped by role). What
+   is left here is everything needed to pull a stored row back into the
+   editor. */
 
 function formatLibraryDate(value) {
   if (!value) return "";
@@ -4948,43 +4909,20 @@ function hostOf(url) {
 }
 
 async function openSavedPost(id) {
-  setLibraryStatus("Opening…");
+  setReviewStatus("Opening…");
   try {
     const response = await fetch(`/api/pix?id=${encodeURIComponent(id)}`, { credentials: "same-origin" });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (response.status === 401) return handleSignedOut();
-      setLibraryStatus(payload.error || `Could not open that post (${response.status}).`, "error");
+      setReviewStatus(payload.error || `Could not open that post (${response.status}).`, "error");
       return;
     }
     await loadPixIntoEditor(payload.post);
-    closeLibrary();
-    setStatus("Opened from your library — edit and press Save.", "success");
+    setReviewStatus("");
+    setStatus("Opened — edit it, then press Save.", "success");
   } catch (err) {
-    setLibraryStatus(err.message || "Could not open that post.", "error");
-  }
-}
-
-async function deleteSavedPost(post, itemEl) {
-  if (!window.confirm(`Delete "${post.headline || "this post"}" permanently?`)) return;
-  try {
-    const response = await fetch(`/api/pix?id=${encodeURIComponent(post.id)}`, {
-      method: "DELETE",
-      credentials: "same-origin",
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      if (response.status === 401) return handleSignedOut();
-      setLibraryStatus(payload.error || `Could not delete (${response.status}).`, "error");
-      return;
-    }
-    itemEl.remove();
-    // The editor may still be holding a row that no longer exists; forget the
-    // id so the next Save creates a new post instead of failing.
-    if (state.pixId === post.id) state.pixId = null;
-    setLibraryStatus("Deleted.", "success");
-  } catch (err) {
-    setLibraryStatus(err.message || "Could not delete.", "error");
+    setReviewStatus(err.message || "Could not open that post.", "error");
   }
 }
 
@@ -5035,6 +4973,9 @@ async function loadPixIntoEditor(post) {
 
   // A stored image is a URL; it goes back through the proxy exactly as it did
   // the first time. An upload has no URL, so the poster opens without it.
+  // A stored video plays straight from the bucket.
+  if (design.video?.storedUrl) restoreStoredVideo(design.video);
+
   state.mainImage = null;
   if (post.main_image_url) {
     try {
@@ -5045,6 +4986,8 @@ async function loadPixIntoEditor(post) {
   }
 
   renderPoster();
+  // What was just loaded is, by definition, what is stored.
+  markPixSaved();
 }
 
 function applyDesignSnapshot(design, post) {
@@ -5101,7 +5044,450 @@ function syncControl(el, value) {
 /* A session can expire mid-edit. Say so once, plainly, and put the login back
    up rather than letting every later action fail on its own. */
 function handleSignedOut() {
-  setLibraryStatus("");
-  closeLibrary();
+  setReviewStatus("");
   setAuthState("blocked", "Your session expired. Sign in again — your poster is still on screen.");
+}
+
+/* ── Saved posts / Review ──────────────────────────────────────────────────
+   One page, read two ways. The server scopes the list by role, so this file
+   renders whatever it is handed:
+
+     writer — "My posts": their own, with Open and a read-only Pending /
+              Approved pill.
+     qa     — "Review": everyone's, filterable by sign-off, with Open,
+              Approve / Unapprove and Delete.
+
+   Approving is deliberately not part of saving. A save writes the post; an
+   approval records a judgement about it and touches none of its fields — so
+   QA can approve without the risk of nudging a slider on the way past. */
+
+const reviewList = document.getElementById("review-list");
+const reviewStatus = document.getElementById("review-status");
+const reviewFilters = document.getElementById("review-filters");
+const reviewRefreshBtn = document.getElementById("review-refresh");
+const reviewTabLabel = document.getElementById("review-tab-label");
+const reviewTitle = document.getElementById("review-title");
+const reviewDesc = document.getElementById("review-desc");
+
+let reviewFilter = "all";   // "all" | "pending" | "approved" — QA only
+
+/* Title, tab label and blurb all follow the role. Called whenever a session
+   resolves, so a writer signing in after QA never sees QA's wording. */
+function syncReviewCopy() {
+  const isQa = state.user?.role === "qa";
+  if (reviewTabLabel) reviewTabLabel.textContent = isQa ? "Review" : "My posts";
+  if (reviewTitle) reviewTitle.innerHTML = isQa ? "Review<br>and approve." : "Your<br>saved posts.";
+  if (reviewDesc) {
+    reviewDesc.textContent = isQa
+      ? "Every post the writers have saved. Open one to edit it, then approve it when it is ready to publish."
+      : "Everything you have saved. Open one to keep working on it — QA approves them from their own view.";
+  }
+  if (!isQa) reviewFilter = "all";
+}
+
+function setReviewStatus(message, kind) {
+  if (!reviewStatus) return;
+  reviewStatus.textContent = message || "";
+  reviewStatus.className = "status-text" + (kind ? ` ${kind}` : "");
+}
+
+if (reviewFilters) {
+  reviewFilters.addEventListener("click", (event) => {
+    const btn = event.target.closest(".review-filter");
+    if (!btn) return;
+    reviewFilter = btn.dataset.filter;
+    reviewFilters.querySelectorAll(".review-filter").forEach((t) => {
+      const active = t === btn;
+      t.classList.toggle("active", active);
+      t.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    loadReviewQueue();
+  });
+}
+
+if (reviewRefreshBtn) reviewRefreshBtn.addEventListener("click", () => loadReviewQueue());
+
+async function loadReviewQueue() {
+  if (!reviewList || !state.user) return;
+  setReviewStatus("Loading…");
+  reviewList.innerHTML = "";
+
+  const params = new URLSearchParams({ limit: "100" });
+  if (reviewFilter === "pending") params.set("approved", "false");
+  if (reviewFilter === "approved") params.set("approved", "true");
+
+  try {
+    const response = await fetch(`/api/pix?${params}`, { credentials: "same-origin" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) return handleSignedOut();
+      setReviewStatus(payload.error || `Could not load the queue (${response.status}).`, "error");
+      return;
+    }
+
+    const posts = payload.posts || [];
+    if (!posts.length) {
+      const empty = document.createElement("li");
+      empty.className = "review-empty";
+      empty.textContent = reviewFilter === "approved"
+        ? "Nothing approved yet."
+        : reviewFilter === "pending"
+          ? "Nothing waiting — every saved post has been approved."
+          : state.user?.role === "qa"
+            ? "No posts saved yet."
+            : "You have not saved a post yet. Build one, then press Save.";
+      reviewList.appendChild(empty);
+      setReviewStatus("");
+      return;
+    }
+
+    const approvedCount = posts.filter((p) => p.approved).length;
+    setReviewStatus(reviewFilter === "all"
+      ? `${posts.length} post${posts.length === 1 ? "" : "s"} · ${approvedCount} approved · ${posts.length - approvedCount} pending`
+      : `${posts.length} post${posts.length === 1 ? "" : "s"}.`);
+
+    posts.forEach((post) => reviewList.appendChild(renderReviewItem(post)));
+  } catch (err) {
+    setReviewStatus(err.message || "Could not load the queue.", "error");
+  }
+}
+
+function renderReviewItem(post) {
+  const li = document.createElement("li");
+  li.className = "review-item" + (post.approved ? " is-approved" : "");
+
+  // The stored image is a URL, so the thumbnail is the real poster image
+  // rather than a re-render — cheap, and enough to recognise a post by.
+  if (post.main_image_url) {
+    const thumb = document.createElement("img");
+    thumb.className = "review-thumb";
+    thumb.loading = "lazy";
+    thumb.alt = "";
+    thumb.src = `/api/image?url=${encodeURIComponent(post.main_image_url)}`;
+    thumb.addEventListener("error", () => thumb.remove());
+    li.appendChild(thumb);
+  }
+
+  const main = document.createElement("div");
+  main.className = "review-item-main";
+
+  const title = document.createElement("span");
+  title.className = "review-item-title";
+  title.textContent = post.headline || "(untitled)";
+
+  const meta = document.createElement("span");
+  meta.className = "review-item-meta";
+  meta.textContent = [
+    post.user_name || "unknown",
+    formatLibraryDate(post.updated_at || post.created_at),
+    hostOf(post.source_url),
+    post.approved && post.approved_by_name ? `approved by ${post.approved_by_name}` : "",
+  ].filter(Boolean).join(" · ");
+
+  const pill = document.createElement("span");
+  pill.className = "status-pill" + (post.approved ? " is-approved" : "");
+  pill.textContent = post.approved ? "Approved" : "Pending";
+
+  main.append(title, meta, document.createElement("br"), pill);
+
+  const actions = document.createElement("div");
+  actions.className = "review-item-actions";
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "btn-ghost";
+  open.textContent = "Open";
+  open.addEventListener("click", async () => {
+    await openSavedPost(post.id);
+    setView("poster");
+  });
+
+  actions.append(open);
+
+  // Approving and deleting are QA's; a writer would only ever get a 403.
+  if (state.user?.role === "qa") {
+    const approve = document.createElement("button");
+    approve.type = "button";
+    approve.className = "btn-ghost" + (post.approved ? "" : " btn-approve");
+    approve.textContent = post.approved ? "Unapprove" : "Approve";
+    approve.addEventListener("click", () => setPostApproval(post, !post.approved, approve));
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn-ghost";
+    del.textContent = "Delete";
+    del.addEventListener("click", () => deleteReviewPost(post, li));
+
+    actions.append(approve, del);
+  }
+  li.append(main, actions);
+  return li;
+}
+
+async function setPostApproval(post, approved, button) {
+  button.disabled = true;
+  const previous = button.textContent;
+  button.textContent = approved ? "Approving…" : "Withdrawing…";
+  try {
+    const response = await fetch(`/api/pix/approve?id=${encodeURIComponent(post.id)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ approved }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) return handleSignedOut();
+      setReviewStatus(payload.error || `Could not update approval (${response.status}).`, "error");
+      button.textContent = previous;
+      return;
+    }
+    setReviewStatus(approved ? "Approved." : "Approval withdrawn.", "success");
+    // Re-fetch rather than patch the row in place: under the Pending or
+    // Approved filter the post has just left the list it is sitting in.
+    loadReviewQueue();
+  } catch (err) {
+    setReviewStatus(err.message || "Could not update approval.", "error");
+    button.textContent = previous;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteReviewPost(post, itemEl) {
+  if (!window.confirm(`Delete "${post.headline || "this post"}" permanently?`)) return;
+  try {
+    const response = await fetch(`/api/pix?id=${encodeURIComponent(post.id)}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) return handleSignedOut();
+      setReviewStatus(payload.error || `Could not delete (${response.status}).`, "error");
+      return;
+    }
+    itemEl.remove();
+    if (state.pixId === post.id) state.pixId = null;
+    setReviewStatus("Deleted.", "success");
+  } catch (err) {
+    setReviewStatus(err.message || "Could not delete.", "error");
+  }
+}
+
+/* ── Unsaved-changes indicator ──────────────────────────────────────────────
+   Nothing is written until Save is pressed, so an edit made after the last
+   Save — a rewritten headline, a pair of [highlight brackets], a swapped
+   image — lives only in the tab. That is easy to miss, and the post looks
+   fine on screen while the database still holds the previous version.
+
+   The button says so: it reads "Save •" while the poster differs from what
+   was last stored, and settles back to "Save" once they match. */
+
+let lastSavedFingerprint = null;
+
+/* A cheap stand-in for the whole payload. Only the fields that end up in a
+   column count — `design.savedAt` is a timestamp and would make every check
+   look like a change. */
+function pixFingerprint() {
+  const article = state.article || {};
+  return JSON.stringify([
+    state.headline,
+    state.detailText,
+    state.sourceUrl,
+    describeMainImage().url,
+    state.aspectRatio,
+    state.accent,
+    state.tag,
+    state.headlineStyle,
+    state.fontSize,
+    state.overlayOpacity,
+    state.imageZoom,
+    state.imageOffset?.x,
+    state.imageOffset?.y,
+    state.logoX, state.logoY, state.logoSize,
+    state.filterPreset, state.filterBrightness, state.filterContrast,
+    state.filterSaturation, state.filterBlur,
+    state.showTimestamp,
+    article.headline, (article.bullets || []).join("|"), article.tweet,
+    state.videoUrl, state.trimStart, state.trimEnd, state.videoCaption,
+  ]);
+}
+
+function markPixSaved() {
+  lastSavedFingerprint = pixFingerprint();
+  refreshSaveIndicator();
+}
+
+function refreshSaveIndicator() {
+  if (!savePixBtn || !savePixLabel) return;
+  // Mid-flight labels ("Saving…", "Saved", "Updated") own the button for a
+  // few seconds; leave them alone.
+  if (savePixBtn.disabled || savePixBtn.classList.contains("is-saved") || savePixBtn.classList.contains("is-error")) return;
+
+  const nothingToSave = !state.headline && !state.sourceUrl;
+  const dirty = !nothingToSave && lastSavedFingerprint !== null && pixFingerprint() !== lastSavedFingerprint;
+
+  savePixBtn.classList.toggle("is-dirty", dirty);
+  savePixLabel.textContent = dirty ? "Save •" : "Save";
+  savePixBtn.title = dirty
+    ? "This post has changes that are not in the library yet"
+    : "Save this post to the library";
+}
+
+/* Polled rather than wired into every control: the editor changes state from
+   dozens of places — sliders, drags, chips, the AI writer, an image load —
+   and a single cheap comparison is more reliable than remembering to call a
+   hook from all of them. */
+setInterval(refreshSaveIndicator, 800);
+
+/* ── Uploaded media ─────────────────────────────────────────────────────────
+   An uploaded image lives in the tab as a `data:` URL and an uploaded video as
+   a File — neither has an address, so neither can go in a database row. On
+   Save they are pushed to Supabase Storage first and the row keeps the URL
+   that comes back.
+
+   Uploads happen at Save, not at drop: most experiments never get saved, and
+   uploading every image the moment it is dragged in would spend storage on
+   posters nobody keeps. */
+
+async function uploadMediaBlob(blob, filename) {
+  const form = new FormData();
+  form.append("file", blob, filename || "upload");
+  const response = await fetch("/api/media", {
+    method: "POST",
+    credentials: "same-origin",
+    body: form,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401) handleSignedOut();
+    throw new Error(payload.error || `Upload failed (${response.status}).`);
+  }
+  return payload.url;
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [meta, encoded] = String(dataUrl).split(",");
+  const contentType = (meta.match(/^data:([^;]+)/) || [])[1] || "application/octet-stream";
+  if (!/;base64$/i.test(meta.split(";").slice(1).join(";")) && !/;base64/i.test(meta)) {
+    return new Blob([decodeURIComponent(encoded)], { type: contentType });
+  }
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: contentType });
+}
+
+/**
+ * Make sure everything the poster shows has a URL, uploading what does not.
+ *
+ * Each upload is remembered against its exact source, so pressing Save five
+ * times uploads once. Returns a message when something could not be stored —
+ * the save still goes ahead, minus that URL, because losing the text as well
+ * would make a storage outage twice as expensive.
+ */
+async function ensureMediaUploaded(onProgress = () => {}) {
+  const problems = [];
+
+  const src = state.mainImage?.src || "";
+  if (src.startsWith("data:") && state.storedImageFor !== src) {
+    onProgress("Uploading image…");
+    try {
+      const url = await uploadMediaBlob(dataUrlToBlob(src), "poster-image");
+      state.storedImageFor = src;
+      state.storedImageUrl = url;
+    } catch (err) {
+      problems.push(`image not stored (${err.message})`);
+    }
+  }
+
+  // Video: store the trim range, not the source. A 17-minute upload is far
+  // over Supabase's per-file limit and nobody wants those minutes back — the
+  // clip between start and end is the thing that gets published.
+  const clipKey = videoClipKey();
+  if (clipKey && state.storedVideoFor !== clipKey) {
+    try {
+      let blob = state.renderedClip?.key === clipKey ? state.renderedClip.blob : null;
+      if (!blob) {
+        onProgress("Rendering clip…");
+        blob = await renderTrimmedClip({ onStatus: (m) => onProgress(m) });
+        state.renderedClip = { blob, key: clipKey };
+      }
+      onProgress("Uploading video…");
+      const url = await uploadMediaBlob(blob, "slide2.mp4");
+      state.storedVideoFor = clipKey;
+      state.storedVideoUrl = url;
+    } catch (err) {
+      problems.push(`video not stored (${err.message})`);
+    }
+  }
+
+  return problems;
+}
+
+/* Identifies one rendered clip: the source, the range, and everything else
+   that changes the pixels. Same key means the stored clip is still correct,
+   so Save neither re-encodes nor re-uploads. Null when there is no video. */
+function videoClipKey() {
+  const source = state.videoFile
+    ? `file:${state.videoFile.name}:${state.videoFile.size}:${state.videoFile.lastModified}`
+    : (state.videoUrl ? `url:${state.videoUrl}` : "");
+  if (!source) return null;
+  if (!(state.trimEnd > state.trimStart)) return null;
+  return [
+    source,
+    state.trimStart.toFixed(2),
+    state.trimEnd.toFixed(2),
+    state.videoMuted ? "muted" : "sound",
+    (state.videoFocus?.x ?? 0.5).toFixed(3),
+    (state.videoFocus?.y ?? 0.5).toFixed(3),
+    state.videoCaption || "",
+    state.videoCaptionSize,
+    state.aspectRatio,
+  ].join("|");
+}
+
+/* Put a stored video back on screen when a saved post is reopened. The
+   <video> element takes the bucket URL directly — same element, same trim
+   controls, same canvas preview as a local file. */
+function restoreStoredVideo(video) {
+  const url = video?.storedUrl || "";
+  if (!url || !videoPreviewEl) return;
+
+  state.videoUrl = video.url || "";
+  state.storedVideoUrl = url;
+  state.videoFile = null;
+  state.videoSourceKind = video.sourceKind || "file";
+  state.videoMuted = Boolean(video.muted);
+  state.videoCaption = video.caption || "";
+  state.videoCaptionSize = numberOr(video.captionSize, state.videoCaptionSize);
+  state.videoFocus = {
+    x: numberOr(video.focus?.x, 0.5),
+    y: numberOr(video.focus?.y, 0.5),
+  };
+
+  videoPreviewEl.poster = "";
+  videoPreviewEl.crossOrigin = "anonymous";
+  videoPreviewEl.src = url;
+  videoPreviewEl.addEventListener("loadedmetadata", () => {
+    const duration = videoPreviewEl.duration || 0;
+    setupTrimRange(duration);
+    // The stored file is the already-cut clip, so its range is the whole
+    // thing; the original start/end refer to timestamps it no longer has.
+    if (video.storedTrimmed) {
+      state.trimStart = 0;
+      state.trimEnd = duration;
+    } else {
+      const start = numberOr(video.trimStart, 0);
+      const end = numberOr(video.trimEnd, duration);
+      if (end > start) {
+        state.trimStart = start;
+        state.trimEnd = end;
+      }
+    }
+    if (typeof syncTrimUI === "function") syncTrimUI();
+    if (videoEditor) videoEditor.hidden = false;
+    renderPoster();
+  }, { once: true });
 }

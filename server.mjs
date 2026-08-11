@@ -19,6 +19,9 @@ import {
   throttleCheck, throttleRecordFailure, throttleClear,
 } from "./lib/auth.js";
 import { handlePixRequest } from "./lib/pix-api.js";
+import {
+  configureStorage, isStorageConfigured, uploadMedia, pingStorage,
+} from "./lib/storage.js";
 
 const root = join(process.cwd(), "public");
 const port = Number(process.env.PORT || 3000);
@@ -99,6 +102,23 @@ if (dbConfigured()) {
   });
 } else {
   console.warn("⚠ No SUPABASE_DIRECT_CONNECTION_URL — scraped posts will not be saved.");
+}
+
+/* ── Supabase Storage (uploaded images and video) ──
+   Without it, uploads still work in the editor but cannot be saved: a data:
+   URL has no address to put in a row. /api/media then answers 503 and the
+   post is stored with everything except its image. */
+configureStorage({
+  url: env("SUPABASE_URL"),
+  serviceRoleKey: env("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SERVICE_KEY"),
+});
+if (isStorageConfigured()) {
+  pingStorage().then((r) => {
+    if (r.ok) console.log(`✓ Supabase Storage ready (buckets: ${r.buckets.join(", ") || "none yet"})`);
+    else console.warn(`⚠ Supabase Storage unreachable: ${r.error}`);
+  });
+} else {
+  console.warn("⚠ No SUPABASE_SERVICE_ROLE_KEY — uploaded images and videos will not be saved.");
 }
 
 /* ── Twitter / X (OAuth 1.0a) ── */
@@ -284,6 +304,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && req.url === "/api/media") {
+    await handleMediaUpload(req, res);
+    return;
+  }
+
   if (req.url?.startsWith("/api/pix")) {
     await handlePix(req, res);
     return;
@@ -307,6 +332,7 @@ const server = http.createServer(async (req, res) => {
         ytdlpProxy: Boolean(ytdlpProxy),
         pexels: Boolean(pexelsApiKey),
         database: dbConfigured(),
+        storage: isStorageConfigured(),
       },
     });
     return;
@@ -1080,12 +1106,107 @@ async function handleVideoClip(req, res) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+/* Uploaded media → Supabase Storage → a URL the row can hold.
+   
+   Signed-in users only: this writes to a bucket with the service_role key,
+   and an open upload endpoint backed by that key is a free file host for
+   anyone who finds it. */
+async function handleMediaUpload(req, res) {
+  const user = await currentUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Sign in to upload media." });
+    return;
+  }
+  if (!isStorageConfigured()) {
+    sendJson(res, 503, { error: "Media storage is not configured on this server." });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readMediaUpload(req);
+  } catch (err) {
+    sendJson(res, 400, { error: err.message || "Upload failed." });
+    return;
+  }
+
+  if (!payload.buffer?.length) {
+    sendJson(res, 400, { error: "No file received." });
+    return;
+  }
+
+  try {
+    const key = `${user.id}/${randomUUID()}${extensionFor(payload.contentType, payload.filename)}`;
+    const url = await uploadMedia(key, payload.buffer, payload.contentType);
+    console.log(`✓ media ${Math.round(payload.buffer.length / 1024)} KB → ${key}`);
+    sendJson(res, 200, { url, bytes: payload.buffer.length, contentType: payload.contentType });
+  } catch (err) {
+    console.warn("⚠ media upload failed:", err.message);
+    sendJson(res, 502, { error: err.message || "Could not store that file." });
+  }
+}
+
+/* Buffered rather than streamed: Storage wants a length, and the cap below is
+   well inside what a request body can hold in memory. */
+const MAX_MEDIA_BYTES = Number(env("MAX_MEDIA_BYTES") || 0) || 314_572_800;
+
+function readMediaUpload(req) {
+  return new Promise((resolve, reject) => {
+    let bb;
+    try {
+      bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: MAX_MEDIA_BYTES } });
+    } catch (err) {
+      reject(new Error("Malformed upload: " + err.message));
+      return;
+    }
+
+    const chunks = [];
+    let contentType = "application/octet-stream";
+    let filename = "";
+    let tooBig = false;
+
+    bb.on("file", (name, stream, info) => {
+      if (name !== "file") { stream.resume(); return; }
+      contentType = info.mimeType || contentType;
+      filename = info.filename || "";
+      stream.on("data", (d) => chunks.push(d));
+      stream.on("limit", () => { tooBig = true; });
+    });
+
+    bb.on("error", reject);
+    bb.on("close", () => {
+      if (tooBig) {
+        reject(new Error(`File exceeds the ${Math.round(MAX_MEDIA_BYTES / 1048576)} MB limit.`));
+        return;
+      }
+      resolve({ buffer: Buffer.concat(chunks), contentType, filename });
+    });
+
+    req.pipe(bb);
+  });
+}
+
+/* The extension is cosmetic — it only makes the object readable in the
+   Supabase dashboard — so a guess from the MIME type is enough, and a name
+   from the browser is never trusted for anything but its suffix. */
+function extensionFor(contentType, filename) {
+  const known = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+    "image/gif": ".gif", "image/avif": ".avif",
+    "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov",
+  };
+  if (known[contentType]) return known[contentType];
+  const match = String(filename || "").match(/(\.[a-z0-9]{1,5})$/i);
+  return match ? match[1].toLowerCase() : "";
+}
+
 /* Saved pix library — see lib/pix-api.js for the routes and lib/db.js for the
    schema. Storage is optional, so this never propagates an error: a failed
    save answers with a message the editor shows in the status line and then
    carries on. */
 async function handlePix(req, res) {
-  const query = Object.fromEntries(new URL(req.url, "http://localhost").searchParams);
+  const parsed = new URL(req.url, "http://localhost");
+  const query = Object.fromEntries(parsed.searchParams);
   let body = {};
   if (req.method === "POST" || req.method === "DELETE") {
     try {
@@ -1096,7 +1217,7 @@ async function handlePix(req, res) {
     }
   }
   const user = await currentUser(req);
-  const result = await handlePixRequest({ method: req.method, query, body, user });
+  const result = await handlePixRequest({ method: req.method, path: parsed.pathname, query, body, user });
   sendJson(res, result.status, result.body);
 }
 

@@ -249,6 +249,7 @@ body.auth-ready .agent-auth-gate {
 
 .role-badge {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   padding: 2px 7px;
   border-radius: 999px;
@@ -267,114 +268,6 @@ body.auth-ready .agent-auth-gate {
   background: rgba(16, 152, 110, 0.14);
   color: #10986e;
   border-color: rgba(16, 152, 110, 0.32);
-}
-
-/* ─── Saved posts ────────────────────────────────────────────── */
-
-.library-panel {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: grid;
-  place-items: start center;
-  padding: 76px 18px 24px;
-  background: rgba(10, 10, 15, 0.55);
-  backdrop-filter: blur(6px);
-  overflow-y: auto;
-}
-
-.library-panel[hidden] { display: none; }
-
-.library-sheet {
-  width: min(880px, 100%);
-  padding: 22px;
-  border-radius: var(--radius-xl);
-  background: var(--surface);
-  border: 1px solid var(--border-color);
-  box-shadow: var(--shadow-lg);
-}
-
-.library-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 6px;
-}
-
-.library-header h2 {
-  margin: 0;
-  font-size: 1.35rem;
-  letter-spacing: -0.03em;
-}
-
-.library-subtitle {
-  margin: 4px 0 0;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-}
-
-.library-header-actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.library-list {
-  list-style: none;
-  margin: 14px 0 0;
-  padding: 0;
-  display: grid;
-  gap: 8px;
-}
-
-.library-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--hairline);
-  background: var(--hover-tint);
-}
-
-.library-item-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.library-item-title {
-  display: block;
-  font-weight: 600;
-  font-size: 0.9rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.library-item-meta {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-}
-
-.library-item-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.library-item-actions .btn-ghost {
-  padding: 7px 12px;
-  font-size: 0.76rem;
-}
-
-.library-empty {
-  padding: 26px 4px;
-  color: var(--text-muted);
-  text-align: center;
-  font-size: 0.88rem;
 }
 
 /* A writer cannot edit anyone else's post, so the controls that would fail
@@ -527,9 +420,9 @@ button:focus-visible,
 .nav-account {
   display: inline-flex;
   min-width: 0;
-  max-width: 160px;
-  flex-direction: column;
-  align-items: flex-start;
+  max-width: 230px;
+  align-items: center;
+  gap: 7px;
   line-height: 1.1;
 }
 
@@ -542,7 +435,8 @@ button:focus-visible,
 }
 
 .nav-account-name {
-  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   color: var(--text-primary);
   font-size: 0.82rem;
@@ -1312,6 +1206,14 @@ input[type="range"]::-webkit-slider-thumb:hover {
   border-radius: 7px;
 }
 
+/* Unsaved changes. Amber rather than red: nothing is wrong, there is just
+   something in the tab that is not in the library yet. */
+.preview-save.is-dirty {
+  color: #b8860b;
+  border-color: rgba(217, 164, 6, 0.45);
+  background: rgba(217, 164, 6, 0.12);
+}
+
 .preview-save.is-saved {
   color: var(--accent-dim, #7c3aed);
   border-color: rgba(124, 58, 237, 0.4);
@@ -1485,6 +1387,160 @@ body.view-article .app-shell,
 body.view-article .fab,
 body.view-article .sheet-backdrop,
 body.view-article .edit-sheet { display: none !important; }
+
+body.view-review .app-shell,
+body.view-review .fab,
+body.view-review .sheet-backdrop,
+body.view-review .edit-sheet { display: none !important; }
+
+/* ─── QA review page ──────────────────────────────────────── */
+
+.review-shell {
+  width: min(940px, 100vw - 32px);
+  margin: 28px auto 60px;
+}
+
+.review-panel { padding: 32px 30px 34px; }
+
+.review-intro { margin-bottom: 20px; }
+
+.review-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.review-filters {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--surface-input);
+  border: 1px solid var(--border-color);
+}
+
+.review-filter {
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.review-filter.active {
+  background: rgba(155, 114, 239, 0.18);
+  color: var(--accent-dim);
+  box-shadow: 0 0 0 1px rgba(155, 114, 239, 0.35);
+}
+
+.review-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.review-item {
+  display: flex;
+  align-items: center;
+  /* Grid items default to min-width:auto, so without this the row refuses to
+     shrink below its content and the Delete button hangs past the panel. */
+  min-width: 0;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--hairline);
+  background: var(--hover-tint);
+}
+
+/* An approved post is the exception in a review queue, so it gets the colour
+   and everything else stays quiet. */
+.review-item.is-approved {
+  border-color: rgba(16, 152, 110, 0.35);
+  background: rgba(16, 152, 110, 0.07);
+}
+
+.review-thumb {
+  width: 46px;
+  height: 62px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  object-fit: cover;
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+}
+
+.review-item-main { flex: 1; min-width: 0; }
+
+.review-item-title {
+  display: block;
+  font-weight: 600;
+  font-size: 0.92rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-item-meta {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.review-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.review-item-actions .btn-ghost { padding: 8px 13px; font-size: 0.78rem; }
+
+.btn-approve {
+  border-color: rgba(16, 152, 110, 0.4) !important;
+  color: #10986e !important;
+  background: rgba(16, 152, 110, 0.1) !important;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: var(--surface-input);
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+}
+
+.status-pill.is-approved {
+  background: rgba(16, 152, 110, 0.14);
+  color: #10986e;
+  border-color: rgba(16, 152, 110, 0.32);
+}
+
+.review-empty {
+  padding: 30px 4px;
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 620px) {
+  .review-item { flex-wrap: wrap; }
+  .review-item-actions { width: 100%; justify-content: flex-end; }
+}
 
 /* ─── Article writer view ─────────────────────────────────── */
 .article-shell {
@@ -1721,7 +1777,7 @@ body.view-article .edit-sheet { display: none !important; }
     gap: 7px;
     padding: 3px 4px 3px 9px;
   }
-  .nav-account { max-width: 64px; }
+  .nav-account { max-width: 96px; }
   .nav-account-label { display: none; }
   .nav-account-name { font-size: 0.72rem; }
   .nav-logout {
@@ -2042,9 +2098,34 @@ body.view-article .edit-sheet { display: none !important; }
     gap: 6px;
     padding-left: 8px;
   }
-  .nav-account { max-width: 52px; }
+  /* Three view tabs plus an account pill do not fit here. The tabs go
+     icon-only (font-size:0 hides the label text nodes, the SVGs are sized in
+     px and survive), the BETA chip goes entirely, and the side groups size to
+     their content instead of splitting the row evenly — otherwise the pill is
+     handed less width than it needs and spills over the tabs. */
+  .view-tabs { min-width: 0; flex-shrink: 1; }
+  .view-tab {
+    padding: 7px 9px;
+    font-size: 0;
+    gap: 0;
+  }
+  .nav-badge { display: none; }
+  .nav-logo { flex: 0 1 auto; }
+  .nav-logo-text { display: none; }
+  .nav-actions { flex: 0 0 auto; }
+
+  /* No room for both — keep the role badge, drop the name. Which account you
+     are signed into matters more here than what it is called. */
+  .nav-session {
+    max-width: none;
+    flex-shrink: 0;
+    gap: 6px;
+    padding: 3px 4px 3px 7px;
+  }
+  .nav-account { max-width: none; }
+  .nav-account-name { display: none; }
   .nav-logout {
-    padding: 0 8px;
+    padding: 0 9px;
     font-size: 0.7rem;
   }
   .stock-grid { grid-template-columns: repeat(2, 1fr); }
@@ -2147,7 +2228,8 @@ body.view-article .edit-sheet { display: none !important; }
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: none; }
 }
-.article-shell:not([hidden]) { animation: view-in 0.4s var(--spring) both; }
+.article-shell:not([hidden]),
+.review-shell:not([hidden]) { animation: view-in 0.4s var(--spring) both; }
 body.view-poster-return .app-shell { animation: view-in 0.4s var(--spring) both; }
 
 /* ─── FAB attention pulse (mobile) — three soft rings then rest ── */

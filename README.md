@@ -34,8 +34,30 @@ Two roles:
 
 | Role | Can do |
 | --- | --- |
-| `writer` | Build posts, save them, re-open and re-save **their own**. Their library shows only their own posts. |
-| `qa` | Everything a writer can, plus open, edit and delete **anyone's** posts. Their library shows every post. |
+| `writer` | Build posts, save them, re-open and re-save **their own**. Their library shows only their own posts, each marked Pending or Approved. |
+| `qa` | Everything a writer can, plus a **Review** page: open, edit, approve and delete **anyone's** posts. |
+
+### The posts page
+
+A third tab next to Poster and Article, which reads two ways:
+
+- **writer → "My posts"** — their own saved posts, each with Open and a
+  read-only Pending / Approved pill
+- **qa → "Review"** — every writer's posts, filterable by **All / Pending /
+  Approved**
+
+The list is scoped by the server, not the browser: a writer's request only
+ever returns their own rows. On the QA side each row offers:
+
+- **Open** — loads the post into the editor to fix it, then Save as usual
+- **Approve / Unapprove** — records sign-off, stamped with who and when
+- **Delete**
+
+Approving is deliberately separate from saving: it writes `approved`,
+`approved_at`, `approved_by` and touches no field of the post itself, so
+signing off can never nudge a slider on the way past. Writers see the
+resulting Pending/Approved state on their own posts but cannot change it —
+`POST /api/pix/approve` answers 403 for any role but QA.
 
 Six accounts ship by default — `writer1`…`writer5` and `qa1`:
 
@@ -68,8 +90,9 @@ cannot do, but hiding is never what stops it.
 ## Saved posts (Supabase)
 
 Press **Save** in the Live Preview header to write the current post to the
-`pix_posts` table in Supabase, and **Saved posts** in the navbar to open one
-again. That is the only thing that stores a post —
+`pix_posts` table in Supabase, and the **My posts** / **Review** tab to open
+one again. While the poster differs from what is stored, the button reads
+`Save •` in amber — nothing is written until it is pressed. That is the only thing that stores a post —
 scraping, generating the article and downloading a PNG write nothing. Pressing
 Save again updates the same row (the button says *Updated*); scraping a new
 article, or building a poster from hand-written text, starts a new one.
@@ -99,6 +122,7 @@ What a row holds — everything needed to rebuild the post:
 | Poster | `headline`, `detail_body`, `main_image_url`, `main_image_source`, `aspect_ratio`, `accent_color`, `tag` |
 | Editor snapshot | `design` (jsonb: offsets, zoom, filters, logo position, timestamp, video trim) |
 | Author | `user_login_id`, `user_name` — taken from the session, never from the request body |
+| QA sign-off | `approved`, `approved_at`, `approved_by`, `approved_by_name` |
 
 API:
 
@@ -108,8 +132,9 @@ POST   /api/auth/logout  ends the session
 GET    /api/auth/me      the signed-in user, or 401
 
 POST   /api/pix          create, or update when the body carries an `id`
-GET    /api/pix          list (newest first; `?limit=`, `?offset=`)
+GET    /api/pix          list (newest first; `?limit=`, `?offset=`, `?approved=true|false`)
 GET    /api/pix?id=…     one post, every column
+POST   /api/pix/approve?id=…   { approved: true|false } (QA only)
 DELETE /api/pix?id=…     remove one (QA only)
 ```
 

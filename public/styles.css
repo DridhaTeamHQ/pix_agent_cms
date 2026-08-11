@@ -184,7 +184,13 @@ body.auth-ready .agent-auth-gate {
 .agent-auth-card h1 {
   margin: 0 0 10px;
   font-size: clamp(2rem, 5vw, 3rem);
-  line-height: 0.95;
+  /* These headings are painted with background-clip:text, so the gradient
+     only covers the element's own box — a descender hanging below the line
+     box is simply not painted, which is why the "g" in "Sign in" was losing
+     its tail. Room for the descender, plus a little padding for the round
+     end of the stroke. */
+  line-height: 1.2;
+  padding-bottom: 0.16em;
   letter-spacing: -0.05em;
 }
 
@@ -489,7 +495,10 @@ h1 {
   font-size: 1.65rem;
   font-weight: 700;
   letter-spacing: -0.03em;
-  line-height: 1.12;
+  /* background-clip:text paints only inside the box, so descenders need to
+     sit inside it — see the note on .agent-auth-card h1. */
+  line-height: 1.22;
+  padding-bottom: 0.12em;
   background: linear-gradient(150deg, #2a1a52 0%, #6d28d9 55%, #7c3aed 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -891,6 +900,7 @@ textarea::placeholder {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 6px;
+  margin-top: 6px;
 }
 
 .ratio-btn {
@@ -1968,7 +1978,7 @@ body.view-review .edit-sheet { display: none !important; }
   .edit-sheet .panel-copy { display: none; }
   .edit-sheet .panel-title { display: none; }
 
-  h1 { font-size: 1.45rem; line-height: 1.05; }
+  h1 { font-size: 1.45rem; line-height: 1.14; }
   p.desc { font-size: 0.82rem; max-width: 100%; margin-bottom: 8px; }
 
   /* ─── Floating Action Button (FAB) ─── */

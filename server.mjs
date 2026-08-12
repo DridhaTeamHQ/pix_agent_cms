@@ -1328,8 +1328,25 @@ async function handleDailyMattrPublish(req, res) {
   }
 
   try {
+    /* Log what actually goes out, per file. "3 files" alone cannot answer the
+       only question that matters when something is missing at the other end —
+       WHICH file, and was it a video? Without the type and size here there is
+       no way to tell "we never attached the clip" from "we sent it and
+       DailyMattr dropped it". */
+    const manifest = payload.files
+      .map((f) => `${f.fieldName}=${f.contentType} ${(f.buffer.length / 1048576).toFixed(2)}MB "${f.filename}"`)
+      .join(", ");
+    const videoCount = payload.files.filter((f) => /^video\//i.test(f.contentType || "")).length;
+    console.log(
+      `→ DailyMattr publish by ${user.username}: ${payload.files.length} file(s), ${videoCount} video — ${manifest}`,
+    );
+
     const result = await publishDailyMattrBuzzContent(payload, dailyMattrConfig());
-    console.log(`✓ DailyMattr publish by ${user.username} (${payload.files.length} file${payload.files.length === 1 ? "" : "s"})`);
+
+    // Their response is the only record of what they accepted. Log it whole:
+    // a 200 that quietly stored fewer items than we sent is exactly the
+    // failure we are chasing, and it is invisible without this.
+    console.log(`✓ DailyMattr accepted (id=${result.publishedId ?? "none"}): ${JSON.stringify(result.response).slice(0, 600)}`);
     sendJson(res, 200, result);
   } catch (err) {
     console.warn("⚠ DailyMattr publish failed:", err.message);

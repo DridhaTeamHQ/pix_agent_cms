@@ -279,6 +279,9 @@ body.auth-ready .agent-auth-gate {
 /* A writer cannot edit anyone else's post, so the controls that would fail
    server-side are not offered in the first place. */
 body[data-role="writer"] .qa-only { display: none; }
+/* Before the session resolves the role is still empty — stay hidden until we
+   positively know the user is QA, so nothing flashes for a writer. */
+body:not([data-role="qa"]) .qa-only { display: none; }
 
 /* ─── Touch & a11y baseline ────────────────────────────────── */
 

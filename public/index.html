@@ -112,7 +112,9 @@
           <svg width="14" height="14" aria-hidden="true"><use href="#i-check"/></svg>
           <span id="review-tab-label">Review</span>
         </button>
-        <button type="button" class="view-tab" data-view="analytics" role="tab" aria-selected="false">
+        <!-- Analytics is a QA-only view: it reports on the whole team's
+             throughput, which a writer has no business seeing. -->
+        <button type="button" class="view-tab qa-only" data-view="analytics" role="tab" aria-selected="false">
           <svg width="14" height="14" aria-hidden="true"><use href="#i-doc"/></svg>
           Analytics
         </button>

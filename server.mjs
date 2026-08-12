@@ -1401,7 +1401,9 @@ async function currentUser(req) {
     const cookies = parseCookies(req.headers.cookie);
     return await sessionUser(cookies[SESSION_COOKIE]);
   } catch (err) {
-    console.warn("⚠ session lookup failed:", err.message);
+    // The caller cannot tell this apart from "not signed in", so the user just
+    // gets bounced to the login screen. Name it in the log as what it is.
+    console.warn(`⚠ session lookup failed (user will appear signed out): ${err.code || "no-code"} ${err.message}`);
     return null;
   }
 }
@@ -1467,7 +1469,9 @@ async function handleLogin(req, res) {
     }));
     sendJson(res, 200, { user: session.user });
   } catch (err) {
-    console.warn("⚠ login failed:", err.message);
+    // Log the code too. "Login is unavailable right now" is all the user gets,
+    // so without this an intermittent failure leaves nothing to diagnose from.
+    console.warn(`⚠ login failed for "${username}": ${err.code || "no-code"} ${err.message}`);
     sendJson(res, 503, { error: "Login is unavailable right now." });
   }
 }
@@ -2293,16 +2297,24 @@ function normalizeUrl(value) {
 function readJson(req, options = {}) {
   const limit = options.limit || 1_000_000;
   return new Promise((resolve, reject) => {
-    let body = "";
+    // Collect Buffers and decode once at the end. Concatenating chunks as
+    // strings decodes each one on its own, so a multi-byte character split
+    // across a chunk boundary comes out as replacement characters — which for
+    // a password with an accent means a correct one is rejected at random.
+    const chunks = [];
+    let size = 0;
     req.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > limit) {
+      size += chunk.length;
+      if (size > limit) {
         reject(new Error("Request body too large."));
         req.destroy();
+        return;
       }
+      chunks.push(chunk);
     });
     req.on("end", () => {
       try {
+        const body = Buffer.concat(chunks).toString("utf8");
         resolve(body ? JSON.parse(body) : {});
       } catch {
         reject(new Error("Invalid JSON body."));

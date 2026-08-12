@@ -579,7 +579,11 @@ function applySession(user) {
   if (user?.role === "qa") loadDailyMattrMeta({ force: true });
   // Whoever just signed in gets their own list, not the previous user's.
   if (user && document.body.classList.contains("view-review")) loadReviewQueue();
-  if (user && document.body.classList.contains("view-analytics")) loadAnalytics({ force: true });
+  if (user && document.body.classList.contains("view-analytics")) {
+    // A writer signing in on the analytics view has no analytics to see.
+    if (user.role === "qa") loadAnalytics({ force: true });
+    else setView("poster");
+  }
 }
 
 function setAuthState(status, message) {
@@ -3914,6 +3918,7 @@ function renderAnalyticsBoardRich(container, rows, {
 
 async function loadAnalytics({ force = false } = {}) {
   if (!analyticsView || !state.user) return;
+  if (state.user.role !== "qa") return;
   if (!force && analyticsLoadedForRole === state.user.role) return;
 
   if (analyticsRefreshBtn) analyticsRefreshBtn.disabled = true;
@@ -4005,6 +4010,8 @@ const reviewView = document.getElementById("review-view");
 function setView(view) {
   // Signed out, there is nothing to list.
   if ((view === "review" || view === "analytics") && !state.user) view = "poster";
+  // Analytics is QA-only; a writer landing here (stale tab, deep link) goes home.
+  if (view === "analytics" && state.user?.role !== "qa") view = "poster";
 
   document.body.classList.toggle("view-article", view === "article");
   document.body.classList.toggle("view-review", view === "review");

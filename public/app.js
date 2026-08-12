@@ -119,6 +119,19 @@ const accountBox = document.getElementById("account-box");
 const accountName = document.getElementById("account-name");
 const accountRole = document.getElementById("account-role");
 const logoutBtn = document.getElementById("logout-btn");
+const analyticsView = document.getElementById("analytics-view");
+const analyticsRefreshBtn = document.getElementById("analytics-refresh");
+const analyticsStatus = document.getElementById("analytics-status");
+const analyticsTitle = document.getElementById("analytics-title");
+const analyticsDesc = document.getElementById("analytics-desc");
+const analyticsTrend = document.getElementById("analytics-trend");
+const analyticsTrendNote = document.getElementById("analytics-trend-note");
+const analyticsMetaTitle = document.getElementById("analytics-meta-title");
+const analyticsMetaList = document.getElementById("analytics-meta-list");
+const analyticsWriters = document.getElementById("analytics-writers");
+const analyticsQas = document.getElementById("analytics-qas");
+const analyticsWriterTitle = document.getElementById("analytics-writer-title");
+const analyticsQaTitle = document.getElementById("analytics-qa-title");
 
 const editPanel = document.getElementById("edit-panel");
 const imagePanel = document.getElementById("image-panel");
@@ -536,12 +549,15 @@ const dailymattrStatus = document.getElementById("dailymattr-status");
 
 const DAILYMATTR_META_ENDPOINT = "/api/dailymattr/meta";
 const DAILYMATTR_PUBLISH_ENDPOINT = "/api/dailymattr/publish";
+const PIX_ANALYTICS_ENDPOINT = "/api/pix-analytics";
 const DAILYMATTR_EXPORT_LONG_EDGES = [3840, 2560];
 // Must match MAX_DAILYMATTR_MEDIA_BYTES on the server. Checked on the client
 // too so an oversized clip fails in a second with a useful message, rather
 // than after uploading tens of megabytes only to be cut off by busboy.
 const DAILYMATTR_MAX_MEDIA_BYTES = 64 * 1024 * 1024;
+const dailymattrDraftTouched = { content: false, keywords: false };
 let dailymattrMetaLoaded = false;
+let analyticsLoadedForRole = "";
 
 function applySession(user) {
   state.user = user || null;
@@ -563,6 +579,7 @@ function applySession(user) {
   if (user?.role === "qa") loadDailyMattrMeta({ force: true });
   // Whoever just signed in gets their own list, not the previous user's.
   if (user && document.body.classList.contains("view-review")) loadReviewQueue();
+  if (user && document.body.classList.contains("view-analytics")) loadAnalytics({ force: true });
 }
 
 function setAuthState(status, message) {
@@ -576,11 +593,13 @@ function setAuthState(status, message) {
     document.body.dataset.role = "";
     if (accountBox) accountBox.hidden = true;
     if (logoutBtn) logoutBtn.hidden = true;
+    analyticsLoadedForRole = "";
     dailymattrMetaLoaded = false;
     syncDailyMattrAccess();
     fillSelectOptions(dailymattrCategory, [], "Sign in to load categories");
     fillSelectOptions(dailymattrState, [], "Optional");
     setDailyMattrStatus("");
+    setAnalyticsStatus("");
   }
   if (status === "blocked" && loginUsername) {
     // Focus only once the form is actually on screen.
@@ -836,8 +855,6 @@ function setPostStatus(msg, kind) {
   xDownloadStatus.textContent = "";
   if (msg) xDownloadStatus.append(msg);
 }
-
-const dailymattrDraftTouched = { content: false, keywords: false };
 
 /* Show the publish panel to QA only. This is presentation, not the control —
    /api/dailymattr/publish returns 403 for writers regardless, because a hidden
@@ -3716,6 +3733,269 @@ function setStatus(message, type) {
   if (type) scrapeStatus.classList.add(type);
 }
 
+function setAnalyticsStatus(message, type) {
+  if (!analyticsStatus) return;
+  analyticsStatus.textContent = message || "";
+  analyticsStatus.className = "status-text" + (type ? ` ${type}` : "");
+}
+
+function formatCount(value) {
+  return new Intl.NumberFormat().format(Number(value) || 0);
+}
+
+function formatCompactNumber(value) {
+  const n = Number(value) || 0;
+  return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
+}
+
+function animateCounter(el, value, suffix = "") {
+  if (!el) return;
+  const target = Number(value) || 0;
+  const start = Number(el.dataset.currentValue || 0);
+  const diff = target - start;
+  const startTime = performance.now();
+  const duration = 700;
+
+  function frame(now) {
+    const t = Math.min(1, (now - startTime) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    const current = start + diff * eased;
+    el.textContent = `${formatCompactNumber(Math.round(current))}${suffix}`;
+    if (t < 1) {
+      requestAnimationFrame(frame);
+    } else {
+      el.dataset.currentValue = String(target);
+      el.textContent = `${formatCompactNumber(target)}${suffix}`;
+    }
+  }
+
+  requestAnimationFrame(frame);
+}
+
+function analyticsValueEl(key) {
+  return document.querySelector(`[data-analytics-value="${key}"]`);
+}
+
+function renderAnalyticsSummary(summary = {}, role = "writer") {
+  animateCounter(analyticsValueEl("sent"), summary.sent_count || 0);
+  animateCounter(analyticsValueEl("approved"), summary.approved_count || 0);
+  animateCounter(analyticsValueEl("pending"), summary.pending_count || 0);
+  animateCounter(analyticsValueEl("rate"), summary.approval_rate || 0, "%");
+
+  const sentSub = document.getElementById("analytics-sent-sub");
+  const approvedSub = document.getElementById("analytics-approved-sub");
+  const pendingSub = document.getElementById("analytics-pending-sub");
+  const rateSub = document.getElementById("analytics-rate-sub");
+
+  if (sentSub) {
+    sentSub.textContent = role === "qa"
+      ? `${formatCount(summary.active_writers || 0)} writers active in the pipeline`
+      : "Posts you have sent into the workflow";
+  }
+  if (approvedSub) {
+    approvedSub.textContent = role === "qa"
+      ? `${formatCount(summary.approved_by_me_count || 0)} approved by you`
+      : "Posts QA has approved";
+  }
+  if (pendingSub) {
+    pendingSub.textContent = role === "qa"
+      ? "Still waiting for QA action"
+      : "Your posts still in review";
+  }
+  if (rateSub) {
+    rateSub.textContent = role === "qa"
+      ? `${formatCount(summary.active_qas || 0)} QA reviewers active`
+      : "Share of your posts approved";
+  }
+}
+
+function renderAnalyticsTrend(days = []) {
+  if (!analyticsTrend) return;
+  analyticsTrend.innerHTML = "";
+  if (!days.length) {
+    analyticsTrend.innerHTML = `<div class="analytics-empty">No post activity yet.</div>`;
+    return;
+  }
+
+  const maxValue = Math.max(1, ...days.flatMap((day) => [Number(day.sent_count) || 0, Number(day.approved_count) || 0]));
+  days.forEach((day, index) => {
+    const sentHeight = Math.max(6, Math.round(((Number(day.sent_count) || 0) / maxValue) * 128));
+    const approvedHeight = Math.max(6, Math.round(((Number(day.approved_count) || 0) / maxValue) * 128));
+    const row = document.createElement("div");
+    row.className = "analytics-day";
+    row.innerHTML = `
+      <div class="analytics-bars">
+        <span class="analytics-bar sent" style="height:${sentHeight}px; animation-delay:${index * 0.05}s"></span>
+        <span class="analytics-bar approved" style="height:${approvedHeight}px; animation-delay:${0.08 + index * 0.05}s"></span>
+      </div>
+      <span class="analytics-day-label">${day.label || ""}</span>
+      <span class="analytics-day-meta">${formatCount(day.sent_count)} sent<br>${formatCount(day.approved_count)} approved</span>
+    `;
+    analyticsTrend.appendChild(row);
+  });
+}
+
+function renderAnalyticsMeta(summary = {}, role = "writer") {
+  if (!analyticsMetaList || !analyticsMetaTitle) return;
+  analyticsMetaTitle.textContent = role === "qa" ? "Approval health" : "Your pipeline health";
+  const items = role === "qa"
+    ? [
+        ["Active writers", formatCount(summary.active_writers || 0)],
+        ["Active QA reviewers", formatCount(summary.active_qas || 0)],
+        ["Approved by you", formatCount(summary.approved_by_me_count || 0)],
+        ["Avg approval time", `${Number(summary.avg_approval_hours || 0).toFixed(1)} hrs`],
+      ]
+    : [
+        ["Posts sent", formatCount(summary.sent_count || 0)],
+        ["Posts approved", formatCount(summary.approved_count || 0)],
+        ["Posts pending", formatCount(summary.pending_count || 0)],
+        ["Avg approval time", `${Number(summary.avg_approval_hours || 0).toFixed(1)} hrs`],
+      ];
+
+  analyticsMetaList.innerHTML = items.map(([label, value]) => `
+    <div class="analytics-metric">
+      <span class="analytics-metric-label">${label}</span>
+      <strong class="analytics-metric-value">${value}</strong>
+    </div>
+  `).join("");
+}
+
+function renderAnalyticsBoard(container, rows, { empty, valueLabel, showRate = false, rateField = "approval_rate", approvedField = "approved_count", pendingField = "pending_count" }) {
+  if (!container) return;
+  if (!rows?.length) {
+    container.innerHTML = `<div class="analytics-empty">${empty}</div>`;
+    return;
+  }
+  container.innerHTML = rows.map((row, index) => `
+    <div class="analytics-row">
+      <span class="analytics-rank">${index + 1}</span>
+      <div class="analytics-row-main">
+        <span class="analytics-row-name">${row.user_name || "Unknown"}</span>
+        <span class="analytics-row-meta">${approvedField in row && pendingField in row
+          ? `${formatCount(row[approvedField] || 0)} approved · ${formatCount(row[pendingField] || 0)} pending`
+          : valueLabel}</span>
+      </div>
+      <div class="analytics-row-value">
+        <span class="analytics-row-total">${formatCount(row.sent_count ?? row.approved_count ?? 0)} ${valueLabel}</span>
+        <span class="analytics-row-rate">${showRate ? `${formatCount(row[rateField] || 0)}% approval` : ""}</span>
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderAnalyticsBoardRich(container, rows, {
+  empty,
+  valueLabel,
+  showRate = false,
+  rateField = "approval_rate",
+  valueField = "sent_count",
+  metaFormatter = null,
+  totalFormatter = null,
+}) {
+  if (!container) return;
+  if (!rows?.length) {
+    container.innerHTML = `<div class="analytics-empty">${empty}</div>`;
+    return;
+  }
+  container.innerHTML = rows.map((row, index) => `
+    <div class="analytics-row">
+      <span class="analytics-rank">${index + 1}</span>
+      <div class="analytics-row-main">
+        <span class="analytics-row-name">${row.user_name || "Unknown"}</span>
+        <span class="analytics-row-meta">${metaFormatter ? metaFormatter(row) : valueLabel}</span>
+      </div>
+      <div class="analytics-row-value">
+        <span class="analytics-row-total">${totalFormatter ? totalFormatter(row) : `${formatCount(row[valueField] || 0)} ${valueLabel}`}</span>
+        <span class="analytics-row-rate">${showRate ? `${formatCount(row[rateField] || 0)}% approval` : ""}</span>
+      </div>
+    </div>
+  `).join("");
+}
+
+async function loadAnalytics({ force = false } = {}) {
+  if (!analyticsView || !state.user) return;
+  if (!force && analyticsLoadedForRole === state.user.role) return;
+
+  if (analyticsRefreshBtn) analyticsRefreshBtn.disabled = true;
+  setAnalyticsStatus("Loading analytics…");
+
+  try {
+    const response = await fetch(PIX_ANALYTICS_ENDPOINT, { credentials: "same-origin" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) return handleSignedOut();
+      setAnalyticsStatus(payload.error || `Could not load analytics (${response.status}).`, "error");
+      return;
+    }
+
+    const role = payload.role || state.user.role || "writer";
+    const analytics = payload.analytics || {};
+    analyticsLoadedForRole = role;
+
+    if (analyticsTitle) analyticsTitle.innerHTML = role === "qa" ? "QA pipeline,<br>clearly measured." : "Your writing flow,<br>clearly measured.";
+    if (analyticsDesc) {
+      analyticsDesc.textContent = role === "qa"
+        ? "Track what the writers are sending, what is still waiting, and how quickly the QA desk is clearing approvals."
+        : "Track how many posts you have sent, how many QA has approved, and how much is still waiting in the queue.";
+    }
+    if (analyticsTrendNote) analyticsTrendNote.textContent = role === "qa" ? "Team-wide daily flow" : "Your daily flow";
+    if (analyticsWriterTitle) analyticsWriterTitle.textContent = role === "qa" ? "Top content writers" : "Your output snapshot";
+    if (analyticsQaTitle) analyticsQaTitle.textContent = role === "qa" ? "Top QA approvers" : "QA activity on your posts";
+
+    renderAnalyticsSummary(analytics.summary, role);
+    renderAnalyticsTrend(analytics.trend || []);
+    renderAnalyticsMeta(analytics.summary, role);
+
+    if (role === "qa") {
+      renderAnalyticsBoardRich(analyticsWriters, analytics.writers || [], {
+        empty: "No writer activity yet.",
+        valueLabel: "sent",
+        showRate: true,
+        valueField: "sent_count",
+        metaFormatter: (row) => `${formatCount(row.approved_count || 0)} approved · ${formatCount(row.pending_count || 0)} pending`,
+      });
+      renderAnalyticsBoardRich(analyticsQas, analytics.qas || [], {
+        empty: "No QA approvals yet.",
+        valueLabel: "approved",
+        showRate: false,
+        valueField: "approved_count",
+        metaFormatter: (row) => `Latest sign-off ${formatLibraryDate(row.latest_approval_at) || "recently"}`,
+      });
+    } else {
+      renderAnalyticsBoardRich(analyticsWriters, [{
+        user_name: state.user.displayName || state.user.username || "You",
+        sent_count: analytics.summary?.sent_count || 0,
+        approved_count: analytics.summary?.approved_count || 0,
+        pending_count: analytics.summary?.pending_count || 0,
+        approval_rate: analytics.summary?.approval_rate || 0,
+      }], {
+        empty: "No posts sent yet.",
+        valueLabel: "sent",
+        showRate: true,
+        valueField: "sent_count",
+        metaFormatter: (row) => `${formatCount(row.approved_count || 0)} approved · ${formatCount(row.pending_count || 0)} pending`,
+      });
+      renderAnalyticsBoardRich(analyticsQas, [{
+        user_name: "QA desk",
+        approved_count: analytics.summary?.approved_count || 0,
+        avg_approval_hours: analytics.summary?.avg_approval_hours || 0,
+      }], {
+        empty: "No QA action yet.",
+        valueLabel: "approved",
+        showRate: false,
+        valueField: "approved_count",
+        metaFormatter: (row) => `${Number(row.avg_approval_hours || 0).toFixed(1)} hrs average approval time`,
+      });
+    }
+
+    setAnalyticsStatus("");
+  } catch (err) {
+    setAnalyticsStatus(err.message || "Could not load analytics.", "error");
+  } finally {
+    if (analyticsRefreshBtn) analyticsRefreshBtn.disabled = false;
+  }
+}
+
 /* ═══════════════════════ View switcher (Poster | Article) ═══════════════════════ */
 
 const viewTabs = document.getElementById("view-tabs");
@@ -3724,12 +4004,14 @@ const reviewView = document.getElementById("review-view");
 
 function setView(view) {
   // Signed out, there is nothing to list.
-  if (view === "review" && !state.user) view = "poster";
+  if ((view === "review" || view === "analytics") && !state.user) view = "poster";
 
   document.body.classList.toggle("view-article", view === "article");
   document.body.classList.toggle("view-review", view === "review");
+  document.body.classList.toggle("view-analytics", view === "analytics");
   if (articleView) articleView.hidden = view !== "article";
   if (reviewView) reviewView.hidden = view !== "review";
+  if (analyticsView) analyticsView.hidden = view !== "analytics";
   if (viewTabs) {
     viewTabs.querySelectorAll(".view-tab").forEach(t => {
       const active = t.dataset.view === view;
@@ -3740,6 +4022,7 @@ function setView(view) {
   // The mobile edit sheet makes no sense away from the poster — drop it
   if (view !== "poster") setSheetOpen(false);
   if (view === "review") loadReviewQueue();
+  if (view === "analytics") loadAnalytics({ force: true });
 }
 
 if (viewTabs) {

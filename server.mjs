@@ -19,6 +19,7 @@ import {
   throttleCheck, throttleRecordFailure, throttleClear,
 } from "./lib/auth.js";
 import { handlePixRequest } from "./lib/pix-api.js";
+import { handlePixAnalyticsRequest } from "./lib/pix-analytics.js";
 import {
   configureStorage, isStorageConfigured, uploadMedia, pingStorage,
 } from "./lib/storage.js";
@@ -328,6 +329,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && req.url === "/api/dailymattr/publish") {
     await handleDailyMattrPublish(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/pix-analytics") {
+    await handlePixAnalytics(req, res);
     return;
   }
 
@@ -1382,6 +1388,12 @@ function readDailyMattrPublish(req) {
 
     req.pipe(bb);
   });
+}
+
+async function handlePixAnalytics(req, res) {
+  const user = await currentUser(req);
+  const result = await handlePixAnalyticsRequest({ user });
+  sendJson(res, result.status, result.body);
 }
 
 async function currentUser(req) {

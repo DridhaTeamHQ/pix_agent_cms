@@ -757,86 +757,84 @@
   </section>
 
   <section class="analytics-shell" id="analytics-view" hidden>
-    <div class="glass-panel analytics-panel">
-      <header class="analytics-intro">
-        <div>
-          <span class="analytics-kicker">Workflow Analytics</span>
-          <h1 id="analytics-title">Content flow,<br>at a glance.</h1>
-          <p class="desc" id="analytics-desc">See how many posts writers are sending and how quickly QA is clearing the queue.</p>
-        </div>
-        <button type="button" class="btn-ghost" id="analytics-refresh">Refresh</button>
-      </header>
+    <header class="analytics-intro">
+      <div>
+        <span class="analytics-kicker">Workflow Analytics</span>
+        <h1 id="analytics-title">Content flow,<br>at a glance.</h1>
+        <p class="desc" id="analytics-desc">See how many posts writers are sending and how quickly QA is clearing the queue.</p>
+      </div>
+      <button type="button" class="btn-ghost" id="analytics-refresh">Refresh</button>
+    </header>
 
-      <p class="status-text" id="analytics-status" role="status" aria-live="polite"></p>
+    <p class="status-text" id="analytics-status" role="status" aria-live="polite"></p>
 
-      <section class="analytics-hero">
-        <div class="analytics-stat-card accent-a">
-          <span class="analytics-stat-label">Sent</span>
-          <strong class="analytics-stat-value" data-analytics-value="sent">0</strong>
-          <span class="analytics-stat-sub" id="analytics-sent-sub">Posts saved in the workflow</span>
-        </div>
-        <div class="analytics-stat-card accent-b">
-          <span class="analytics-stat-label">Approved</span>
-          <strong class="analytics-stat-value" data-analytics-value="approved">0</strong>
-          <span class="analytics-stat-sub" id="analytics-approved-sub">Cleared by QA</span>
-        </div>
-        <div class="analytics-stat-card accent-c">
-          <span class="analytics-stat-label">Pending</span>
-          <strong class="analytics-stat-value" data-analytics-value="pending">0</strong>
-          <span class="analytics-stat-sub" id="analytics-pending-sub">Waiting in the queue</span>
-        </div>
-        <div class="analytics-stat-card accent-d">
-          <span class="analytics-stat-label">Approval Rate</span>
-          <strong class="analytics-stat-value" data-analytics-value="rate">0%</strong>
-          <span class="analytics-stat-sub" id="analytics-rate-sub">Share of posts approved</span>
-        </div>
-      </section>
+    <section class="analytics-hero">
+      <div class="analytics-stat-card accent-a">
+        <span class="analytics-stat-label">Sent</span>
+        <strong class="analytics-stat-value" data-analytics-value="sent">0</strong>
+        <span class="analytics-stat-sub" id="analytics-sent-sub">Posts saved in the workflow</span>
+      </div>
+      <div class="analytics-stat-card accent-b">
+        <span class="analytics-stat-label">Approved</span>
+        <strong class="analytics-stat-value" data-analytics-value="approved">0</strong>
+        <span class="analytics-stat-sub" id="analytics-approved-sub">Cleared by QA</span>
+      </div>
+      <div class="analytics-stat-card accent-c">
+        <span class="analytics-stat-label">Pending</span>
+        <strong class="analytics-stat-value" data-analytics-value="pending">0</strong>
+        <span class="analytics-stat-sub" id="analytics-pending-sub">Waiting in the queue</span>
+      </div>
+      <div class="analytics-stat-card accent-d">
+        <span class="analytics-stat-label">Approval Rate</span>
+        <strong class="analytics-stat-value" data-analytics-value="rate">0%</strong>
+        <span class="analytics-stat-sub" id="analytics-rate-sub">Share of posts approved</span>
+      </div>
+    </section>
 
-      <section class="analytics-grid">
-        <article class="analytics-card analytics-trend-card">
-          <div class="analytics-card-head">
-            <div>
-              <span class="analytics-card-label">Last 7 Days</span>
-              <h3>Sent vs approved</h3>
-            </div>
-            <span class="analytics-card-note" id="analytics-trend-note">Daily activity</span>
+    <section class="analytics-grid">
+      <article class="analytics-card analytics-trend-card">
+        <div class="analytics-card-head">
+          <div>
+            <span class="analytics-card-label">Last 7 Days</span>
+            <h3>Sent vs approved</h3>
           </div>
-          <div class="analytics-trend" id="analytics-trend"></div>
-        </article>
+          <span class="analytics-card-note" id="analytics-trend-note">Daily activity</span>
+        </div>
+        <div class="analytics-trend" id="analytics-trend"></div>
+      </article>
 
-        <article class="analytics-card analytics-meta-card">
-          <div class="analytics-card-head">
-            <div>
-              <span class="analytics-card-label">Workflow Health</span>
-              <h3 id="analytics-meta-title">Throughput</h3>
-            </div>
+      <article class="analytics-card analytics-meta-card">
+        <div class="analytics-card-head">
+          <div>
+            <span class="analytics-card-label">Workflow Health</span>
+            <h3 id="analytics-meta-title">Throughput</h3>
           </div>
-          <div class="analytics-metric-list" id="analytics-meta-list"></div>
-        </article>
-      </section>
+        </div>
+        <div class="analytics-metric-list" id="analytics-meta-list"></div>
+      </article>
+    </section>
 
-      <section class="analytics-grid analytics-board-grid">
-        <article class="analytics-card">
-          <div class="analytics-card-head">
-            <div>
-              <span class="analytics-card-label">Writers</span>
-              <h3 id="analytics-writer-title">Top content writers</h3>
-            </div>
+    <section class="analytics-grid analytics-board-grid">
+      <article class="analytics-card">
+        <div class="analytics-card-head">
+          <div>
+            <span class="analytics-card-label">Writers</span>
+            <h3 id="analytics-writer-title">Top content writers</h3>
           </div>
-          <div class="analytics-leaderboard" id="analytics-writers"></div>
-        </article>
+        </div>
+        <div class="analytics-leaderboard" id="analytics-writers"></div>
+      </article>
 
-        <article class="analytics-card">
-          <div class="analytics-card-head">
-            <div>
-              <span class="analytics-card-label">QA</span>
-              <h3 id="analytics-qa-title">QA approvals</h3>
-            </div>
+      <article class="analytics-card">
+        <div class="analytics-card-head">
+          <div>
+            <span class="analytics-card-label">QA</span>
+            <h3 id="analytics-qa-title">QA approvals</h3>
           </div>
-          <div class="analytics-leaderboard" id="analytics-qas"></div>
-        </article>
-      </section>
-    </div>
+        </div>
+        <div class="analytics-leaderboard" id="analytics-qas"></div>
+      </article>
+    </section>
   </section>
 
   <script src="./app.js"></script>

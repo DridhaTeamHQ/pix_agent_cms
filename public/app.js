@@ -519,14 +519,13 @@ async function initAuth() {
 /* ── DailyMattr publish panel ──
    Declared HERE, above applySession/setAuthState, because those two touch
    these bindings. They used to sit ~280 lines further down, which is a
-   temporal dead zone: `const`/`let` are not hoisted like `function`, so if the
-   startup session check resolved before module evaluation reached them, the
-   whole app died with "Cannot access 'dailymattrMetaLoaded' before
-   initialization" and hung on the auth-checking screen.
+   temporal dead zone: `const`/`let` are not hoisted like `function`, so the
+   app died with "Cannot access 'dailymattrMetaLoaded' before initialization"
+   and hung on the auth-checking screen.
 
-   That is a race, not a constant failure — it fires when /api/auth/me answers
-   quickly (localhost, warm cache) and hides on a slower connection, which is
-   exactly the kind of bug that reaches production looking intermittent. */
+   Not a race — initAuth()'s first statement is a SYNCHRONOUS setAuthState(),
+   so it ran during module evaluation and threw on every single load, before
+   any network call. See the note beside the state object. */
 const dailymattrRefreshBtn = document.getElementById("dailymattr-refresh");
 const dailymattrCategory = document.getElementById("dailymattr-category");
 const dailymattrState = document.getElementById("dailymattr-state");

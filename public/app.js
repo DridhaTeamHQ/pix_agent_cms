@@ -563,6 +563,8 @@ const DAILYMATTR_EXPORT_LONG_EDGES = [3840, 2560];
 // too so an oversized clip fails in a second with a useful message, rather
 // than after uploading tens of megabytes only to be cut off by busboy.
 const DAILYMATTR_MAX_MEDIA_BYTES = 64 * 1024 * 1024;
+// DailyMattr accepts five media items per Buzz post, images and video mixed.
+const DAILYMATTR_MAX_MEDIA_ITEMS = 5;
 const dailymattrDraftTouched = { content: false, keywords: false };
 let dailymattrMetaLoaded = false;
 let analyticsLoadedForRole = "";
@@ -4750,7 +4752,16 @@ async function renderTrimmedClip({ width, height, onStatus = () => {} } = {}) {
     form.append("video", state.videoFile, state.videoFile.name);
     onStatus(`Uploading and encoding ${duration.toFixed(1)}s… this can take a few minutes.`);
   } else {
-    form.append("url", state.videoUrl);
+    /* Encode from whatever the PREVIEW is playing, not from the original link.
+       trimStart/trimEnd are timestamps into the element on screen, so if that
+       element is showing the already-trimmed copy from our bucket (a reopened
+       post) while this sent the original URL, ffmpeg would cut those seconds
+       out of the wrong footage — and fail outright when the original is a
+       dead YouTube link or an expired signed URL. */
+    const previewSrc = state.storedVideoUrl && videoPreviewEl?.src === state.storedVideoUrl
+      ? state.storedVideoUrl
+      : state.videoUrl;
+    form.append("url", previewSrc);
     onStatus(`Downloading and encoding ${duration.toFixed(1)}s… this can take a few minutes.`);
   }
 
@@ -4956,6 +4967,61 @@ async function loadDailyMattrMeta({ force = false } = {}) {
   }
 }
 
+/* Get the slide-2 MP4 for publishing, by the cheapest route that is still
+   correct.
+
+   The bug this replaces: publish always called renderTrimmedClip(), which
+   re-encodes from state.videoUrl — the ORIGINAL source. On a reopened post
+   that URL is a YouTube link or an expiring signed URL, while the preview the
+   writer approved is playing the trimmed copy in our own bucket. So the
+   preview and the export were reading from two different places, and the
+   export lost: dead link, expired signature, or yt-dlp needed all over again.
+   The visible symptom is a post that publishes its images and silently drops
+   the video.
+
+   Order of preference:
+     1. the clip already rendered in this session
+     2. the trimmed copy in our bucket, when nothing has been edited since
+     3. a fresh encode — only when there is genuinely nothing to reuse
+
+   videoClipKey() covers trim range, mute, focus, caption and ratio, so any
+   edit invalidates 1 and 2 and correctly forces a re-render. */
+async function resolvePublishClip(onStatus = () => {}) {
+  const clipKey = videoClipKey();
+  if (!clipKey) return null;
+
+  if (state.renderedClip?.key === clipKey && state.renderedClip.blob) {
+    return state.renderedClip.blob;
+  }
+
+  if (state.storedVideoUrl && state.storedVideoFor === clipKey) {
+    try {
+      onStatus("Attaching the stored video…");
+      const res = await fetch(state.storedVideoUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.size > 1000) return blob;
+      }
+      // Fall through to a fresh encode rather than failing — the bucket object
+      // could have been pruned.
+      console.warn("stored clip unreadable, re-encoding");
+    } catch (err) {
+      console.warn("stored clip fetch failed, re-encoding:", err.message);
+    }
+  }
+
+  const videoReady = state.videoEl
+    && state.videoEl.readyState >= 2
+    && state.videoEl.videoWidth > 0
+    && state.trimEnd > state.trimStart;
+  if (!videoReady) return null;
+
+  onStatus("Rendering the video — this can take a few minutes…");
+  const blob = await renderTrimmedClip({ onStatus });
+  if (blob) state.renderedClip = { blob, key: clipKey };
+  return blob;
+}
+
 async function publishToDailyMattr() {
   if (!state.user) {
     setDailyMattrStatus("Sign in to publish.", "error");
@@ -5010,13 +5076,16 @@ async function publishToDailyMattr() {
       filename: `${slugify(state.headline || "pix-post")}.png`,
     }];
 
-    /* Text, video and uploaded files are independent media. Publish whichever
-       are available, in order, up to the external API's five-file limit. */
+    /* Media order is the publishing order — DailyMattr shows item 1 as the
+       cover. Poster first, then the text card, then the video, then anything
+       QA attached by hand. Images and video may be mixed freely.
+
+       The "For X" card is deliberately NOT published. It is a Twitter/X
+       crop with its own framing and safe areas, produced for manual posting
+       there; on the news app it would appear as a duplicate of the poster in
+       the wrong aspect. Only "pix" and "text" are ever exported here — if a
+       future card is added, it has to be opted in on this list explicitly. */
     const slug = slugify(state.headline || "pix-post");
-    const videoReady = state.videoEl
-      && state.videoEl.readyState >= 2
-      && state.videoEl.videoWidth > 0
-      && state.trimEnd > state.trimStart;
 
     if ((state.detailText || "").trim()) {
       const textSlide = await exportSlidePng("text", DAILYMATTR_EXPORT_LONG_EDGES);
@@ -5027,17 +5096,10 @@ async function publishToDailyMattr() {
       outboundMedia.push({ blob: textSlide.blob, filename: `${slug}-text.png` });
     }
 
-    if (videoReady) {
-      // The same trimmed, branded MP4 the Export button produces — caption and
-      // logo already burned in, cropped to the framing that was approved.
-      setDailyMattrStatus("Rendering slide 2 video — this can take a few minutes…");
-      const clip = await renderTrimmedClip({
-        onStatus: (msg) => setDailyMattrStatus(msg),
-      });
-      if (!clip) {
-        setDailyMattrStatus("Could not render the video.", "error");
-        return;
-      }
+    // Reuses the already-rendered clip or the bucket copy when either is
+    // current, so a reopened post does not re-download its original source.
+    const clip = await resolvePublishClip((msg) => setDailyMattrStatus(msg));
+    if (clip) {
       if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
         const mb = (n) => (n / 1048576).toFixed(1);
         setDailyMattrStatus(
@@ -5052,10 +5114,15 @@ async function publishToDailyMattr() {
     dailyMattrExtraFiles().forEach(({ file }) => {
       outboundMedia.push({ blob: file, filename: file.name });
     });
-    if (outboundMedia.length > 5) {
-      setDailyMattrStatus("This post has more than five media files. Remove one and try again.", "error");
+    if (outboundMedia.length > DAILYMATTR_MAX_MEDIA_ITEMS) {
+      setDailyMattrStatus(
+        `This post has ${outboundMedia.length} media files and DailyMattr accepts ${DAILYMATTR_MAX_MEDIA_ITEMS}. Remove one and try again.`,
+        "error",
+      );
       return;
     }
+    // Numbered by position, so the pages are always 1..N with no gaps no
+    // matter which of the optional items are present.
     outboundMedia.forEach(({ blob, filename }, index) => {
       form.append(`media_page_${index + 1}`, blob, filename);
     });
@@ -6167,6 +6234,12 @@ function restoreStoredVideo(video) {
         state.trimEnd = end;
       }
     }
+    // The bucket copy IS the current clip until somebody edits the trim,
+    // caption or framing. Stamping its key here lets the publish path reuse
+    // those bytes instead of re-encoding from state.videoUrl — which points at
+    // the ORIGINAL source (a YouTube link or an expiring signed URL) and is
+    // frequently gone, or needs yt-dlp all over again, by the time QA publishes.
+    state.storedVideoFor = videoClipKey();
     if (typeof syncTrimUI === "function") syncTrimUI();
     if (videoEditor) videoEditor.hidden = false;
     renderPoster();

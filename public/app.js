@@ -6178,9 +6178,19 @@ async function ensureMediaUploaded(onProgress = () => {}) {
    that changes the pixels. Same key means the stored clip is still correct,
    so Save neither re-encodes nor re-uploads. Null when there is no video. */
 function videoClipKey() {
+  /* storedVideoUrl is the third source and it used to be missing, which is
+     why reopened posts published their images and no video.
+
+     A video added by UPLOAD has no source URL — sourceKind "file", and the
+     File object itself does not survive a reload. So on reopening such a post
+     videoFile is null and videoUrl is "", both earlier branches fell through,
+     and this returned null. resolvePublishClip() bails immediately on a null
+     key, so the clip was skipped silently — even though the trimmed copy was
+     sitting in our bucket, playing in the preview the whole time. */
   const source = state.videoFile
     ? `file:${state.videoFile.name}:${state.videoFile.size}:${state.videoFile.lastModified}`
-    : (state.videoUrl ? `url:${state.videoUrl}` : "");
+    : (state.videoUrl ? `url:${state.videoUrl}`
+      : (state.storedVideoUrl ? `stored:${state.storedVideoUrl}` : ""));
   if (!source) return null;
   if (!(state.trimEnd > state.trimStart)) return null;
   return [

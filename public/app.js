@@ -6194,6 +6194,46 @@ async function openWriter(u) {
   }
 }
 
+/* Create the account. This handler was lost when the writers block was
+   rewritten — the form still opened, so the page looked complete, but
+   submitting it did nothing at all. */
+if (writerCreateForm) {
+  writerCreateForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const usernameEl = document.getElementById("writer-username");
+    const passwordEl = document.getElementById("writer-password");
+    const username = (usernameEl?.value || "").trim();
+    const displayName = (document.getElementById("writer-display")?.value || "").trim();
+    const password = passwordEl?.value || "";
+    const role = document.getElementById("writer-role")?.value || "writer";
+
+    if (!username) { setWritersStatus("Give the account a username.", "error"); usernameEl?.focus(); return; }
+    if (password.length < 6) { setWritersStatus("Passwords must be at least 6 characters.", "error"); passwordEl?.focus(); return; }
+
+    const btn = document.getElementById("writer-create-btn");
+    if (btn) btn.disabled = true;
+    setWritersStatus("Creating…");
+    try {
+      const { user } = await usersRequest("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password, role, displayName }),
+      });
+      writerCreateForm.reset();
+      writerCreateForm.hidden = true;
+      setWritersStatus(
+        `Created ${user.username}. Pass on the password you just set — it is stored hashed and cannot be read back.`,
+        "success",
+      );
+      await loadWriters();
+    } catch (err) {
+      setWritersStatus(err.message, "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+}
+
 document.getElementById("writers-add-toggle")?.addEventListener("click", () => {
   const form = document.getElementById("writer-create-form");
   if (!form) return;

@@ -1765,6 +1765,16 @@ body.view-analytics .edit-sheet {
   display: none !important;
 }
 
+/* Writers was missing from this list, so opening it left the poster editor on
+   screen and rendered the roster ~1700px BELOW it. Clicking the tab looked
+   like it did nothing — the page had simply not moved. */
+body.view-writers .app-shell,
+body.view-writers .fab,
+body.view-writers .sheet-backdrop,
+body.view-writers .edit-sheet {
+  display: none !important;
+}
+
 /* ─── QA review page ──────────────────────────────────────── */
 
 .review-shell {
@@ -4273,4 +4283,25 @@ select option[value=""] { color: var(--text-secondary); }
 
 @media (max-width: 420px) {
   .section-row { grid-template-columns: 1fr; }
+}
+
+/* ─── Writers header: title and the add button on one row ─────────
+   .review-head is display:block, so a button placed inside it stacked
+   underneath the title and stretched to the full 940px — it read as a banner,
+   not a control. Only the writers header becomes a flex row; the other views
+   have no header button and are left alone. */
+#writers-view .review-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+/* .btn-primary is width:100% globally, which is what stretched it. */
+#writers-view .writers-add-toggle {
+  width: auto;
+  flex: 0 0 auto;
+  margin-top: 6px;
+  padding: 10px 18px;
+  white-space: nowrap;
 }

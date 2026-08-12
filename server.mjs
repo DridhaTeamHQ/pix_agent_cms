@@ -1417,10 +1417,6 @@ function validateDailyMattrMedia(files) {
 
   const pages = files.map((file) => file.page);
   if (new Set(pages).size !== pages.length) return "Each media output can only be supplied once.";
-  if (pages[0] !== 1) return "media_page_1 must contain the headline poster.";
-  if (pages.some((page, index) => page !== index + 1)) {
-    return "Media outputs must be consecutive from media_page_1 through media_page_5.";
-  }
 
   const kindOf = (file) => {
     const type = String(file.contentType || "").toLowerCase();
@@ -1430,12 +1426,6 @@ function validateDailyMattrMedia(files) {
   };
   const kinds = files.map(kindOf);
   if (kinds.includes("unsupported")) return "Media must be JPG, PNG, WEBP, MP4 or MOV.";
-  if (kinds[0] !== "image") return "media_page_1 must be the headline poster image.";
-
-  const supportingKinds = new Set(kinds.slice(1));
-  if (supportingKinds.size > 1) {
-    return "Headline + video posts cannot include text images, and headline + text/image posts cannot include videos.";
-  }
   return "";
 }
 

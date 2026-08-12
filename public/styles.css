@@ -1575,16 +1575,6 @@ canvas.dragging {
   text-transform: uppercase;
 }
 
-.publish-mode.video {
-  color: var(--red);
-  border-color: color-mix(in srgb, var(--red) 38%, transparent);
-}
-
-.publish-mode.image {
-  color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 38%, transparent);
-}
-
 .publish-media-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -581,21 +581,10 @@ function dailyMattrExtraFiles() {
     .filter(({ file }) => file);
 }
 
-function hasDailyMattrVideoSource() {
-  return Boolean(state.videoFile || state.videoUrl || state.storedVideoUrl);
-}
-
-function getDailyMattrMediaMode() {
-  if (hasDailyMattrVideoSource()) return "video";
-  if ((state.detailText || "").trim()) return "image";
-  return "auto";
-}
-
-function syncDailyMattrMediaMode() {
+function syncDailyMattrMediaCount() {
   if (!dailymattrMediaMode) return;
-  const mode = getDailyMattrMediaMode();
-  dailymattrMediaMode.textContent = mode === "video" ? "Video mode" : mode === "image" ? "Image mode" : "Auto";
-  dailymattrMediaMode.className = `publish-mode${mode === "auto" ? "" : ` ${mode}`}`;
+  dailymattrMediaMode.textContent = `${dailyMattrExtraFiles().length} / 3 added`;
+  dailymattrMediaMode.className = "publish-mode";
 }
 
 function resetDailyMattrMediaSlot(item) {
@@ -603,34 +592,21 @@ function resetDailyMattrMediaSlot(item) {
   if (item.name) item.name.textContent = "Add image or video";
   if (item.card) item.card.classList.remove("has-file");
   if (item.remove) item.remove.hidden = true;
-  syncDailyMattrMediaMode();
+  syncDailyMattrMediaCount();
 }
 
 function resetDailyMattrExtraMedia() {
   dailymattrMediaInputs.forEach(resetDailyMattrMediaSlot);
 }
 
-function validateDailyMattrExtraFiles(mode = getDailyMattrMediaMode()) {
+function validateDailyMattrExtraFiles() {
   const extras = dailyMattrExtraFiles();
-  if (extras.some(({ slot }, index) => slot !== index + 3)) {
-    return "Fill additional outputs in order: output 3, then 4, then 5.";
-  }
-  const extraKinds = new Set(extras.map(({ file }) => isDailyMattrVideo(file) ? "video" : isDailyMattrImage(file) ? "image" : "unsupported"));
-  if (extraKinds.has("image") && extraKinds.has("video")) {
-    return "Choose either images or videos for the additional outputs, not both.";
-  }
   for (const { slot, file } of extras) {
     if (!isDailyMattrImage(file) && !isDailyMattrVideo(file)) {
       return `Output ${slot} must be a JPG, PNG, WEBP, MP4 or MOV file.`;
     }
     if (file.size > DAILYMATTR_MAX_MEDIA_BYTES) {
       return `Output ${slot} is ${(file.size / 1048576).toFixed(1)} MB. The limit is ${DAILYMATTR_MAX_MEDIA_BYTES / 1048576} MB per file.`;
-    }
-    if (mode === "video" && !isDailyMattrVideo(file)) {
-      return `Output ${slot} must be a video because this post uses headline + video.`;
-    }
-    if (mode === "image" && !isDailyMattrImage(file)) {
-      return `Output ${slot} must be an image because this post uses headline + text/image.`;
     }
   }
   return "";
@@ -4998,18 +4974,13 @@ async function publishToDailyMattr() {
   const stateId = dailymattrState?.value || "";
   const content = (dailymattrContent?.value || "").trim() || defaultDailyMattrContent();
   const keywords = (dailymattrKeywords?.value || "").trim() || inferDailyMattrKeywords();
-  const mediaMode = getDailyMattrMediaMode();
-  const mediaError = validateDailyMattrExtraFiles(mediaMode);
+  const mediaError = validateDailyMattrExtraFiles();
   if (!categoryId) {
     setDailyMattrStatus("Choose a DailyMattr category.", "error");
     return;
   }
   if (!content) {
     setDailyMattrStatus("Enter a caption before publishing.", "error");
-    return;
-  }
-  if (mediaMode === "auto") {
-    setDailyMattrStatus("Add either text or a video for output 2 before publishing.", "error");
     return;
   }
   if (mediaError) {
@@ -5035,30 +5006,28 @@ async function publishToDailyMattr() {
     if (keywords) form.append("keywords", keywords);
     if (stateId) form.append("state_id", stateId);
     const outboundMedia = [{
-      page: 1,
       blob: poster.blob,
       filename: `${slugify(state.headline || "pix-post")}.png`,
     }];
 
-    /* Slide 2 is EITHER a video or a text card — the preview numbers both "2"
-       because they are alternatives, never two separate pages. So page 2 has
-       to follow whichever one the editor is actually showing.
-
-       This used to branch on `detailText` being non-empty, which was wrong in
-       both directions: a video post published no page 2 at all, and a video
-       post that still carried leftover paragraph text published the TEXT card
-       — silently shipping a slide the writer never chose. */
+    /* Text, video and uploaded files are independent media. Publish whichever
+       are available, in order, up to the external API's five-file limit. */
     const slug = slugify(state.headline || "pix-post");
     const videoReady = state.videoEl
       && state.videoEl.readyState >= 2
       && state.videoEl.videoWidth > 0
       && state.trimEnd > state.trimStart;
 
-    if (mediaMode === "video") {
-      if (!videoReady) {
-        setDailyMattrStatus("Wait for the video preview to finish loading and choose a valid trim range.", "error");
+    if ((state.detailText || "").trim()) {
+      const textSlide = await exportSlidePng("text", DAILYMATTR_EXPORT_LONG_EDGES);
+      if (!textSlide?.blob) {
+        setDailyMattrStatus("Could not render the text card.", "error");
         return;
       }
+      outboundMedia.push({ blob: textSlide.blob, filename: `${slug}-text.png` });
+    }
+
+    if (videoReady) {
       // The same trimmed, branded MP4 the Export button produces — caption and
       // logo already burned in, cropped to the framing that was approved.
       setDailyMattrStatus("Rendering slide 2 video — this can take a few minutes…");
@@ -5066,7 +5035,7 @@ async function publishToDailyMattr() {
         onStatus: (msg) => setDailyMattrStatus(msg),
       });
       if (!clip) {
-        setDailyMattrStatus("Could not render the video for output 2.", "error");
+        setDailyMattrStatus("Could not render the video.", "error");
         return;
       }
       if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
@@ -5077,25 +5046,18 @@ async function publishToDailyMattr() {
         );
         return;
       }
-      outboundMedia.push({ page: 2, blob: clip, filename: `${slug}-slide2.mp4` });
-    } else if (mediaMode === "image" && (state.detailText || "").trim()) {
-      const textSlide = await exportSlidePng("text", DAILYMATTR_EXPORT_LONG_EDGES);
-      if (!textSlide?.blob) {
-        setDailyMattrStatus("Could not render the text card for output 2.", "error");
-        return;
-      }
-      outboundMedia.push({ page: 2, blob: textSlide.blob, filename: `${slug}-text.png` });
+      outboundMedia.push({ blob: clip, filename: `${slug}-video.mp4` });
     }
 
-    dailyMattrExtraFiles().forEach(({ slot, file }) => {
-      outboundMedia.push({ page: slot, blob: file, filename: file.name });
+    dailyMattrExtraFiles().forEach(({ file }) => {
+      outboundMedia.push({ blob: file, filename: file.name });
     });
     if (outboundMedia.length > 5) {
       setDailyMattrStatus("This post has more than five media files. Remove one and try again.", "error");
       return;
     }
-    outboundMedia.forEach(({ page, blob, filename }) => {
-      form.append(`media_page_${page}`, blob, filename);
+    outboundMedia.forEach(({ blob, filename }, index) => {
+      form.append(`media_page_${index + 1}`, blob, filename);
     });
 
     setDailyMattrStatus("Sending to DailyMattr…");
@@ -5140,7 +5102,7 @@ dailymattrMediaInputs.forEach((item) => {
       resetDailyMattrMediaSlot(item);
       return;
     }
-    const error = validateDailyMattrExtraFiles(getDailyMattrMediaMode());
+    const error = validateDailyMattrExtraFiles();
     if (error) {
       resetDailyMattrMediaSlot(item);
       setDailyMattrStatus(error, "error");
@@ -5149,7 +5111,7 @@ dailymattrMediaInputs.forEach((item) => {
     if (item.name) item.name.textContent = file.name;
     if (item.card) item.card.classList.add("has-file");
     if (item.remove) item.remove.hidden = false;
-    syncDailyMattrMediaMode();
+    syncDailyMattrMediaCount();
     setDailyMattrStatus(`Output ${item.slot} ready.`, "success");
   });
   item.remove?.addEventListener("click", () => resetDailyMattrMediaSlot(item));
@@ -6057,7 +6019,7 @@ function refreshSaveIndicator() {
 setInterval(() => {
   refreshSaveIndicator();
   syncDailyMattrDraft();
-  syncDailyMattrMediaMode();
+  syncDailyMattrMediaCount();
 }, 800);
 
 /* ── Uploaded media ─────────────────────────────────────────────────────────

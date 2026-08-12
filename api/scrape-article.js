@@ -6,6 +6,9 @@ import {
   resolveMaybeRelative,
   upgradeImageToHighestQuality,
 } from "../lib/scrape.js";
+import {
+  ScrapeValidationError, fetchPublicHtml, parseScrapeArticleResult, parseScrapeRequest,
+} from "../lib/scrape-security.js";
 
 const TEXT_DETAIL_CHAR_LIMIT = 500;
 
@@ -20,25 +23,8 @@ export default async function handler(req, res) {
 
   try {
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-    const targetUrl = body?.url;
-
-    if (!targetUrl) {
-      res.status(400).json({ error: "A URL is required." });
-      return;
-    }
-
-    const parsedUrl = new URL(targetUrl);
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      res.status(400).json({ error: "Only http and https URLs are supported." });
-      return;
-    }
-
-    const response = await fetch(parsedUrl, { headers: { "user-agent": USER_AGENT } });
-    if (!response.ok) {
-      res.status(502).json({ error: `Source returned ${response.status}.` });
-      return;
-    }
-    const html = await response.text();
+    const { url: targetUrl } = parseScrapeRequest(body);
+    const { html, finalUrl } = await fetchPublicHtml(targetUrl, { userAgent: USER_AGENT });
 
     // Title: og:title > twitter:title > <title> tag
     let title = extractMetaContent(html, ["og:title", "twitter:title"]);
@@ -52,7 +38,7 @@ export default async function handler(req, res) {
     // Image: og:image:secure_url > og:image > twitter:image
     let image = extractMetaContent(html, ["og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"]);
     if (image) {
-      image = resolveMaybeRelative(image, targetUrl);
+      image = resolveMaybeRelative(image, finalUrl);
       image = upgradeImageToHighestQuality(image);
     }
 
@@ -69,17 +55,19 @@ export default async function handler(req, res) {
     // DHARMA PRODUCTIONS SEALS" → sports photos for a Bollywood story.
     const imageQuery = await buildImageSearchQuery(title, articleText);
 
-    res.status(200).json({
+    const result = parseScrapeArticleResult({
       title: cleanupText(title),
       image: image || null,
       imageProxy: image ? `/api/image?url=${encodeURIComponent(image)}` : null,
-      sourceUrl: targetUrl,
+      sourceUrl: finalUrl,
       articleText,
       detailText: limitCharacters(articleText || metaDescription || title, TEXT_DETAIL_CHAR_LIMIT),
       imageQuery,
     });
+    res.status(200).json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message || "Article scrape failed." });
+    const status = err instanceof ScrapeValidationError ? err.status : 500;
+    res.status(status).json({ error: err.message || "Article scrape failed." });
   }
 }
 

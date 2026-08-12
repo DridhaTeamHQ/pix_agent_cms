@@ -5,6 +5,7 @@
 
 import { USER_AGENT, setCors, handlePreflight } from "../lib/http.js";
 import { stripTags, cleanupText } from "../lib/scrape.js";
+import { fetchPublicHtml } from "../lib/scrape-security.js";
 
 export const EDITORIAL_SYSTEM_PROMPT = [
   "You are a journalist and content writer for Shortly (@SHORTLY__NEWS), a Twitter/X-style news app. Given a source headline and, when available, the article text, produce a news package in STRICT JSON with this exact shape:",
@@ -193,8 +194,8 @@ export default async function handler(req, res) {
     let articleText = "";
     if (sourceUrl) {
       try {
-        const r = await fetch(sourceUrl, { headers: { "user-agent": USER_AGENT } });
-        if (r.ok) articleText = extractArticleText(await r.text());
+        const { html } = await fetchPublicHtml(sourceUrl, { userAgent: USER_AGENT });
+        articleText = extractArticleText(html);
       } catch { /* grounding is best-effort */ }
     }
 

@@ -546,6 +546,14 @@ const dailymattrKeywords = document.getElementById("dailymattr-keywords");
 const dailymattrContent = document.getElementById("dailymattr-content");
 const dailymattrPublishBtn = document.getElementById("dailymattr-publish-btn");
 const dailymattrStatus = document.getElementById("dailymattr-status");
+const dailymattrMediaMode = document.getElementById("dailymattr-media-mode");
+const dailymattrMediaInputs = [3, 4, 5].map((slot) => ({
+  slot,
+  input: document.getElementById(`dailymattr-media-${slot}`),
+  name: document.getElementById(`dailymattr-media-name-${slot}`),
+  card: document.querySelector(`[data-media-slot="${slot}"]`),
+  remove: document.querySelector(`[data-remove-media="${slot}"]`),
+}));
 
 const DAILYMATTR_META_ENDPOINT = "/api/dailymattr/meta";
 const DAILYMATTR_PUBLISH_ENDPOINT = "/api/dailymattr/publish";
@@ -558,6 +566,75 @@ const DAILYMATTR_MAX_MEDIA_BYTES = 64 * 1024 * 1024;
 const dailymattrDraftTouched = { content: false, keywords: false };
 let dailymattrMetaLoaded = false;
 let analyticsLoadedForRole = "";
+
+function isDailyMattrVideo(file) {
+  return Boolean(file && /^video\/(mp4|quicktime)$/i.test(file.type));
+}
+
+function isDailyMattrImage(file) {
+  return Boolean(file && /^image\/(jpeg|png|webp)$/i.test(file.type));
+}
+
+function dailyMattrExtraFiles() {
+  return dailymattrMediaInputs
+    .map(({ slot, input }) => ({ slot, file: input?.files?.[0] || null }))
+    .filter(({ file }) => file);
+}
+
+function hasDailyMattrVideoSource() {
+  return Boolean(state.videoFile || state.videoUrl || state.storedVideoUrl);
+}
+
+function getDailyMattrMediaMode() {
+  if (hasDailyMattrVideoSource()) return "video";
+  if ((state.detailText || "").trim()) return "image";
+  return "auto";
+}
+
+function syncDailyMattrMediaMode() {
+  if (!dailymattrMediaMode) return;
+  const mode = getDailyMattrMediaMode();
+  dailymattrMediaMode.textContent = mode === "video" ? "Video mode" : mode === "image" ? "Image mode" : "Auto";
+  dailymattrMediaMode.className = `publish-mode${mode === "auto" ? "" : ` ${mode}`}`;
+}
+
+function resetDailyMattrMediaSlot(item) {
+  if (item.input) item.input.value = "";
+  if (item.name) item.name.textContent = "Add image or video";
+  if (item.card) item.card.classList.remove("has-file");
+  if (item.remove) item.remove.hidden = true;
+  syncDailyMattrMediaMode();
+}
+
+function resetDailyMattrExtraMedia() {
+  dailymattrMediaInputs.forEach(resetDailyMattrMediaSlot);
+}
+
+function validateDailyMattrExtraFiles(mode = getDailyMattrMediaMode()) {
+  const extras = dailyMattrExtraFiles();
+  if (extras.some(({ slot }, index) => slot !== index + 3)) {
+    return "Fill additional outputs in order: output 3, then 4, then 5.";
+  }
+  const extraKinds = new Set(extras.map(({ file }) => isDailyMattrVideo(file) ? "video" : isDailyMattrImage(file) ? "image" : "unsupported"));
+  if (extraKinds.has("image") && extraKinds.has("video")) {
+    return "Choose either images or videos for the additional outputs, not both.";
+  }
+  for (const { slot, file } of extras) {
+    if (!isDailyMattrImage(file) && !isDailyMattrVideo(file)) {
+      return `Output ${slot} must be a JPG, PNG, WEBP, MP4 or MOV file.`;
+    }
+    if (file.size > DAILYMATTR_MAX_MEDIA_BYTES) {
+      return `Output ${slot} is ${(file.size / 1048576).toFixed(1)} MB. The limit is ${DAILYMATTR_MAX_MEDIA_BYTES / 1048576} MB per file.`;
+    }
+    if (mode === "video" && !isDailyMattrVideo(file)) {
+      return `Output ${slot} must be a video because this post uses headline + video.`;
+    }
+    if (mode === "image" && !isDailyMattrImage(file)) {
+      return `Output ${slot} must be an image because this post uses headline + text/image.`;
+    }
+  }
+  return "";
+}
 
 function applySession(user) {
   state.user = user || null;
@@ -4921,12 +4998,22 @@ async function publishToDailyMattr() {
   const stateId = dailymattrState?.value || "";
   const content = (dailymattrContent?.value || "").trim() || defaultDailyMattrContent();
   const keywords = (dailymattrKeywords?.value || "").trim() || inferDailyMattrKeywords();
+  const mediaMode = getDailyMattrMediaMode();
+  const mediaError = validateDailyMattrExtraFiles(mediaMode);
   if (!categoryId) {
     setDailyMattrStatus("Choose a DailyMattr category.", "error");
     return;
   }
   if (!content) {
     setDailyMattrStatus("Enter a caption before publishing.", "error");
+    return;
+  }
+  if (mediaMode === "auto") {
+    setDailyMattrStatus("Add either text or a video for output 2 before publishing.", "error");
+    return;
+  }
+  if (mediaError) {
+    setDailyMattrStatus(mediaError, "error");
     return;
   }
 
@@ -4947,7 +5034,11 @@ async function publishToDailyMattr() {
     form.append("category_id", categoryId);
     if (keywords) form.append("keywords", keywords);
     if (stateId) form.append("state_id", stateId);
-    form.append("media_page_1", poster.blob, `${slugify(state.headline || "pix-post")}.png`);
+    const outboundMedia = [{
+      page: 1,
+      blob: poster.blob,
+      filename: `${slugify(state.headline || "pix-post")}.png`,
+    }];
 
     /* Slide 2 is EITHER a video or a text card — the preview numbers both "2"
        because they are alternatives, never two separate pages. So page 2 has
@@ -4963,30 +5054,49 @@ async function publishToDailyMattr() {
       && state.videoEl.videoWidth > 0
       && state.trimEnd > state.trimStart;
 
-    if (videoReady) {
+    if (mediaMode === "video") {
+      if (!videoReady) {
+        setDailyMattrStatus("Wait for the video preview to finish loading and choose a valid trim range.", "error");
+        return;
+      }
       // The same trimmed, branded MP4 the Export button produces — caption and
       // logo already burned in, cropped to the framing that was approved.
       setDailyMattrStatus("Rendering slide 2 video — this can take a few minutes…");
       const clip = await renderTrimmedClip({
         onStatus: (msg) => setDailyMattrStatus(msg),
       });
-      if (clip) {
-        if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
-          const mb = (n) => (n / 1048576).toFixed(1);
-          setDailyMattrStatus(
-            `The clip is ${mb(clip.size)} MB, over the ${mb(DAILYMATTR_MAX_MEDIA_BYTES)} MB limit. Shorten the trim range and try again.`,
-            "error",
-          );
-          return;
-        }
-        form.append("media_page_2", clip, `${slug}-slide2.mp4`);
+      if (!clip) {
+        setDailyMattrStatus("Could not render the video for output 2.", "error");
+        return;
       }
-    } else if ((state.detailText || "").trim()) {
+      if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
+        const mb = (n) => (n / 1048576).toFixed(1);
+        setDailyMattrStatus(
+          `The clip is ${mb(clip.size)} MB, over the ${mb(DAILYMATTR_MAX_MEDIA_BYTES)} MB limit. Shorten the trim range and try again.`,
+          "error",
+        );
+        return;
+      }
+      outboundMedia.push({ page: 2, blob: clip, filename: `${slug}-slide2.mp4` });
+    } else if (mediaMode === "image" && (state.detailText || "").trim()) {
       const textSlide = await exportSlidePng("text", DAILYMATTR_EXPORT_LONG_EDGES);
-      if (textSlide?.blob) {
-        form.append("media_page_2", textSlide.blob, `${slug}-text.png`);
+      if (!textSlide?.blob) {
+        setDailyMattrStatus("Could not render the text card for output 2.", "error");
+        return;
       }
+      outboundMedia.push({ page: 2, blob: textSlide.blob, filename: `${slug}-text.png` });
     }
+
+    dailyMattrExtraFiles().forEach(({ slot, file }) => {
+      outboundMedia.push({ page: slot, blob: file, filename: file.name });
+    });
+    if (outboundMedia.length > 5) {
+      setDailyMattrStatus("This post has more than five media files. Remove one and try again.", "error");
+      return;
+    }
+    outboundMedia.forEach(({ page, blob, filename }) => {
+      form.append(`media_page_${page}`, blob, filename);
+    });
 
     setDailyMattrStatus("Sending to DailyMattr…");
     const response = await fetch(DAILYMATTR_PUBLISH_ENDPOINT, {
@@ -5023,6 +5133,27 @@ if (dailymattrContent) {
 if (dailymattrKeywords) {
   dailymattrKeywords.addEventListener("input", () => { dailymattrDraftTouched.keywords = true; });
 }
+dailymattrMediaInputs.forEach((item) => {
+  item.input?.addEventListener("change", () => {
+    const file = item.input.files?.[0] || null;
+    if (!file) {
+      resetDailyMattrMediaSlot(item);
+      return;
+    }
+    const error = validateDailyMattrExtraFiles(getDailyMattrMediaMode());
+    if (error) {
+      resetDailyMattrMediaSlot(item);
+      setDailyMattrStatus(error, "error");
+      return;
+    }
+    if (item.name) item.name.textContent = file.name;
+    if (item.card) item.card.classList.add("has-file");
+    if (item.remove) item.remove.hidden = false;
+    syncDailyMattrMediaMode();
+    setDailyMattrStatus(`Output ${item.slot} ready.`, "success");
+  });
+  item.remove?.addEventListener("click", () => resetDailyMattrMediaSlot(item));
+});
 
 (() => {
   const rail = document.getElementById("preview-rail");
@@ -5247,6 +5378,7 @@ function startNewPix() {
   state.sourceImageUrl = null;
   dailymattrDraftTouched.content = false;
   dailymattrDraftTouched.keywords = false;
+  resetDailyMattrExtraMedia();
   syncDailyMattrDraft({ force: true });
 }
 
@@ -5510,6 +5642,8 @@ async function openSavedPost(id) {
 async function loadPixIntoEditor(post) {
   if (!post) return;
   const design = post.design || {};
+
+  resetDailyMattrExtraMedia();
 
   state.pixId = post.id;
   state.headline = post.headline || post.ai_headline || post.scraped_title || "";
@@ -5923,6 +6057,7 @@ function refreshSaveIndicator() {
 setInterval(() => {
   refreshSaveIndicator();
   syncDailyMattrDraft();
+  syncDailyMattrMediaMode();
 }, 800);
 
 /* ── Uploaded media ─────────────────────────────────────────────────────────

@@ -637,8 +637,42 @@
           <textarea id="dailymattr-content" rows="3" placeholder="This is sent as content_en to DailyMattr."></textarea>
         </label>
 
+        <div class="publish-media" aria-labelledby="dailymattr-media-title">
+          <div class="publish-media-head">
+            <div>
+              <span class="field-label" id="dailymattr-media-title">Additional media outputs</span>
+              <p class="helper-text">Add outputs 3, 4 and 5. A post can contain images or videos, never both.</p>
+            </div>
+            <span class="publish-mode" id="dailymattr-media-mode">Auto</span>
+          </div>
+
+          <div class="publish-media-grid">
+            <div class="publish-media-slot" data-media-slot="3">
+              <span class="publish-media-number">03</span>
+              <span class="publish-media-name" id="dailymattr-media-name-3">Add image or video</span>
+              <label class="btn-ghost publish-media-pick" for="dailymattr-media-3">Choose file</label>
+              <input type="file" id="dailymattr-media-3" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime" hidden />
+              <button type="button" class="publish-media-remove" data-remove-media="3" aria-label="Remove media output 3" hidden>&times;</button>
+            </div>
+            <div class="publish-media-slot" data-media-slot="4">
+              <span class="publish-media-number">04</span>
+              <span class="publish-media-name" id="dailymattr-media-name-4">Add image or video</span>
+              <label class="btn-ghost publish-media-pick" for="dailymattr-media-4">Choose file</label>
+              <input type="file" id="dailymattr-media-4" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime" hidden />
+              <button type="button" class="publish-media-remove" data-remove-media="4" aria-label="Remove media output 4" hidden>&times;</button>
+            </div>
+            <div class="publish-media-slot" data-media-slot="5">
+              <span class="publish-media-number">05</span>
+              <span class="publish-media-name" id="dailymattr-media-name-5">Add image or video</span>
+              <label class="btn-ghost publish-media-pick" for="dailymattr-media-5">Choose file</label>
+              <input type="file" id="dailymattr-media-5" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime" hidden />
+              <button type="button" class="publish-media-remove" data-remove-media="5" aria-label="Remove media output 5" hidden>&times;</button>
+            </div>
+          </div>
+        </div>
+
         <div class="publish-actions">
-          <p class="helper-text publish-help">Publishes the poster as page 1 and the text slide as page 2 when paragraph copy exists.</p>
+          <p class="helper-text publish-help">Image mode sends the headline poster, text card and added images. Video mode sends the headline poster followed only by videos. Up to five files are sent as media_page_1 through media_page_5.</p>
           <button type="button" class="btn-primary publish-submit" id="dailymattr-publish-btn">Publish to DailyMattr</button>
         </div>
 

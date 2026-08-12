@@ -26,6 +26,9 @@ import {
 import {
   fetchDailyMattrMeta, getDailyMattrConfig, publishDailyMattrBuzzContent,
 } from "./lib/dailymattr.js";
+import {
+  ScrapeValidationError, fetchPublicHtml, fetchPublicImage, parseScrapeArticleResult, parseScrapeRequest,
+} from "./lib/scrape-security.js";
 
 const root = join(process.cwd(), "public");
 const port = Number(process.env.PORT || 3000);
@@ -1315,7 +1318,12 @@ async function handleDailyMattrPublish(req, res) {
     return;
   }
   if (!payload.files.length) {
-    sendJson(res, 400, { error: "At least one slide image is required." });
+    sendJson(res, 400, { error: "At least one media file is required." });
+    return;
+  }
+  const mediaValidationError = validateDailyMattrMedia(payload.files);
+  if (mediaValidationError) {
+    sendJson(res, 400, { error: mediaValidationError });
     return;
   }
 
@@ -1335,7 +1343,7 @@ function readDailyMattrPublish(req) {
     try {
       bb = Busboy({
         headers: req.headers,
-        limits: { files: 4, fileSize: MAX_DAILYMATTR_MEDIA_BYTES, fields: 12 },
+        limits: { files: 5, fileSize: MAX_DAILYMATTR_MEDIA_BYTES, fields: 12 },
       });
     } catch (err) {
       reject(new Error("Malformed upload: " + err.message));
@@ -1345,13 +1353,17 @@ function readDailyMattrPublish(req) {
     const fields = {};
     const files = [];
     let tooBig = false;
+    let tooMany = false;
+    let invalidMediaField = false;
 
     bb.on("field", (name, value) => {
       fields[name] = String(value || "").trim();
     });
 
     bb.on("file", (name, stream, info) => {
-      if (!/^media_page_\d+$/i.test(name)) {
+      const pageMatch = /^media_page_([1-5])$/i.exec(name);
+      if (!pageMatch) {
+        if (/^media_page_/i.test(name)) invalidMediaField = true;
         stream.resume();
         return;
       }
@@ -1364,6 +1376,7 @@ function readDailyMattrPublish(req) {
         if (!buffer.length) return;
         files.push({
           fieldName: name,
+          page: Number(pageMatch[1]),
           filename: info.filename || `${name}${extensionFor(info.mimeType, info.filename)}`,
           contentType: info.mimeType || "application/octet-stream",
           buffer,
@@ -1371,10 +1384,19 @@ function readDailyMattrPublish(req) {
       });
     });
 
+    bb.on("filesLimit", () => { tooMany = true; });
     bb.on("error", reject);
     bb.on("close", () => {
       if (tooBig) {
         reject(new Error(`A DailyMattr media file exceeds the ${Math.round(MAX_DAILYMATTR_MEDIA_BYTES / 1048576)} MB limit.`));
+        return;
+      }
+      if (tooMany) {
+        reject(new Error("A maximum of five media files can be published."));
+        return;
+      }
+      if (invalidMediaField) {
+        reject(new Error("Media fields must be media_page_1 through media_page_5."));
         return;
       }
       resolve({
@@ -1382,12 +1404,39 @@ function readDailyMattrPublish(req) {
         categoryId: fields.category_id || "",
         keywords: fields.keywords || "",
         stateId: fields.state_id || "",
-        files,
+        files: files.sort((a, b) => a.page - b.page),
       });
     });
 
     req.pipe(bb);
   });
+}
+
+function validateDailyMattrMedia(files) {
+  if (files.length > 5) return "A maximum of five media files can be published.";
+
+  const pages = files.map((file) => file.page);
+  if (new Set(pages).size !== pages.length) return "Each media output can only be supplied once.";
+  if (pages[0] !== 1) return "media_page_1 must contain the headline poster.";
+  if (pages.some((page, index) => page !== index + 1)) {
+    return "Media outputs must be consecutive from media_page_1 through media_page_5.";
+  }
+
+  const kindOf = (file) => {
+    const type = String(file.contentType || "").toLowerCase();
+    if (/^image\/(jpeg|png|webp)$/.test(type)) return "image";
+    if (/^video\/(mp4|quicktime)$/.test(type)) return "video";
+    return "unsupported";
+  };
+  const kinds = files.map(kindOf);
+  if (kinds.includes("unsupported")) return "Media must be JPG, PNG, WEBP, MP4 or MOV.";
+  if (kinds[0] !== "image") return "media_page_1 must be the headline poster image.";
+
+  const supportingKinds = new Set(kinds.slice(1));
+  if (supportingKinds.size > 1) {
+    return "Headline + video posts cannot include text images, and headline + text/image posts cannot include videos.";
+  }
+  return "";
 }
 
 async function handlePixAnalytics(req, res) {
@@ -1817,58 +1866,20 @@ async function tryDuckDuckGoImages(query, max) {
 
 async function handleScrape(req, res) {
   try {
-    const body = await readJson(req);
-    const targetUrl = body?.url;
-
-    if (!targetUrl) {
-      sendJson(res, 400, { error: "A URL is required." });
-      return;
-    }
-
-    const parsedUrl = new URL(targetUrl);
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      sendJson(res, 400, { error: "Only http and https URLs are supported." });
-      return;
-    }
-
-    const response = await fetch(parsedUrl, { headers: { "user-agent": USER_AGENT } });
-    if (!response.ok) {
-      sendJson(res, 502, { error: `Source returned ${response.status}.` });
-      return;
-    }
-
-    const html = await response.text();
-    const candidates = extractItems(html, parsedUrl);
+    const { url: targetUrl } = parseScrapeRequest(await readJson(req, { limit: 10_000 }));
+    const { html, finalUrl } = await fetchPublicHtml(targetUrl, { userAgent: USER_AGENT });
+    const candidates = extractItems(html, new URL(finalUrl));
     const items = await enrichItems(candidates);
     sendJson(res, 200, { items });
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "Scrape failed." });
+    sendScrapeError(res, error, "Scrape failed.");
   }
 }
 
 async function handleScrapeArticle(req, res) {
   try {
-    const body = await readJson(req);
-    const targetUrl = body?.url;
-
-    if (!targetUrl) {
-      sendJson(res, 400, { error: "A URL is required." });
-      return;
-    }
-
-    const parsedUrl = new URL(targetUrl);
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      sendJson(res, 400, { error: "Only http and https URLs are supported." });
-      return;
-    }
-
-    const response = await fetch(parsedUrl, { headers: { "user-agent": USER_AGENT } });
-    if (!response.ok) {
-      sendJson(res, 502, { error: `Source returned ${response.status}.` });
-      return;
-    }
-
-    const html = await response.text();
+    const { url: targetUrl } = parseScrapeRequest(await readJson(req, { limit: 10_000 }));
+    const { html, finalUrl } = await fetchPublicHtml(targetUrl, { userAgent: USER_AGENT });
 
     // Extract title: og:title > twitter:title > <title> tag
     let title = extractMetaContent(html, ["og:title", "twitter:title"]);
@@ -1884,7 +1895,7 @@ async function handleScrapeArticle(req, res) {
     // Extract image: try secure_url first, then og:image, twitter:image
     let image = extractMetaContent(html, ["og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"]);
     if (image) {
-      image = resolveMaybeRelative(image, targetUrl);
+      image = resolveMaybeRelative(image, finalUrl);
       image = upgradeImageToHighestQuality(image);
     }
 
@@ -1901,18 +1912,24 @@ async function handleScrapeArticle(req, res) {
     // DHARMA PRODUCTIONS SEALS" → sports photos for a Bollywood story.
     const imageQuery = await buildImageSearchQuery(title, articleText);
 
-    sendJson(res, 200, {
+    const result = parseScrapeArticleResult({
       title: cleanupText(title),
       image: image || null,
       imageProxy: image ? `/api/image?url=${encodeURIComponent(image)}` : null,
-      sourceUrl: targetUrl,
+      sourceUrl: finalUrl,
       articleText,
       detailText: limitCharacters(articleText || metaDescription || title, TEXT_DETAIL_CHAR_LIMIT),
       imageQuery,
     });
+    sendJson(res, 200, result);
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "Article scrape failed." });
+    sendScrapeError(res, error, "Article scrape failed.");
   }
+}
+
+function sendScrapeError(res, error, fallback) {
+  const status = error instanceof ScrapeValidationError ? error.status : 500;
+  sendJson(res, status, { error: error?.message || fallback });
 }
 
 /* Ask gpt-4o-mini for a 3-6 word image-search query: the names/entities a
@@ -2009,20 +2026,7 @@ async function handleImageProxy(req, res) {
       return;
     }
 
-    const parsed = new URL(target);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      sendJson(res, 400, { error: "Only http and https image URLs are supported." });
-      return;
-    }
-
-    const response = await fetch(parsed, { headers: { "user-agent": USER_AGENT } });
-    if (!response.ok) {
-      sendJson(res, 502, { error: `Image source returned ${response.status}.` });
-      return;
-    }
-
-    const contentType = response.headers.get("content-type") || "application/octet-stream";
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const { buffer, contentType } = await fetchPublicImage(target, { userAgent: USER_AGENT });
     res.writeHead(200, {
       "Content-Type": contentType,
       "Cache-Control": "no-store",
@@ -2030,7 +2034,8 @@ async function handleImageProxy(req, res) {
     });
     res.end(buffer);
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "Image proxy failed." });
+    const status = error instanceof ScrapeValidationError ? error.status : 500;
+    sendJson(res, status, { error: error.message || "Image proxy failed." });
   }
 }
 
@@ -2084,17 +2089,14 @@ async function enrichItems(items) {
   for (const item of items) {
     const next = { ...item };
     try {
-      const response = await fetch(item.url, { headers: { "user-agent": USER_AGENT } });
-      if (response.ok) {
-        const html = await response.text();
-        const metaTitle = extractMetaContent(html, ["og:title", "twitter:title"]);
-        const metaImage = extractMetaContent(html, ["og:image", "twitter:image", "twitter:image:src"]);
-        if (metaTitle && looksLikeHeadline(metaTitle)) {
-          next.title = trimTitle(cleanupText(metaTitle));
-        }
-        if (metaImage) {
-          next.image = resolveMaybeRelative(metaImage, item.url);
-        }
+      const { html, finalUrl } = await fetchPublicHtml(item.url, { userAgent: USER_AGENT });
+      const metaTitle = extractMetaContent(html, ["og:title", "twitter:title"]);
+      const metaImage = extractMetaContent(html, ["og:image", "twitter:image", "twitter:image:src"]);
+      if (metaTitle && looksLikeHeadline(metaTitle)) {
+        next.title = trimTitle(cleanupText(metaTitle));
+      }
+      if (metaImage) {
+        next.image = resolveMaybeRelative(metaImage, finalUrl);
       }
     } catch {
     }
@@ -2930,18 +2932,15 @@ async function handleGenerateArticle(req, res) {
 
     if (!articleText && sourceUrl) {
       try {
-        const r = await fetch(sourceUrl, { headers: { "user-agent": USER_AGENT } });
-        if (r.ok) {
-          const html = await r.text();
-          const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
-          const scope = articleMatch?.[1] || html;
-          articleText = [...scope.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
-            .map((m) => cleanupText(stripTags(m[1] || "")))
-            .filter((t) => t.length >= 50 && t.length <= 500)
-            .filter((t) => !/^(sign up|read more|copyright|follow live|watch:|also read)/i.test(t))
-            .slice(0, 10)
-            .join("\n");
-        }
+        const { html } = await fetchPublicHtml(sourceUrl, { userAgent: USER_AGENT });
+        const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
+        const scope = articleMatch?.[1] || html;
+        articleText = [...scope.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
+          .map((m) => cleanupText(stripTags(m[1] || "")))
+          .filter((t) => t.length >= 50 && t.length <= 500)
+          .filter((t) => !/^(sign up|read more|copyright|follow live|watch:|also read)/i.test(t))
+          .slice(0, 10)
+          .join("\n");
         if (articleText) grounding = "refetch";
       } catch { /* grounding is best-effort */ }
     }

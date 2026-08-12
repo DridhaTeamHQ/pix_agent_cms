@@ -22,6 +22,9 @@ import { handlePixRequest } from "./lib/pix-api.js";
 import {
   configureStorage, isStorageConfigured, uploadMedia, pingStorage,
 } from "./lib/storage.js";
+import {
+  fetchDailyMattrMeta, getDailyMattrConfig, publishDailyMattrBuzzContent,
+} from "./lib/dailymattr.js";
 
 const root = join(process.cwd(), "public");
 const port = Number(process.env.PORT || 3000);
@@ -72,6 +75,15 @@ function env(name, ...aliases) {
     if (cleaned) return cleaned;
   }
   return "";
+}
+
+function dailyMattrConfig() {
+  return getDailyMattrConfig({
+    DAILYMATTR_BASE_URL: env("DAILYMATTR_BASE_URL", "DAILYMATTR_API_BASE_URL"),
+    DAILYMATTR_API_KEY: env("DAILYMATTR_API_KEY"),
+    DAILYMATTR_EMAIL: env("DAILYMATTR_EMAIL", "DAILYMATTR_USERNAME"),
+    DAILYMATTR_PASSWORD: env("DAILYMATTR_PASSWORD"),
+  });
 }
 
 // Warn loudly if a value needed cleaning — otherwise this silently papers
@@ -306,6 +318,16 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && req.url === "/api/media") {
     await handleMediaUpload(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/dailymattr/meta") {
+    await handleDailyMattrMeta(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/dailymattr/publish") {
+    await handleDailyMattrPublish(req, res);
     return;
   }
 
@@ -1224,6 +1246,127 @@ async function handlePix(req, res) {
 /* ── Auth ──
    Pix has its own accounts (see lib/auth.js). Sessions are opaque tokens in an
    HttpOnly cookie; every /api/pix call resolves one before doing anything. */
+
+/* DailyMattr integration.
+   The browser sends exported slide PNGs here; this server adds the external
+   credentials and forwards the publish request so the API key never reaches
+   the client. */
+async function handleDailyMattrMeta(req, res) {
+  const user = await currentUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Sign in to use the DailyMattr integration." });
+    return;
+  }
+
+  try {
+    const meta = await fetchDailyMattrMeta(dailyMattrConfig());
+    sendJson(res, 200, meta);
+  } catch (err) {
+    console.warn("⚠ DailyMattr meta failed:", err.message);
+    sendJson(res, 502, { error: err.message || "Could not load DailyMattr options." });
+  }
+}
+
+const MAX_DAILYMATTR_MEDIA_BYTES = Number(env("MAX_DAILYMATTR_MEDIA_BYTES") || 0) || 25 * 1024 * 1024;
+
+async function handleDailyMattrPublish(req, res) {
+  const user = await currentUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Sign in to publish to DailyMattr." });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readDailyMattrPublish(req);
+  } catch (err) {
+    sendJson(res, 400, { error: err.message || "Invalid DailyMattr publish request." });
+    return;
+  }
+
+  if (!payload.contentEn) {
+    sendJson(res, 400, { error: "A caption is required." });
+    return;
+  }
+  if (!payload.categoryId) {
+    sendJson(res, 400, { error: "Choose a category before publishing." });
+    return;
+  }
+  if (!payload.files.length) {
+    sendJson(res, 400, { error: "At least one slide image is required." });
+    return;
+  }
+
+  try {
+    const result = await publishDailyMattrBuzzContent(payload, dailyMattrConfig());
+    console.log(`✓ DailyMattr publish by ${user.username} (${payload.files.length} file${payload.files.length === 1 ? "" : "s"})`);
+    sendJson(res, 200, result);
+  } catch (err) {
+    console.warn("⚠ DailyMattr publish failed:", err.message);
+    sendJson(res, 502, { error: err.message || "Could not publish to DailyMattr." });
+  }
+}
+
+function readDailyMattrPublish(req) {
+  return new Promise((resolve, reject) => {
+    let bb;
+    try {
+      bb = Busboy({
+        headers: req.headers,
+        limits: { files: 4, fileSize: MAX_DAILYMATTR_MEDIA_BYTES, fields: 12 },
+      });
+    } catch (err) {
+      reject(new Error("Malformed upload: " + err.message));
+      return;
+    }
+
+    const fields = {};
+    const files = [];
+    let tooBig = false;
+
+    bb.on("field", (name, value) => {
+      fields[name] = String(value || "").trim();
+    });
+
+    bb.on("file", (name, stream, info) => {
+      if (!/^media_page_\d+$/i.test(name)) {
+        stream.resume();
+        return;
+      }
+
+      const chunks = [];
+      stream.on("data", (chunk) => chunks.push(chunk));
+      stream.on("limit", () => { tooBig = true; });
+      stream.on("end", () => {
+        const buffer = Buffer.concat(chunks);
+        if (!buffer.length) return;
+        files.push({
+          fieldName: name,
+          filename: info.filename || `${name}${extensionFor(info.mimeType, info.filename)}`,
+          contentType: info.mimeType || "application/octet-stream",
+          buffer,
+        });
+      });
+    });
+
+    bb.on("error", reject);
+    bb.on("close", () => {
+      if (tooBig) {
+        reject(new Error(`A DailyMattr image exceeds the ${Math.round(MAX_DAILYMATTR_MEDIA_BYTES / 1048576)} MB limit.`));
+        return;
+      }
+      resolve({
+        contentEn: fields.content_en || "",
+        categoryId: fields.category_id || "",
+        keywords: fields.keywords || "",
+        stateId: fields.state_id || "",
+        files,
+      });
+    });
+
+    req.pipe(bb);
+  });
+}
 
 async function currentUser(req) {
   try {

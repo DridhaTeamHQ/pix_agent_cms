@@ -593,6 +593,48 @@
       </div>
 
       <p id="x-download-status" class="status-text preview-status" role="status" aria-live="polite"></p>
+
+      <section class="publish-panel" aria-labelledby="dailymattr-title">
+        <div class="publish-panel-head">
+          <div>
+            <span class="publish-kicker">DailyMattr</span>
+            <h3 id="dailymattr-title">Send this pix to the web app.</h3>
+          </div>
+          <button type="button" class="btn-ghost publish-refresh" id="dailymattr-refresh">Refresh</button>
+        </div>
+
+        <div class="publish-grid">
+          <label class="field">
+            <span class="field-label">Category</span>
+            <select id="dailymattr-category">
+              <option value="">Sign in to load categories</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">State</span>
+            <select id="dailymattr-state">
+              <option value="">Optional</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="field">
+          <span class="field-label">Keywords</span>
+          <input type="text" id="dailymattr-keywords" placeholder="politics, local, election" />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Caption</span>
+          <textarea id="dailymattr-content" rows="3" placeholder="This is sent as content_en to DailyMattr."></textarea>
+        </label>
+
+        <div class="publish-actions">
+          <p class="helper-text publish-help">Publishes the poster as page 1 and the text slide as page 2 when paragraph copy exists.</p>
+          <button type="button" class="btn-primary publish-submit" id="dailymattr-publish-btn">Publish to DailyMattr</button>
+        </div>
+
+        <p id="dailymattr-status" class="status-text" role="status" aria-live="polite"></p>
+      </section>
     </section>
 
   </main>

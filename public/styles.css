@@ -774,6 +774,7 @@ p.desc {
 
 input[type="url"],
 input[type="text"],
+select,
 textarea {
   width: 100%;
   background: var(--surface-input);
@@ -800,6 +801,7 @@ textarea {
 
 input[type="url"]:focus,
 input[type="text"]:focus,
+select:focus,
 textarea:focus {
   border-color: rgba(155, 114, 239, 0.5);
   background: var(--surface-input);
@@ -1330,6 +1332,68 @@ canvas.dragging { cursor: grabbing; }
   text-decoration: underline;
 }
 #x-download-status { margin-top: 2px; min-height: 1em; text-align: center; }
+
+.publish-panel {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--hairline);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34) 0%, rgba(255, 255, 255, 0.16) 100%),
+    var(--surface-elevated);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.publish-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.publish-panel-head h3 {
+  margin: 2px 0 0;
+  font-size: 1rem;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.publish-kicker {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+}
+
+.publish-refresh {
+  min-height: 0;
+  width: auto;
+  padding: 8px 12px;
+  font-size: 0.76rem;
+  flex: 0 0 auto;
+}
+
+.publish-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.publish-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.publish-help {
+  margin: 0;
+}
+
+.publish-submit {
+  width: 100%;
+}
 
 /* ─── Utilities ──────────────────────────────────────────────── */
 .hidden { display: none !important; }
@@ -2059,11 +2123,16 @@ body.view-review .edit-sheet { display: none !important; }
      Bump all form fields to 16px on mobile to suppress that. */
   input[type="url"],
   input[type="text"],
+  select,
   textarea {
     font-size: 16px;
     padding: 12px 14px;
   }
   textarea { min-height: 80px; }
+
+  .publish-grid {
+    grid-template-columns: 1fr;
+  }
 
   /* Touch-target minimums (Apple HIG: 44px, Material: 48dp) */
   .btn-primary,

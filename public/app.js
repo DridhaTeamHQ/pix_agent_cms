@@ -30,8 +30,8 @@ function scaleForLongEdge(target) {
  * multiplied by the chosen scale before cropping the trailing black gap.
  * Returns { blob, width, height } or null if every tier failed.
  */
-async function renderExportBlob(cropOpts = null) {
-  for (const target of EXPORT_LONG_EDGES) {
+async function renderExportBlob(cropOpts = null, targetLongEdges = EXPORT_LONG_EDGES) {
+  for (const target of targetLongEdges) {
     const scale = scaleForLongEdge(target);
     let out;
     try {
@@ -518,6 +518,7 @@ function applySession(user) {
   if (logoutBtn) logoutBtn.hidden = !user;
   setAuthState(user ? "ready" : "blocked", user ? "" : "Sign in to continue.");
   syncReviewCopy();
+  if (user) loadDailyMattrMeta({ force: true });
   // Whoever just signed in gets their own list, not the previous user's.
   if (user && document.body.classList.contains("view-review")) loadReviewQueue();
 }
@@ -533,6 +534,10 @@ function setAuthState(status, message) {
     document.body.dataset.role = "";
     if (accountBox) accountBox.hidden = true;
     if (logoutBtn) logoutBtn.hidden = true;
+    dailymattrMetaLoaded = false;
+    fillSelectOptions(dailymattrCategory, [], "Sign in to load categories");
+    fillSelectOptions(dailymattrState, [], "Optional");
+    setDailyMattrStatus("");
   }
   if (status === "blocked" && loginUsername) {
     // Focus only once the form is actually on screen.
@@ -781,12 +786,86 @@ function scrollPreviewIntoViewIfMobile() {
 /* ── Download for X ── */
 const xDownloadBtn = document.getElementById("x-download-btn");
 const xDownloadStatus = document.getElementById("x-download-status");
+const dailymattrRefreshBtn = document.getElementById("dailymattr-refresh");
+const dailymattrCategory = document.getElementById("dailymattr-category");
+const dailymattrState = document.getElementById("dailymattr-state");
+const dailymattrKeywords = document.getElementById("dailymattr-keywords");
+const dailymattrContent = document.getElementById("dailymattr-content");
+const dailymattrPublishBtn = document.getElementById("dailymattr-publish-btn");
+const dailymattrStatus = document.getElementById("dailymattr-status");
 
 function setPostStatus(msg, kind) {
   if (!xDownloadStatus) return;
   xDownloadStatus.className = "status-text" + (kind ? ` ${kind}` : "");
   xDownloadStatus.textContent = "";
   if (msg) xDownloadStatus.append(msg);
+}
+
+const DAILYMATTR_META_ENDPOINT = "/api/dailymattr/meta";
+const DAILYMATTR_PUBLISH_ENDPOINT = "/api/dailymattr/publish";
+const DAILYMATTR_EXPORT_LONG_EDGES = [3840, 2560];
+const dailymattrDraftTouched = { content: false, keywords: false };
+let dailymattrMetaLoaded = false;
+
+function setDailyMattrStatus(message, kind) {
+  if (!dailymattrStatus) return;
+  dailymattrStatus.className = "status-text" + (kind ? ` ${kind}` : "");
+  dailymattrStatus.textContent = message || "";
+}
+
+function cleanHeadlineForPublish(value) {
+  return String(value || "").replace(HIGHLIGHT_ANY_CHARS_GLOBAL, "").replace(/\s+/g, " ").trim();
+}
+
+function inferDailyMattrKeywords() {
+  const raw = [
+    state.imageQuery,
+    state.tag && state.tag !== "none" ? state.tag.replace(/-/g, " ") : "",
+    cleanHeadlineForPublish(state.headline),
+  ].filter(Boolean).join(" ");
+
+  const words = raw.toLowerCase().match(/[a-z0-9]{3,}/g) || [];
+  const seen = new Set();
+  const stop = new Set(["with", "from", "that", "this", "have", "will", "into", "about", "after", "before", "their", "where", "which", "while"]);
+  const picked = [];
+  for (const word of words) {
+    if (stop.has(word) || seen.has(word)) continue;
+    seen.add(word);
+    picked.push(word);
+    if (picked.length >= 6) break;
+  }
+  return picked.join(", ");
+}
+
+function defaultDailyMattrContent() {
+  const headline = cleanHeadlineForPublish(state.headline);
+  const detail = normalizeDetailTextClient(state.detailText || "");
+  if (!headline) return "";
+  return detail ? `${headline}\n\n${detail}`.trim() : headline;
+}
+
+function syncDailyMattrDraft({ force = false } = {}) {
+  if (dailymattrContent && (!dailymattrDraftTouched.content || force)) {
+    dailymattrContent.value = defaultDailyMattrContent();
+  }
+  if (dailymattrKeywords && (!dailymattrDraftTouched.keywords || force)) {
+    dailymattrKeywords.value = inferDailyMattrKeywords();
+  }
+}
+
+function fillSelectOptions(selectEl, items, placeholder) {
+  if (!selectEl) return;
+  selectEl.innerHTML = "";
+  const first = document.createElement("option");
+  first.value = "";
+  first.textContent = placeholder;
+  selectEl.appendChild(first);
+  items.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = String(item.id);
+    option.textContent = item.name || String(item.id);
+    selectEl.appendChild(option);
+  });
 }
 
 // Crop the canvas vertically to where the last non-black pixel lives, so the
@@ -4371,7 +4450,7 @@ syncTrimUI();
    once shipped the Text slide — the mode was ambient state rather than
    something the action declared. Here the button names its slide. */
 
-async function downloadSlide(mode) {
+async function exportSlidePng(mode, targetLongEdges = EXPORT_LONG_EDGES) {
   const prev = {
     mode: state.previewMode,
     downloading: state.isDownloading,
@@ -4385,7 +4464,7 @@ async function downloadSlide(mode) {
 
   let result = null;
   try {
-    result = await renderExportBlob();
+    result = await renderExportBlob(null, targetLongEdges);
   } catch (err) {
     console.error(`${mode} export failed:`, err);
   } finally {
@@ -4395,6 +4474,11 @@ async function downloadSlide(mode) {
     state.useShortlyLogo = prev.shortly;
     renderPoster();
   }
+  return result;
+}
+
+async function downloadSlide(mode) {
+  const result = await exportSlidePng(mode);
   if (!result) return null;
 
   const suffix = mode === "pix" ? "" : `-${mode}`;
@@ -4449,6 +4533,135 @@ if (previewRail) {
    Arrows page the carousel by one card. They hide themselves when everything
    already fits, so on a wide screen the header stays clean instead of
    carrying two controls that do nothing. */
+async function loadDailyMattrMeta({ force = false } = {}) {
+  if (!state.user) {
+    fillSelectOptions(dailymattrCategory, [], "Sign in to load categories");
+    fillSelectOptions(dailymattrState, [], "Optional");
+    dailymattrMetaLoaded = false;
+    return;
+  }
+  if (dailymattrMetaLoaded && !force) return;
+
+  setDailyMattrStatus("Loading DailyMattr categories…");
+  try {
+    const response = await fetch(DAILYMATTR_META_ENDPOINT, { credentials: "same-origin" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) return handleSignedOut();
+      setDailyMattrStatus(payload.error || `Could not load DailyMattr (${response.status}).`, "error");
+      return;
+    }
+    if (!payload.configured) {
+      fillSelectOptions(dailymattrCategory, [], "DailyMattr not configured");
+      fillSelectOptions(dailymattrState, [], "Optional");
+      setDailyMattrStatus(
+        payload.missing?.length
+          ? `Server setup missing: ${payload.missing.join(", ")}`
+          : "DailyMattr is not configured on this server.",
+        "error",
+      );
+      return;
+    }
+
+    fillSelectOptions(dailymattrCategory, payload.categories || [], "Choose a category");
+    fillSelectOptions(dailymattrState, payload.states || [], "Optional");
+    dailymattrMetaLoaded = true;
+    syncDailyMattrDraft();
+    setDailyMattrStatus(`DailyMattr ready. ${payload.categories?.length || 0} categories loaded.`, "success");
+  } catch (err) {
+    setDailyMattrStatus(err.message || "Could not load DailyMattr options.", "error");
+  }
+}
+
+async function publishToDailyMattr() {
+  if (!state.user) {
+    setDailyMattrStatus("Sign in to publish.", "error");
+    return;
+  }
+  if (!state.headline.trim()) {
+    setDailyMattrStatus("Build a poster first.", "error");
+    return;
+  }
+  if (!dailymattrMetaLoaded) {
+    await loadDailyMattrMeta({ force: true });
+    if (!dailymattrMetaLoaded) return;
+  }
+
+  const categoryId = dailymattrCategory?.value || "";
+  const stateId = dailymattrState?.value || "";
+  const content = (dailymattrContent?.value || "").trim() || defaultDailyMattrContent();
+  const keywords = (dailymattrKeywords?.value || "").trim() || inferDailyMattrKeywords();
+  if (!categoryId) {
+    setDailyMattrStatus("Choose a DailyMattr category.", "error");
+    return;
+  }
+  if (!content) {
+    setDailyMattrStatus("Enter a caption before publishing.", "error");
+    return;
+  }
+
+  dailymattrPublishBtn.disabled = true;
+  const previousLabel = dailymattrPublishBtn.textContent;
+  dailymattrPublishBtn.textContent = "Publishing…";
+  setDailyMattrStatus("Rendering slide images…");
+
+  try {
+    const poster = await exportSlidePng("pix", DAILYMATTR_EXPORT_LONG_EDGES);
+    if (!poster?.blob) {
+      setDailyMattrStatus("Could not render the poster slide.", "error");
+      return;
+    }
+
+    const form = new FormData();
+    form.append("content_en", content);
+    form.append("category_id", categoryId);
+    if (keywords) form.append("keywords", keywords);
+    if (stateId) form.append("state_id", stateId);
+    form.append("media_page_1", poster.blob, `${slugify(state.headline || "pix-post")}.png`);
+
+    if ((state.detailText || "").trim()) {
+      const textSlide = await exportSlidePng("text", DAILYMATTR_EXPORT_LONG_EDGES);
+      if (textSlide?.blob) {
+        form.append("media_page_2", textSlide.blob, `${slugify(state.headline || "pix-post")}-text.png`);
+      }
+    }
+
+    setDailyMattrStatus("Sending to DailyMattr…");
+    const response = await fetch(DAILYMATTR_PUBLISH_ENDPOINT, {
+      method: "POST",
+      credentials: "same-origin",
+      body: form,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) return handleSignedOut();
+      setDailyMattrStatus(payload.error || `Publish failed (${response.status}).`, "error");
+      return;
+    }
+
+    const publishedId = payload.publishedId ? ` ID ${payload.publishedId}.` : "";
+    setDailyMattrStatus(`Published to DailyMattr.${publishedId}`, "success");
+  } catch (err) {
+    setDailyMattrStatus(err.message || "Could not publish to DailyMattr.", "error");
+  } finally {
+    dailymattrPublishBtn.disabled = false;
+    dailymattrPublishBtn.textContent = previousLabel;
+  }
+}
+
+if (dailymattrRefreshBtn) {
+  dailymattrRefreshBtn.addEventListener("click", () => loadDailyMattrMeta({ force: true }));
+}
+if (dailymattrPublishBtn) {
+  dailymattrPublishBtn.addEventListener("click", publishToDailyMattr);
+}
+if (dailymattrContent) {
+  dailymattrContent.addEventListener("input", () => { dailymattrDraftTouched.content = true; });
+}
+if (dailymattrKeywords) {
+  dailymattrKeywords.addEventListener("input", () => { dailymattrDraftTouched.keywords = true; });
+}
+
 (() => {
   const rail = document.getElementById("preview-rail");
   const prev = document.getElementById("rail-prev");
@@ -4670,6 +4883,9 @@ function startNewPix() {
   state.scrapedTitle = "";
   state.imageQuery = "";
   state.sourceImageUrl = null;
+  dailymattrDraftTouched.content = false;
+  dailymattrDraftTouched.keywords = false;
+  syncDailyMattrDraft({ force: true });
 }
 
 /**
@@ -4950,8 +5166,11 @@ async function loadPixIntoEditor(post) {
       }
     : null;
   state.ready = true;
+  dailymattrDraftTouched.content = false;
+  dailymattrDraftTouched.keywords = false;
 
   applyDesignSnapshot(design, post);
+  syncDailyMattrDraft({ force: true });
 
   // Text inputs
   if (headlineEdit) headlineEdit.value = state.headline;
@@ -5339,7 +5558,10 @@ function refreshSaveIndicator() {
    dozens of places — sliders, drags, chips, the AI writer, an image load —
    and a single cheap comparison is more reliable than remembering to call a
    hook from all of them. */
-setInterval(refreshSaveIndicator, 800);
+setInterval(() => {
+  refreshSaveIndicator();
+  syncDailyMattrDraft();
+}, 800);
 
 /* ── Uploaded media ─────────────────────────────────────────────────────────
    An uploaded image lives in the tab as a `data:` URL and an uploaded video as

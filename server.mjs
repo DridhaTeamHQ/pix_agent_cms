@@ -1346,7 +1346,9 @@ async function handleDailyMattrPublish(req, res) {
     // Their response is the only record of what they accepted. Log it whole:
     // a 200 that quietly stored fewer items than we sent is exactly the
     // failure we are chasing, and it is invisible without this.
-    console.log(`✓ DailyMattr accepted (id=${result.publishedId ?? "none"}): ${JSON.stringify(result.response).slice(0, 600)}`);
+    // 600 chars cut off before the interesting part — their content_en echo
+    // alone eats most of it, and any media list they return comes after.
+    console.log(`✓ DailyMattr accepted (id=${result.publishedId ?? "none"}): ${JSON.stringify(result.response).slice(0, 4000)}`);
     sendJson(res, 200, result);
   } catch (err) {
     console.warn("⚠ DailyMattr publish failed:", err.message);

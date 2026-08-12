@@ -869,21 +869,21 @@
     </section>
   </section>
 
-  <!-- ═══ Writers (QA only) ═══ -->
+  <!-- ═══ Writers (QA only) ═══
+       Two jobs on one page: the roster of who writes for you, and — on
+       clicking any of them — everything that writer has produced. Account
+       admin (create / reset / disable) hangs off each row rather than sitting
+       in a separate form, because it is the rarer action. -->
   <section class="review-shell" id="writers-view" hidden>
     <header class="review-head">
       <div>
         <h2 class="review-title">Content<br>writers.</h2>
-        <p class="review-desc" id="writers-desc">Create accounts for your writers, reset a password, or switch someone off.</p>
+        <p class="review-desc">Everyone who writes for Shortly. Pick a name to see their stories.</p>
       </div>
+      <button type="button" class="btn-primary writers-add-toggle" id="writers-add-toggle">+ Add writer</button>
     </header>
 
-    <div class="review-toolbar">
-      <p id="writers-status" class="status-text" role="status" aria-live="polite"></p>
-      <button type="button" class="btn-ghost" id="writers-refresh">Refresh</button>
-    </div>
-
-    <form class="writers-form" id="writer-create-form">
+    <form class="writers-form" id="writer-create-form" hidden>
       <label class="field">
         <span class="field-label">Username</span>
         <input type="text" id="writer-username" placeholder="writer6" autocomplete="off" required />
@@ -904,10 +904,32 @@
         </select>
       </label>
       <button type="submit" class="btn-primary" id="writer-create-btn">Create account</button>
+      <small class="helper-text writers-form-note">Shown in plain text so you can pass it on — it is stored hashed and can never be read back.</small>
     </form>
-    <small class="helper-text">The password is shown in plain text here so you can pass it on — it is stored hashed and can never be read back.</small>
 
-    <ul class="writers-list" id="writers-list"></ul>
+    <div class="review-toolbar">
+      <p id="writers-status" class="status-text" role="status" aria-live="polite"></p>
+      <button type="button" class="btn-ghost" id="writers-refresh">Refresh</button>
+    </div>
+
+    <div class="writers-layout">
+      <ul class="writers-list" id="writers-list"></ul>
+
+      <section class="writer-detail" id="writer-detail" aria-live="polite">
+        <div class="writer-detail-empty" id="writer-detail-empty">
+          <p>Pick a writer to see everything they have written.</p>
+        </div>
+        <div class="writer-detail-body" id="writer-detail-body" hidden>
+          <header class="writer-detail-head">
+            <div>
+              <h3 id="writer-detail-name">—</h3>
+              <p class="writer-detail-meta" id="writer-detail-meta"></p>
+            </div>
+          </header>
+          <ul class="review-list" id="writer-posts"></ul>
+        </div>
+      </section>
+    </div>
   </section>
 
   <script src="./app.js"></script>

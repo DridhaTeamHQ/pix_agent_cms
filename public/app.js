@@ -5988,15 +5988,45 @@ async function usersRequest(path, options = {}) {
   return payload;
 }
 
+let writerStats = new Map();     // user id -> { sent, approved, pending }
+let selectedWriterId = null;
+
+/* The roster and the output figures come from two places and are merged here:
+   /api/users knows who exists (including anyone who has never written a word,
+   who is absent from the post table entirely), while the analytics writers
+   board knows how much each has produced. Neither alone is the answer. */
 async function loadWriters() {
   if (!writersList || state.user?.role !== "qa") return;
-  setWritersStatus("Loading accounts…");
+  setWritersStatus("Loading writers...");
   try {
-    const { users } = await usersRequest("/api/users");
+    const [{ users }, analytics] = await Promise.all([
+      usersRequest("/api/users"),
+      // Counts are a nicety - a failure here must not empty the roster.
+      usersRequest("/api/pix-analytics").catch(() => null),
+    ]);
+
+    writerStats = new Map();
+    for (const row of analytics?.analytics?.writers || []) {
+      if (row.user_login_id) {
+        writerStats.set(row.user_login_id, {
+          sent: row.sent_count || 0,
+          approved: row.approved_count || 0,
+          pending: row.pending_count || 0,
+        });
+      }
+    }
+
     writersList.textContent = "";
     for (const u of users) writersList.appendChild(renderWriterRow(u));
+
     const active = users.filter((u) => u.active).length;
-    setWritersStatus(`${users.length} account${users.length === 1 ? "" : "s"} · ${active} active`);
+    setWritersStatus(`${users.length} account${users.length === 1 ? "" : "s"} \u00b7 ${active} active`);
+
+    // Keep the open writer open across a refresh (e.g. after a disable).
+    if (selectedWriterId) {
+      const still = users.find((u) => u.id === selectedWriterId);
+      if (still) openWriter(still);
+    }
   } catch (err) {
     setWritersStatus(err.message, "error");
   }
@@ -6004,25 +6034,37 @@ async function loadWriters() {
 
 function renderWriterRow(u) {
   const li = document.createElement("li");
-  li.className = "writers-item" + (u.active ? "" : " is-disabled");
+  li.className = "writers-item"
+    + (u.active ? "" : " is-disabled")
+    + (u.id === selectedWriterId ? " is-selected" : "");
+  li.dataset.userId = u.id;
 
-  const main = document.createElement("div");
+  // The row itself opens the writer; the admin buttons sit outside it so a
+  // click on "Disable" does not also select the row.
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "writers-item-open";
+  open.addEventListener("click", () => openWriter(u));
+
+  const avatar = document.createElement("span");
+  avatar.className = "writers-avatar";
+  avatar.textContent = initialsOf(u.displayName || u.username);
+
+  const main = document.createElement("span");
   main.className = "writers-item-main";
   const name = document.createElement("span");
   name.className = "writers-item-name";
   name.textContent = u.displayName || u.username;
   const meta = document.createElement("span");
   meta.className = "writers-item-meta";
+  const stats = writerStats.get(u.id);
   meta.textContent = [
-    u.username,
     u.role === "qa" ? "QA" : "Writer",
-    u.lastLoginAt ? `last in ${formatLibraryDate(u.lastLoginAt)}` : "never signed in",
-  ].join(" · ");
+    stats ? `${stats.sent} post${stats.sent === 1 ? "" : "s"}` : "no posts yet",
+    u.active ? null : "disabled",
+  ].filter(Boolean).join(" \u00b7 ");
   main.append(name, meta);
-
-  const pill = document.createElement("span");
-  pill.className = "status-pill" + (u.active ? " is-approved" : "");
-  pill.textContent = u.active ? "Active" : "Disabled";
+  open.append(avatar, main);
 
   const actions = document.createElement("div");
   actions.className = "writers-item-actions";
@@ -6067,39 +6109,76 @@ function renderWriterRow(u) {
   });
 
   actions.append(resetBtn, toggleBtn);
-  li.append(main, pill, actions);
+  li.append(open, actions);
   return li;
 }
 
-if (writerCreateForm) {
-  writerCreateForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const username = document.getElementById("writer-username").value.trim();
-    const displayName = document.getElementById("writer-display").value.trim();
-    const password = document.getElementById("writer-password").value;
-    const role = document.getElementById("writer-role").value;
-    if (!username || password.length < 6) {
-      setWritersStatus("A username and a password of at least 6 characters are required.", "error");
+function initialsOf(name) {
+  const parts = String(name || "?").split(/\s+/).filter(Boolean).slice(0, 2);
+  return parts.map((w) => w[0].toUpperCase()).join("") || "?";
+}
+
+/* Everything one writer has produced. Reuses the list endpoint's existing
+   ?user= filter - QA may narrow to any author, a writer is pinned to their
+   own - so this needed no new server route. */
+async function openWriter(u) {
+  selectedWriterId = u.id;
+  document.querySelectorAll(".writers-item").forEach((el) => {
+    el.classList.toggle("is-selected", el.dataset.userId === u.id);
+  });
+
+  const emptyEl = document.getElementById("writer-detail-empty");
+  const bodyEl = document.getElementById("writer-detail-body");
+  const listEl = document.getElementById("writer-posts");
+  if (!bodyEl || !listEl) return;
+  if (emptyEl) emptyEl.hidden = true;
+  bodyEl.hidden = false;
+
+  document.getElementById("writer-detail-name").textContent = u.displayName || u.username;
+  const stats = writerStats.get(u.id);
+  document.getElementById("writer-detail-meta").textContent = [
+    u.username,
+    u.role === "qa" ? "QA" : "Writer",
+    stats ? `${stats.approved} approved \u00b7 ${stats.pending} pending` : "no posts yet",
+  ].join(" \u00b7 ");
+
+  listEl.textContent = "";
+  const loading = document.createElement("li");
+  loading.className = "writer-posts-empty";
+  loading.textContent = "Loading...";
+  listEl.appendChild(loading);
+
+  try {
+    const res = await fetch(`/api/pix?limit=100&user=${encodeURIComponent(u.id)}`, { credentials: "same-origin" });
+    if (res.status === 401) return handleSignedOut();
+    const payload = await res.json().catch(() => ({}));
+    listEl.textContent = "";
+    const posts = payload.posts || [];
+    if (!posts.length) {
+      const none = document.createElement("li");
+      none.className = "writer-posts-empty";
+      none.textContent = `${u.displayName || u.username} has not written anything yet.`;
+      listEl.appendChild(none);
       return;
     }
-    const btn = document.getElementById("writer-create-btn");
-    btn.disabled = true;
-    setWritersStatus("Creating…");
-    try {
-      const { user } = await usersRequest("/api/users", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password, role, displayName }),
-      });
-      writerCreateForm.reset();
-      setWritersStatus(`Created ${user.username}. Give them the password you just set — it cannot be read back.`, "success");
-      loadWriters();
-    } catch (err) {
-      setWritersStatus(err.message, "error");
-    } finally {
-      btn.disabled = false;
-    }
-  });
+    // renderReviewItem already draws a post row with its thumbnail, status and
+    // Open/Approve/Delete actions - no reason to grow a second one.
+    for (const post of posts) listEl.appendChild(renderReviewItem(post));
+  } catch (err) {
+    listEl.textContent = "";
+    const failed = document.createElement("li");
+    failed.className = "writer-posts-empty";
+    failed.textContent = `Could not load posts: ${err.message}`;
+    listEl.appendChild(failed);
+  }
 }
+
+document.getElementById("writers-add-toggle")?.addEventListener("click", () => {
+  const form = document.getElementById("writer-create-form");
+  if (!form) return;
+  form.hidden = !form.hidden;
+  if (!form.hidden) document.getElementById("writer-username")?.focus();
+});
 
 document.getElementById("writers-refresh")?.addEventListener("click", () => loadWriters());
 

@@ -12,11 +12,15 @@ import Busboy from "busboy";
 import {
   suggestRegister, registerRules, assessTone, rectifyInstruction,
 } from "./lib/editorial-tone.js";
-import { configureDb, isConfigured as dbConfigured, ping as dbPing } from "./lib/db.js";
+import {
+  configureDb, isConfigured as dbConfigured, ping as dbPing,
+  getPix, setApproval,
+} from "./lib/db.js";
 import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
   login, logout, sessionUser, purgeExpiredSessions,
   throttleCheck, throttleRecordFailure, throttleClear,
+  ROLES, createUser, listUsers, setPassword, setUserActive, normaliseUsername,
 } from "./lib/auth.js";
 import { handlePixRequest } from "./lib/pix-api.js";
 import { handlePixAnalyticsRequest } from "./lib/pix-analytics.js";
@@ -337,6 +341,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && req.url === "/api/pix-analytics") {
     await handlePixAnalytics(req, res);
+    return;
+  }
+
+  if (req.url?.startsWith("/api/users")) {
+    await handleUsers(req, res);
     return;
   }
 
@@ -1347,6 +1356,10 @@ const MAX_DAILYMATTR_MEDIA_BYTES = Number(env("MAX_DAILYMATTR_MEDIA_BYTES") || 0
    ceiling, so the bound holds at the worst case, not just the average.
 
    Set DAILYMATTR_TARGET_VIDEO_MB=0 to disable. */
+// Mirrors the one in lib/pix-api.js; validating here keeps a malformed id
+// from ever reaching a query.
+const PIX_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const DAILYMATTR_TARGET_VIDEO_BYTES =
   Math.round(Number(env("DAILYMATTR_TARGET_VIDEO_MB") || 9) * 1024 * 1024);
 const COMPRESS_CRF = String(env("DAILYMATTR_VIDEO_CRF") || 23);
@@ -1485,7 +1498,47 @@ async function handleDailyMattrPublish(req, res) {
     // 600 chars cut off before the interesting part — their content_en echo
     // alone eats most of it, and any media list they return comes after.
     console.log(`✓ DailyMattr accepted (id=${result.publishedId ?? "none"}): ${JSON.stringify(result.response).slice(0, 4000)}`);
-    sendJson(res, 200, result);
+
+    /* Publishing IS approval — QA would otherwise have to remember a second
+       click for a decision they have already made by sending the story live.
+
+       Deliberately outside the try/catch above, in its own guard. The
+       DailyMattr publish has already happened and cannot be undone; if an
+       approval write threw and bubbled into that catch, QA would see a 502,
+       assume nothing was sent, and publish again — posting the story to the
+       live site twice. A failed approval must cost a checkbox, never a
+       duplicate.
+
+       Only approves a post that is not already approved, so re-publishing
+       does not rewrite the original approver's name or reset approved_at
+       (which would skew the approval-time figures on the analytics screen). */
+    let approval = null;
+    if (payload.pixId) {
+      try {
+        const current = await getPix(payload.pixId);
+        if (!current) {
+          approval = { ok: false, reason: "post not found" };
+        } else if (current.approved) {
+          approval = { ok: true, alreadyApproved: true };
+        } else {
+          const row = await setApproval(payload.pixId, {
+            approved: true,
+            byId: user.id,
+            byName: user.displayName || user.username,
+          });
+          approval = row ? { ok: true, approvedAt: row.approved_at } : { ok: false, reason: "post not found" };
+          if (row) console.log(`✓ auto-approved ${payload.pixId} on publish by ${user.username}`);
+        }
+      } catch (err) {
+        console.warn(`⚠ published but could not auto-approve ${payload.pixId}: ${err.message}`);
+        approval = { ok: false, reason: err.message };
+      }
+    } else {
+      // Unsaved poster: nothing in the library to mark.
+      approval = { ok: false, reason: "post not saved" };
+    }
+
+    sendJson(res, 200, { ...result, approval });
   } catch (err) {
     console.warn("⚠ DailyMattr publish failed:", err.message);
     sendJson(res, 502, { error: err.message || "Could not publish to DailyMattr." });
@@ -1559,6 +1612,9 @@ function readDailyMattrPublish(req) {
         categoryId: fields.category_id || "",
         keywords: fields.keywords || "",
         stateId: fields.state_id || "",
+        // Which library row this poster came from, so publishing can approve
+        // it. Empty when QA built the poster without ever saving it.
+        pixId: PIX_UUID_RE.test(String(fields.pix_id || "")) ? String(fields.pix_id) : "",
         files: files.sort((a, b) => a.page - b.page),
       });
     });
@@ -1582,6 +1638,121 @@ function validateDailyMattrMedia(files) {
   const kinds = files.map(kindOf);
   if (kinds.includes("unsupported")) return "Media must be JPG, PNG, WEBP, MP4 or MOV.";
   return "";
+}
+
+/* ═══════════════════════ Writer accounts (QA only) ═══════════════════════
+
+   Accounts could previously only be made by running `npm run users:seed`,
+   which creates a fixed roster of six and nothing else — there was no way to
+   add a seventh writer without shell access to the server. QA manages the
+   team, so QA gets the screen.
+
+   Deliberately narrow: create, reset a password, enable/disable. No delete —
+   user_login_id on pix_posts is a bare text column with no foreign key, so
+   removing a row would leave every post that writer produced pointing at an
+   id that resolves to nobody. Disabling keeps the audit trail. */
+async function handleUsers(req, res) {
+  const user = await currentUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Sign in to manage accounts." });
+    return;
+  }
+  if (user.role !== "qa") {
+    sendJson(res, 403, { error: "Only QA can manage accounts." });
+    return;
+  }
+  if (!dbConfigured()) {
+    sendJson(res, 503, { error: "The database is not configured." });
+    return;
+  }
+
+  const parsed = new URL(req.url, `http://localhost:${port}`);
+  const path = parsed.pathname.replace(/\/+$/, "");
+
+  try {
+    if (req.method === "GET" && path === "/api/users") {
+      const rows = await listUsers();
+      sendJson(res, 200, {
+        users: rows.map((r) => ({
+          id: r.id,
+          username: r.username,
+          role: r.role,
+          displayName: r.display_name,
+          active: r.active,
+          createdAt: r.created_at,
+          lastLoginAt: r.last_login_at,
+        })),
+      });
+      return;
+    }
+
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed." });
+      return;
+    }
+
+    const body = await readJson(req, { limit: 10_000 });
+
+    if (path === "/api/users") {
+      const username = normaliseUsername(body?.username);
+      const password = String(body?.password || "");
+      const role = String(body?.role || "writer");
+      const displayName = String(body?.displayName || "").trim() || null;
+
+      if (!username) { sendJson(res, 400, { error: "A username is required." }); return; }
+      if (!ROLES.includes(role)) { sendJson(res, 400, { error: `Role must be one of: ${ROLES.join(", ")}` }); return; }
+      if (password.length < 6) { sendJson(res, 400, { error: "Passwords must be at least 6 characters." }); return; }
+
+      try {
+        const created = await createUser({ username, password, role, displayName });
+        console.log(`✓ ${user.username} created ${role} account "${created.username}"`);
+        sendJson(res, 201, {
+          user: {
+            id: created.id, username: created.username, role: created.role,
+            displayName: created.display_name, active: true, createdAt: created.created_at,
+          },
+        });
+      } catch (err) {
+        // The unique constraint is the only thing stopping duplicates, and it
+        // surfaces as a raw Postgres 23505 — translate it before QA sees it.
+        if (err?.code === "23505") sendJson(res, 409, { error: `"${username}" already exists.` });
+        else throw err;
+      }
+      return;
+    }
+
+    if (path === "/api/users/password") {
+      const username = normaliseUsername(body?.username);
+      const password = String(body?.password || "");
+      if (password.length < 6) { sendJson(res, 400, { error: "Passwords must be at least 6 characters." }); return; }
+      const changed = await setPassword(username, password);
+      if (!changed) { sendJson(res, 404, { error: `No account named "${username}".` }); return; }
+      console.log(`✓ ${user.username} reset the password for "${username}"`);
+      sendJson(res, 200, { ok: true, username });
+      return;
+    }
+
+    if (path === "/api/users/active") {
+      const username = normaliseUsername(body?.username);
+      const active = Boolean(body?.active);
+      // Locking yourself out mid-session is the one mistake this screen can
+      // make irreversible from the UI — there would be no QA left to undo it.
+      if (username === normaliseUsername(user.username) && !active) {
+        sendJson(res, 400, { error: "You cannot disable your own account." });
+        return;
+      }
+      const row = await setUserActive(username, active);
+      if (!row) { sendJson(res, 404, { error: `No account named "${username}".` }); return; }
+      console.log(`✓ ${user.username} ${active ? "enabled" : "disabled"} "${username}"`);
+      sendJson(res, 200, { user: { username: row.username, role: row.role, active: row.active } });
+      return;
+    }
+
+    sendJson(res, 404, { error: "Unknown users route." });
+  } catch (err) {
+    console.warn("⚠ user management failed:", err.message);
+    sendJson(res, 500, { error: err.message || "Could not complete that." });
+  }
 }
 
 async function handlePixAnalytics(req, res) {

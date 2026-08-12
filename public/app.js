@@ -1954,6 +1954,7 @@ async function runScrape() {
     // paywalled or JS-rendered pages, silently degrading to headline-only.
     state.articleText = payload.articleText || "";
     state.sourceUrl = payload.sourceUrl || scrapeUrlInput.value.trim();
+    syncSourceUrlInput();
     state.ready = true;
     state.scrapedTitle = payload.title || "";
     state.imageQuery = payload.imageQuery || "";
@@ -3792,6 +3793,18 @@ function setStatus(message, type) {
   if (type) scrapeStatus.classList.add(type);
 }
 
+/* The analytics boards are built with innerHTML, and the names in them come
+   from the database — user_name is written from whatever display name an
+   account was created with (lib/pix-api.js sets it from the session). A name
+   containing markup would otherwise execute in every QA's browser, so it is
+   escaped on the way in. Anything rendered through textContent elsewhere is
+   already safe and does not need this. */
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
 function setAnalyticsStatus(message, type) {
   if (!analyticsStatus) return;
   analyticsStatus.textContent = message || "";
@@ -3929,7 +3942,7 @@ function renderAnalyticsBoard(container, rows, { empty, valueLabel, showRate = f
     <div class="analytics-row">
       <span class="analytics-rank">${index + 1}</span>
       <div class="analytics-row-main">
-        <span class="analytics-row-name">${row.user_name || "Unknown"}</span>
+        <span class="analytics-row-name">${escapeHtml(row.user_name || "Unknown")}</span>
         <span class="analytics-row-meta">${approvedField in row && pendingField in row
           ? `${formatCount(row[approvedField] || 0)} approved · ${formatCount(row[pendingField] || 0)} pending`
           : valueLabel}</span>
@@ -3960,7 +3973,7 @@ function renderAnalyticsBoardRich(container, rows, {
     <div class="analytics-row">
       <span class="analytics-rank">${index + 1}</span>
       <div class="analytics-row-main">
-        <span class="analytics-row-name">${row.user_name || "Unknown"}</span>
+        <span class="analytics-row-name">${escapeHtml(row.user_name || "Unknown")}</span>
         <span class="analytics-row-meta">${metaFormatter ? metaFormatter(row) : valueLabel}</span>
       </div>
       <div class="analytics-row-value">
@@ -3969,6 +3982,72 @@ function renderAnalyticsBoardRich(container, rows, {
       </div>
     </div>
   `).join("");
+}
+
+/* Recent posts, each naming its writer and opening on click.
+
+   The leaderboards answer "who is producing"; this answers "who wrote that
+   one". Rows are built with DOM nodes rather than innerHTML so headlines and
+   names cannot inject markup — the boards above needed escapeHtml precisely
+   because they take the string route. */
+let analyticsRecentRows = [];
+
+/* The Refresh button was never wired — it had three references in the file and
+   not one of them was an event listener, so clicking it did nothing at all. */
+if (analyticsRefreshBtn) {
+  analyticsRefreshBtn.addEventListener("click", () => loadAnalytics({ force: true }));
+}
+document.getElementById("analytics-search")?.addEventListener("input", () => renderAnalyticsRecent());
+
+function renderAnalyticsRecent() {
+  const container = document.getElementById("analytics-recent");
+  if (!container) return;
+  const term = (document.getElementById("analytics-search")?.value || "").trim().toLowerCase();
+  const rows = term
+    ? analyticsRecentRows.filter((r) =>
+      `${r.headline || ""} ${r.user_name || ""}`.toLowerCase().includes(term))
+    : analyticsRecentRows;
+
+  container.textContent = "";
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "analytics-empty";
+    empty.textContent = analyticsRecentRows.length ? "No posts match that filter." : "No posts yet.";
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const row of rows) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "analytics-recent-row" + (row.approved ? " is-approved" : "");
+    item.title = "Open this post";
+
+    const main = document.createElement("div");
+    main.className = "analytics-recent-main";
+    const title = document.createElement("span");
+    title.className = "analytics-recent-title";
+    title.textContent = row.headline || "(untitled)";
+    const meta = document.createElement("span");
+    meta.className = "analytics-recent-meta";
+    meta.textContent = [
+      row.user_name || "Unknown writer",
+      formatLibraryDate(row.created_at),
+      row.approved && row.approved_by_name ? `approved by ${row.approved_by_name}` : "",
+    ].filter(Boolean).join(" · ");
+    main.append(title, meta);
+
+    const pill = document.createElement("span");
+    pill.className = "status-pill" + (row.approved ? " is-approved" : "");
+    pill.textContent = row.approved ? "Approved" : "Pending";
+
+    item.append(main, pill);
+    item.addEventListener("click", () => {
+      setView("poster");
+      openSavedPost(row.id);
+    });
+    container.appendChild(item);
+  }
 }
 
 async function loadAnalytics({ force = false } = {}) {
@@ -3991,6 +4070,9 @@ async function loadAnalytics({ force = false } = {}) {
     const role = payload.role || state.user.role || "writer";
     const analytics = payload.analytics || {};
     analyticsLoadedForRole = role;
+
+    analyticsRecentRows = Array.isArray(analytics.recent) ? analytics.recent : [];
+    renderAnalyticsRecent();
 
     if (analyticsTitle) analyticsTitle.innerHTML = role === "qa" ? "QA pipeline,<br>clearly measured." : "Your writing flow,<br>clearly measured.";
     if (analyticsDesc) {
@@ -4064,16 +4146,19 @@ const reviewView = document.getElementById("review-view");
 
 function setView(view) {
   // Signed out, there is nothing to list.
-  if ((view === "review" || view === "analytics") && !state.user) view = "poster";
-  // Analytics is QA-only; a writer landing here (stale tab, deep link) goes home.
-  if (view === "analytics" && state.user?.role !== "qa") view = "poster";
+  if ((view === "review" || view === "analytics" || view === "writers") && !state.user) view = "poster";
+  // Analytics and Writers are QA-only; a writer landing here (stale tab, deep
+  // link) goes home. The server refuses them too — this is only the redirect.
+  if ((view === "analytics" || view === "writers") && state.user?.role !== "qa") view = "poster";
 
   document.body.classList.toggle("view-article", view === "article");
   document.body.classList.toggle("view-review", view === "review");
   document.body.classList.toggle("view-analytics", view === "analytics");
+  document.body.classList.toggle("view-writers", view === "writers");
   if (articleView) articleView.hidden = view !== "article";
   if (reviewView) reviewView.hidden = view !== "review";
   if (analyticsView) analyticsView.hidden = view !== "analytics";
+  if (writersView) writersView.hidden = view !== "writers";
   if (viewTabs) {
     viewTabs.querySelectorAll(".view-tab").forEach(t => {
       const active = t.dataset.view === view;
@@ -4085,6 +4170,7 @@ function setView(view) {
   if (view !== "poster") setSheetOpen(false);
   if (view === "review") loadReviewQueue();
   if (view === "analytics") loadAnalytics({ force: true });
+  if (view === "writers") loadWriters();
 }
 
 if (viewTabs) {
@@ -5071,6 +5157,10 @@ async function publishToDailyMattr() {
     form.append("category_id", categoryId);
     if (keywords) form.append("keywords", keywords);
     if (stateId) form.append("state_id", stateId);
+    // Lets the server mark this post approved once DailyMattr accepts it —
+    // sending a story live IS the approval. Absent when the poster was never
+    // saved, in which case there is no library row to mark.
+    if (state.pixId) form.append("pix_id", state.pixId);
     const outboundMedia = [{
       blob: poster.blob,
       filename: `${slugify(state.headline || "pix-post")}.png`,
@@ -5141,7 +5231,24 @@ async function publishToDailyMattr() {
     }
 
     const publishedId = payload.publishedId ? ` ID ${payload.publishedId}.` : "";
-    setDailyMattrStatus(`Published to DailyMattr.${publishedId}`, "success");
+
+    /* Say what happened to the approval as well as the publish. The two can
+       legitimately disagree — the story is live either way, but if it was not
+       marked approved QA needs to know to do it by hand, and a bare
+       "Published" would hide that. */
+    let approvalNote = "";
+    if (payload.approval?.ok) {
+      approvalNote = payload.approval.alreadyApproved ? " Already approved." : " Marked approved.";
+    } else if (payload.approval?.reason === "post not saved") {
+      approvalNote = " Save the post to mark it approved.";
+    } else if (payload.approval) {
+      approvalNote = ` Published, but could not mark it approved (${payload.approval.reason}) — approve it in Review.`;
+    }
+    setDailyMattrStatus(`Published to DailyMattr.${publishedId}${approvalNote}`, "success");
+
+    // The badge in Review is rebuilt on entry, but refresh now so a QA who is
+    // already looking at the list sees it flip.
+    if (payload.approval?.ok) loadReviewQueue();
   } catch (err) {
     setDailyMattrStatus(err.message || "Could not publish to DailyMattr.", "error");
   } finally {
@@ -5401,6 +5508,7 @@ function startNewPix() {
   state.headlineTouched = false;
   state.detailTouched = false;
   state.sourceUrl = "";
+  syncSourceUrlInput();
   state.articleText = "";
   state.scrapedTitle = "";
   state.imageQuery = "";
@@ -5679,6 +5787,7 @@ async function loadPixIntoEditor(post) {
   state.detailText = post.detail_body || post.detail_text || "";
   state.articleText = post.article_text || "";
   state.sourceUrl = post.source_url || "";
+  syncSourceUrlInput();
   state.scrapedTitle = post.scraped_title || "";
   state.imageQuery = post.image_query || "";
   state.sourceImageUrl = post.source_image_url || null;
@@ -5851,6 +5960,192 @@ if (reviewFilters) {
 
 if (reviewRefreshBtn) reviewRefreshBtn.addEventListener("click", () => loadReviewQueue());
 
+/* ═══════════════════════ Writer accounts (QA only) ═══════════════════════
+
+   Accounts previously existed only if someone ran `npm run users:seed`, which
+   creates a fixed roster of six — adding a seventh writer meant shell access
+   to the server. QA runs the team, so QA gets the screen.
+
+   Everything here is rendered with DOM nodes, never innerHTML: usernames and
+   display names are operator-supplied text and would otherwise be a script
+   injection into the one screen only QA can see. */
+const writersView = document.getElementById("writers-view");
+const writersList = document.getElementById("writers-list");
+const writersStatusEl = document.getElementById("writers-status");
+const writerCreateForm = document.getElementById("writer-create-form");
+
+function setWritersStatus(message, kind) {
+  if (!writersStatusEl) return;
+  writersStatusEl.className = "status-text" + (kind ? ` ${kind}` : "");
+  writersStatusEl.textContent = message || "";
+}
+
+async function usersRequest(path, options = {}) {
+  const res = await fetch(path, { credentials: "same-origin", ...options });
+  const payload = await res.json().catch(() => ({}));
+  if (res.status === 401) { handleSignedOut(); throw new Error("Signed out."); }
+  if (!res.ok) throw new Error(payload.error || `Request failed (${res.status}).`);
+  return payload;
+}
+
+async function loadWriters() {
+  if (!writersList || state.user?.role !== "qa") return;
+  setWritersStatus("Loading accounts…");
+  try {
+    const { users } = await usersRequest("/api/users");
+    writersList.textContent = "";
+    for (const u of users) writersList.appendChild(renderWriterRow(u));
+    const active = users.filter((u) => u.active).length;
+    setWritersStatus(`${users.length} account${users.length === 1 ? "" : "s"} · ${active} active`);
+  } catch (err) {
+    setWritersStatus(err.message, "error");
+  }
+}
+
+function renderWriterRow(u) {
+  const li = document.createElement("li");
+  li.className = "writers-item" + (u.active ? "" : " is-disabled");
+
+  const main = document.createElement("div");
+  main.className = "writers-item-main";
+  const name = document.createElement("span");
+  name.className = "writers-item-name";
+  name.textContent = u.displayName || u.username;
+  const meta = document.createElement("span");
+  meta.className = "writers-item-meta";
+  meta.textContent = [
+    u.username,
+    u.role === "qa" ? "QA" : "Writer",
+    u.lastLoginAt ? `last in ${formatLibraryDate(u.lastLoginAt)}` : "never signed in",
+  ].join(" · ");
+  main.append(name, meta);
+
+  const pill = document.createElement("span");
+  pill.className = "status-pill" + (u.active ? " is-approved" : "");
+  pill.textContent = u.active ? "Active" : "Disabled";
+
+  const actions = document.createElement("div");
+  actions.className = "writers-item-actions";
+
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "btn-ghost";
+  resetBtn.textContent = "Reset password";
+  resetBtn.addEventListener("click", async () => {
+    const next = window.prompt(`New password for ${u.username} (at least 6 characters):`);
+    if (next === null) return;
+    if (next.length < 6) { setWritersStatus("Passwords must be at least 6 characters.", "error"); return; }
+    try {
+      await usersRequest("/api/users/password", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u.username, password: next }),
+      });
+      setWritersStatus(`Password updated for ${u.username}.`, "success");
+    } catch (err) { setWritersStatus(err.message, "error"); }
+  });
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.className = "btn-ghost";
+  toggleBtn.textContent = u.active ? "Disable" : "Enable";
+  const isSelf = state.user && u.username === state.user.username;
+  if (isSelf && u.active) {
+    // The server refuses this too; disabling it here explains why rather than
+    // waiting for an error after the click.
+    toggleBtn.disabled = true;
+    toggleBtn.title = "You cannot disable your own account.";
+  }
+  toggleBtn.addEventListener("click", async () => {
+    try {
+      await usersRequest("/api/users/active", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u.username, active: !u.active }),
+      });
+      setWritersStatus(`${u.username} ${u.active ? "disabled" : "enabled"}.`, "success");
+      loadWriters();
+    } catch (err) { setWritersStatus(err.message, "error"); }
+  });
+
+  actions.append(resetBtn, toggleBtn);
+  li.append(main, pill, actions);
+  return li;
+}
+
+if (writerCreateForm) {
+  writerCreateForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const username = document.getElementById("writer-username").value.trim();
+    const displayName = document.getElementById("writer-display").value.trim();
+    const password = document.getElementById("writer-password").value;
+    const role = document.getElementById("writer-role").value;
+    if (!username || password.length < 6) {
+      setWritersStatus("A username and a password of at least 6 characters are required.", "error");
+      return;
+    }
+    const btn = document.getElementById("writer-create-btn");
+    btn.disabled = true;
+    setWritersStatus("Creating…");
+    try {
+      const { user } = await usersRequest("/api/users", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password, role, displayName }),
+      });
+      writerCreateForm.reset();
+      setWritersStatus(`Created ${user.username}. Give them the password you just set — it cannot be read back.`, "success");
+      loadWriters();
+    } catch (err) {
+      setWritersStatus(err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+document.getElementById("writers-refresh")?.addEventListener("click", () => loadWriters());
+
+/* Source link — the writer can type it, not only inherit it from a scrape.
+
+   state.sourceUrl had exactly one writer before this: runScrape(). A
+   hand-written post could never record where it came from, and reopening a
+   saved post showed no trace of the stored link.
+
+   Two ordering traps, both of which cost the value silently:
+     - startNewPix() clears state.sourceUrl, and it runs INSIDE the "Build
+       Poster" handler, so this listener must own the field afterwards rather
+       than the handler reading it before.
+     - loadPixIntoEditor() restores state but refills only the headline and
+       paragraph inputs, so the box has to be refilled explicitly or it looks
+       empty over a post that has one. */
+const sourceUrlEdit = document.getElementById("source-url-edit");
+if (sourceUrlEdit) {
+  sourceUrlEdit.addEventListener("input", () => {
+    state.sourceUrl = sourceUrlEdit.value.trim();
+  });
+}
+
+/* Keep the box and the state in step wherever either changes. */
+function syncSourceUrlInput() {
+  if (sourceUrlEdit && sourceUrlEdit.value.trim() !== (state.sourceUrl || "")) {
+    sourceUrlEdit.value = state.sourceUrl || "";
+  }
+}
+
+/* Search is a server round-trip, so it is debounced — every keystroke firing a
+   query would put the list into a race where an early, slower response lands
+   after a later one and overwrites it with stale rows. */
+const reviewSearchInput = document.getElementById("review-search");
+if (reviewSearchInput) {
+  let searchTimer = null;
+  reviewSearchInput.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadReviewQueue(), 300);
+  });
+  // Enter searches immediately rather than waiting out the debounce.
+  reviewSearchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); clearTimeout(searchTimer); loadReviewQueue(); }
+  });
+}
+
 async function loadReviewQueue() {
   if (!reviewList || !state.user) return;
   setReviewStatus("Loading…");
@@ -5859,6 +6154,8 @@ async function loadReviewQueue() {
   const params = new URLSearchParams({ limit: "100" });
   if (reviewFilter === "pending") params.set("approved", "false");
   if (reviewFilter === "approved") params.set("approved", "true");
+  const term = (reviewSearchInput?.value || "").trim();
+  if (term) params.set("q", term);
 
   try {
     const response = await fetch(`/api/pix?${params}`, { credentials: "same-origin" });

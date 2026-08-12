@@ -4011,3 +4011,99 @@ textarea:focus {
 #video-canvas.dragging {
   cursor: grabbing;
 }
+/* ─── Search boxes (Review + Analytics) ───────────────────────────
+   Sized to sit inline with the filter tabs without pushing the Refresh
+   button off a narrow toolbar. */
+.review-search,
+.analytics-search { flex: 1 1 220px; min-width: 0; max-width: 340px; }
+.review-search input,
+.analytics-search input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.82rem;
+}
+.review-search input:focus,
+.analytics-search input:focus { outline: none; border-color: var(--accent); }
+.review-search input::placeholder,
+.analytics-search input::placeholder { color: var(--text-muted); }
+
+/* ─── Analytics: recent posts, each naming its writer ───────────── */
+.analytics-card-wide { grid-column: 1 / -1; }
+.analytics-recent { display: flex; flex-direction: column; gap: 6px; }
+.analytics-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-md);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.analytics-recent-row:hover { background: var(--hover-tint); border-color: var(--hairline); }
+.analytics-recent-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.analytics-recent-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.analytics-recent-meta { font-size: 0.74rem; color: var(--text-secondary); }
+.analytics-empty { font-size: 0.8rem; color: var(--text-secondary); padding: 10px 2px; }
+
+/* ─── Writers (QA only) ─────────────────────────────────────────── */
+.writers-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 6px;
+}
+.writers-form .btn-primary { height: 40px; }
+.writers-form select,
+.writers-form input {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+.writers-list { list-style: none; margin: 18px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.writers-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-card);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-md);
+}
+/* A disabled account stays legible — it is still the audit trail for every
+   post that writer produced — but reads as switched off. */
+.writers-item.is-disabled { opacity: 0.55; }
+.writers-item-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.writers-item-name { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
+.writers-item-meta { font-size: 0.75rem; color: var(--text-secondary); }
+.writers-item-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.writers-item-actions .btn-ghost { padding: 6px 12px; font-size: 0.78rem; }
+.writers-item-actions .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .writers-item { flex-wrap: wrap; }
+  .writers-item-actions { width: 100%; }
+}

@@ -118,6 +118,11 @@
           <svg width="14" height="14" aria-hidden="true"><use href="#i-doc"/></svg>
           Analytics
         </button>
+        <!-- QA manages the team, so account creation lives with QA. -->
+        <button type="button" class="view-tab qa-only" data-view="writers" role="tab" aria-selected="false">
+          <svg width="14" height="14" aria-hidden="true"><use href="#i-check"/></svg>
+          Writers
+        </button>
       </div>
 
       <div class="nav-actions">
@@ -287,6 +292,13 @@
             <h3 class="acc-subtitle">Text Paragraph</h3>
             <textarea id="detail-edit" rows="12" placeholder="Edit the paragraph shown in Text preview..."></textarea>
             <small class="helper-text">This copy appears in the Text preview.</small>
+
+          <!-- Lives in the shared editor rather than the Write Text panel so it
+               serves both flows: a scrape fills it in, a hand-written post can
+               have it typed. Shown in Review and searchable. -->
+          <h3 class="acc-subtitle">Source Link</h3>
+          <input type="url" id="source-url-edit" placeholder="https://example.com/article" />
+          <small class="helper-text">Where the story came from. Filled automatically when you scrape a link.</small>
             <label class="checkbox-row" style="margin-top:8px;">
               <input type="checkbox" id="show-timestamp" checked />
               <span>Show creation time on the Text slide</span>
@@ -748,6 +760,11 @@
           <button type="button" class="review-filter" data-filter="pending" role="tab" aria-selected="false">Pending</button>
           <button type="button" class="review-filter" data-filter="approved" role="tab" aria-selected="false">Approved</button>
         </div>
+        <!-- Searches server-side, so it reaches past the 100-row page rather
+             than filtering only what is already on screen. -->
+        <label class="review-search">
+          <input type="search" id="review-search" placeholder="Search headline, writer or source…" />
+        </label>
         <button type="button" class="btn-ghost" id="review-refresh">Refresh</button>
       </div>
 
@@ -834,7 +851,63 @@
         </div>
         <div class="analytics-leaderboard" id="analytics-qas"></div>
       </article>
+
+      <!-- Recent content, each row naming its writer. The leaderboards say who
+           is producing overall; this says who wrote THIS story, and opens it. -->
+      <article class="analytics-card analytics-card-wide">
+        <div class="analytics-card-head">
+          <div>
+            <span class="analytics-card-label">Content</span>
+            <h3>Recent posts and who wrote them</h3>
+          </div>
+          <label class="analytics-search">
+            <input type="search" id="analytics-search" placeholder="Filter by headline or writer…" />
+          </label>
+        </div>
+        <div class="analytics-recent" id="analytics-recent"></div>
+      </article>
     </section>
+  </section>
+
+  <!-- ═══ Writers (QA only) ═══ -->
+  <section class="review-shell" id="writers-view" hidden>
+    <header class="review-head">
+      <div>
+        <h2 class="review-title">Content<br>writers.</h2>
+        <p class="review-desc" id="writers-desc">Create accounts for your writers, reset a password, or switch someone off.</p>
+      </div>
+    </header>
+
+    <div class="review-toolbar">
+      <p id="writers-status" class="status-text" role="status" aria-live="polite"></p>
+      <button type="button" class="btn-ghost" id="writers-refresh">Refresh</button>
+    </div>
+
+    <form class="writers-form" id="writer-create-form">
+      <label class="field">
+        <span class="field-label">Username</span>
+        <input type="text" id="writer-username" placeholder="writer6" autocomplete="off" required />
+      </label>
+      <label class="field">
+        <span class="field-label">Display name</span>
+        <input type="text" id="writer-display" placeholder="Content Writer 6" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input type="text" id="writer-password" placeholder="at least 6 characters" autocomplete="off" required />
+      </label>
+      <label class="field">
+        <span class="field-label">Role</span>
+        <select id="writer-role">
+          <option value="writer" selected>Writer</option>
+          <option value="qa">QA</option>
+        </select>
+      </label>
+      <button type="submit" class="btn-primary" id="writer-create-btn">Create account</button>
+    </form>
+    <small class="helper-text">The password is shown in plain text here so you can pass it on — it is stored hashed and can never be read back.</small>
+
+    <ul class="writers-list" id="writers-list"></ul>
   </section>
 
   <script src="./app.js"></script>

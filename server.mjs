@@ -1257,6 +1257,10 @@ async function handleDailyMattrMeta(req, res) {
     sendJson(res, 401, { error: "Sign in to use the DailyMattr integration." });
     return;
   }
+  if (user.role !== "qa") {
+    sendJson(res, 403, { error: "Only QA can publish to DailyMattr." });
+    return;
+  }
 
   try {
     const meta = await fetchDailyMattrMeta(dailyMattrConfig());
@@ -1267,12 +1271,24 @@ async function handleDailyMattrMeta(req, res) {
   }
 }
 
-const MAX_DAILYMATTR_MEDIA_BYTES = Number(env("MAX_DAILYMATTR_MEDIA_BYTES") || 0) || 25 * 1024 * 1024;
+// 25 MB was fine while page 2 was always a PNG. Slide 2 can be a trimmed MP4,
+// which clears that easily, so the default is raised. DailyMattr has not told
+// us their own per-file limit yet — if they reject a large clip, lower this
+// rather than assuming the encode failed.
+const MAX_DAILYMATTR_MEDIA_BYTES = Number(env("MAX_DAILYMATTR_MEDIA_BYTES") || 0) || 64 * 1024 * 1024;
 
 async function handleDailyMattrPublish(req, res) {
   const user = await currentUser(req);
   if (!user) {
     sendJson(res, 401, { error: "Sign in to publish to DailyMattr." });
+    return;
+  }
+  // Publishing is the last editorial gate before content is live on
+  // shortlyindia.com, so it belongs to QA alone — the same rule already
+  // applied to approve and delete. Enforced here rather than only by hiding
+  // the panel: the endpoint is reachable by any signed-in writer otherwise.
+  if (user.role !== "qa") {
+    sendJson(res, 403, { error: "Only QA can publish to DailyMattr." });
     return;
   }
 
@@ -1352,7 +1368,7 @@ function readDailyMattrPublish(req) {
     bb.on("error", reject);
     bb.on("close", () => {
       if (tooBig) {
-        reject(new Error(`A DailyMattr image exceeds the ${Math.round(MAX_DAILYMATTR_MEDIA_BYTES / 1048576)} MB limit.`));
+        reject(new Error(`A DailyMattr media file exceeds the ${Math.round(MAX_DAILYMATTR_MEDIA_BYTES / 1048576)} MB limit.`));
         return;
       }
       resolve({

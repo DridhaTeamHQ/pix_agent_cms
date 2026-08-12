@@ -594,7 +594,10 @@
 
       <p id="x-download-status" class="status-text preview-status" role="status" aria-live="polite"></p>
 
-      <section class="publish-panel" aria-labelledby="dailymattr-title">
+      <!-- QA-only: publishing is the last gate before content is live on
+           shortlyindia.com. Hidden by default so a writer never sees it even
+           for the moment before the session resolves. -->
+      <section class="publish-panel" id="dailymattr-panel" aria-labelledby="dailymattr-title" hidden>
         <div class="publish-panel-head">
           <div>
             <span class="publish-kicker">DailyMattr</span>

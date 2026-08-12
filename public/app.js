@@ -298,7 +298,17 @@ const state = {
   filterPreset:     "none", // identifier of the active preset chip, if any
 };
 
-initAuth();
+// initAuth() is started at the BOTTOM of this file, not here.
+//
+// Its first statement is a synchronous setAuthState("checking", …), and that
+// touches module bindings declared further down. `const`/`let` are not hoisted
+// the way `function` is, so calling it from line ~301 threw
+//   ReferenceError: Cannot access 'dailymattrMetaLoaded' before initialization
+// on every load, leaving the app stuck on "Checking your session…" forever.
+//
+// Moving the CALL after every declaration fixes the whole class of problem:
+// otherwise each new module-level binding added below this point and touched
+// by setAuthState silently re-breaks startup.
 
 // Build the ctx.filter string from current state values.
 function buildFilterString() {
@@ -506,6 +516,34 @@ async function initAuth() {
   }
 }
 
+/* ── DailyMattr publish panel ──
+   Declared HERE, above applySession/setAuthState, because those two touch
+   these bindings. They used to sit ~280 lines further down, which is a
+   temporal dead zone: `const`/`let` are not hoisted like `function`, so if the
+   startup session check resolved before module evaluation reached them, the
+   whole app died with "Cannot access 'dailymattrMetaLoaded' before
+   initialization" and hung on the auth-checking screen.
+
+   That is a race, not a constant failure — it fires when /api/auth/me answers
+   quickly (localhost, warm cache) and hides on a slower connection, which is
+   exactly the kind of bug that reaches production looking intermittent. */
+const dailymattrRefreshBtn = document.getElementById("dailymattr-refresh");
+const dailymattrCategory = document.getElementById("dailymattr-category");
+const dailymattrState = document.getElementById("dailymattr-state");
+const dailymattrKeywords = document.getElementById("dailymattr-keywords");
+const dailymattrContent = document.getElementById("dailymattr-content");
+const dailymattrPublishBtn = document.getElementById("dailymattr-publish-btn");
+const dailymattrStatus = document.getElementById("dailymattr-status");
+
+const DAILYMATTR_META_ENDPOINT = "/api/dailymattr/meta";
+const DAILYMATTR_PUBLISH_ENDPOINT = "/api/dailymattr/publish";
+const DAILYMATTR_EXPORT_LONG_EDGES = [3840, 2560];
+// Must match MAX_DAILYMATTR_MEDIA_BYTES on the server. Checked on the client
+// too so an oversized clip fails in a second with a useful message, rather
+// than after uploading tens of megabytes only to be cut off by busboy.
+const DAILYMATTR_MAX_MEDIA_BYTES = 64 * 1024 * 1024;
+let dailymattrMetaLoaded = false;
+
 function applySession(user) {
   state.user = user || null;
   document.body.dataset.role = user?.role || "";
@@ -518,7 +556,12 @@ function applySession(user) {
   if (logoutBtn) logoutBtn.hidden = !user;
   setAuthState(user ? "ready" : "blocked", user ? "" : "Sign in to continue.");
   syncReviewCopy();
-  if (user) loadDailyMattrMeta({ force: true });
+  // Publishing to shortlyindia.com is QA-only (the server returns 403 for
+  // writers). Hide the panel rather than showing controls that cannot work,
+  // and don't spend a DailyMattr round-trip loading options a writer can
+  // never use.
+  syncDailyMattrAccess();
+  if (user?.role === "qa") loadDailyMattrMeta({ force: true });
   // Whoever just signed in gets their own list, not the previous user's.
   if (user && document.body.classList.contains("view-review")) loadReviewQueue();
 }
@@ -535,6 +578,7 @@ function setAuthState(status, message) {
     if (accountBox) accountBox.hidden = true;
     if (logoutBtn) logoutBtn.hidden = true;
     dailymattrMetaLoaded = false;
+    syncDailyMattrAccess();
     fillSelectOptions(dailymattrCategory, [], "Sign in to load categories");
     fillSelectOptions(dailymattrState, [], "Optional");
     setDailyMattrStatus("");
@@ -786,13 +830,6 @@ function scrollPreviewIntoViewIfMobile() {
 /* ── Download for X ── */
 const xDownloadBtn = document.getElementById("x-download-btn");
 const xDownloadStatus = document.getElementById("x-download-status");
-const dailymattrRefreshBtn = document.getElementById("dailymattr-refresh");
-const dailymattrCategory = document.getElementById("dailymattr-category");
-const dailymattrState = document.getElementById("dailymattr-state");
-const dailymattrKeywords = document.getElementById("dailymattr-keywords");
-const dailymattrContent = document.getElementById("dailymattr-content");
-const dailymattrPublishBtn = document.getElementById("dailymattr-publish-btn");
-const dailymattrStatus = document.getElementById("dailymattr-status");
 
 function setPostStatus(msg, kind) {
   if (!xDownloadStatus) return;
@@ -801,11 +838,15 @@ function setPostStatus(msg, kind) {
   if (msg) xDownloadStatus.append(msg);
 }
 
-const DAILYMATTR_META_ENDPOINT = "/api/dailymattr/meta";
-const DAILYMATTR_PUBLISH_ENDPOINT = "/api/dailymattr/publish";
-const DAILYMATTR_EXPORT_LONG_EDGES = [3840, 2560];
 const dailymattrDraftTouched = { content: false, keywords: false };
-let dailymattrMetaLoaded = false;
+
+/* Show the publish panel to QA only. This is presentation, not the control —
+   /api/dailymattr/publish returns 403 for writers regardless, because a hidden
+   button is not a permission. */
+function syncDailyMattrAccess() {
+  const panel = document.getElementById("dailymattr-panel");
+  if (panel) panel.hidden = state.user?.role !== "qa";
+}
 
 function setDailyMattrStatus(message, kind) {
   if (!dailymattrStatus) return;
@@ -4619,10 +4660,42 @@ async function publishToDailyMattr() {
     if (stateId) form.append("state_id", stateId);
     form.append("media_page_1", poster.blob, `${slugify(state.headline || "pix-post")}.png`);
 
-    if ((state.detailText || "").trim()) {
+    /* Slide 2 is EITHER a video or a text card — the preview numbers both "2"
+       because they are alternatives, never two separate pages. So page 2 has
+       to follow whichever one the editor is actually showing.
+
+       This used to branch on `detailText` being non-empty, which was wrong in
+       both directions: a video post published no page 2 at all, and a video
+       post that still carried leftover paragraph text published the TEXT card
+       — silently shipping a slide the writer never chose. */
+    const slug = slugify(state.headline || "pix-post");
+    const videoReady = state.videoEl
+      && state.videoEl.readyState >= 2
+      && state.videoEl.videoWidth > 0
+      && state.trimEnd > state.trimStart;
+
+    if (videoReady) {
+      // The same trimmed, branded MP4 the Export button produces — caption and
+      // logo already burned in, cropped to the framing that was approved.
+      setDailyMattrStatus("Rendering slide 2 video — this can take a few minutes…");
+      const clip = await renderTrimmedClip({
+        onStatus: (msg) => setDailyMattrStatus(msg),
+      });
+      if (clip) {
+        if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
+          const mb = (n) => (n / 1048576).toFixed(1);
+          setDailyMattrStatus(
+            `The clip is ${mb(clip.size)} MB, over the ${mb(DAILYMATTR_MAX_MEDIA_BYTES)} MB limit. Shorten the trim range and try again.`,
+            "error",
+          );
+          return;
+        }
+        form.append("media_page_2", clip, `${slug}-slide2.mp4`);
+      }
+    } else if ((state.detailText || "").trim()) {
       const textSlide = await exportSlidePng("text", DAILYMATTR_EXPORT_LONG_EDGES);
       if (textSlide?.blob) {
-        form.append("media_page_2", textSlide.blob, `${slugify(state.headline || "pix-post")}-text.png`);
+        form.append("media_page_2", textSlide.blob, `${slug}-text.png`);
       }
     }
 
@@ -5713,3 +5786,8 @@ function restoreStoredVideo(video) {
     renderPoster();
   }, { once: true });
 }
+
+/* Session check starts here — last line of the module, so every const/let
+   above is initialised before setAuthState can touch it. See the note beside
+   the state object for why this is not at the top. */
+initAuth();

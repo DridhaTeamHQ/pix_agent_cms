@@ -299,6 +299,22 @@
           <h3 class="acc-subtitle">Source Link</h3>
           <input type="url" id="source-url-edit" placeholder="https://example.com/article" />
           <small class="helper-text">Where the story came from. Filled automatically when you scrape a link.</small>
+
+          <!-- The writer files the story, because they have the context. QA can
+               still change it at publish; this is the starting point, not a
+               lock. -->
+          <h3 class="acc-subtitle">Section</h3>
+          <div class="section-row">
+            <label class="field">
+              <span class="field-label">Category</span>
+              <select id="post-category"><option value="">Choose a category</option></select>
+            </label>
+            <label class="field" id="post-state-field">
+              <span class="field-label">State</span>
+              <select id="post-state"><option value="">Optional</option></select>
+            </label>
+          </div>
+          <small class="helper-text" id="post-section-hint">Where this story is filed on the web app.</small>
             <label class="checkbox-row" style="margin-top:8px;">
               <input type="checkbox" id="show-timestamp" checked />
               <span>Show creation time on the Text slide</span>

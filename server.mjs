@@ -1317,10 +1317,10 @@ async function handleDailyMattrMeta(req, res) {
     sendJson(res, 401, { error: "Sign in to use the DailyMattr integration." });
     return;
   }
-  if (user.role !== "qa") {
-    sendJson(res, 403, { error: "Only QA can publish to DailyMattr." });
-    return;
-  }
+  /* Readable by writers as well as QA. Writers now choose the section their
+     story belongs in while they build it — they have the context, QA would be
+     guessing at review time — and to offer that choice they need the list.
+     Publishing stays QA-only; this is reference data, not an action. */
 
   try {
     const meta = await fetchDailyMattrMeta(dailyMattrConfig());
@@ -1465,6 +1465,24 @@ async function handleDailyMattrPublish(req, res) {
   if (!payload.files.length) {
     sendJson(res, 400, { error: "At least one media file is required." });
     return;
+  }
+
+  /* DailyMattr requires a state whenever the category is "State" — a regional
+     story filed against no region is rejected at their end. Checked here so it
+     fails before the video encode and the upload rather than after several
+     megabytes have gone over the wire, and matched by NAME against their live
+     list so it survives them renumbering the category. */
+  try {
+    const meta = await fetchDailyMattrMeta(dailyMattrConfig());
+    const stateCategory = (meta.categories || []).find((c) => /^state$/i.test(String(c.name).trim()));
+    if (stateCategory && String(payload.categoryId) === String(stateCategory.id) && !payload.stateId) {
+      sendJson(res, 400, { error: "The State category needs a state. Choose one before publishing." });
+      return;
+    }
+  } catch (err) {
+    // Their lookup being unreachable must not block a publish that would
+    // otherwise succeed — DailyMattr will still enforce its own rule.
+    console.warn("⚠ could not check the State rule, continuing:", err.message);
   }
   const mediaValidationError = validateDailyMattrMedia(payload.files);
   if (mediaValidationError) {

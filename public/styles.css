@@ -16,6 +16,8 @@
   --surface-input: #eff3fc;
   /* sunken input wells */
   --surface-card: #f6f9fe;
+  /* Opaque — native <option> popups cannot sit on a translucent fill. */
+  --surface-solid: #ffffff;
   /* card backgrounds */
 
   /* Overlay tints — dark ink at low alpha (the light-theme
@@ -3399,6 +3401,7 @@ textarea:focus {
   --bg-color: #080b14;
   --surface: rgba(17, 22, 34, 0.88);
   --surface-2: #121724;
+  --surface-solid: #161c2b;
   --surface-input: rgba(255, 255, 255, 0.055);
   --surface-card: rgba(255, 255, 255, 0.035);
 
@@ -4229,3 +4232,45 @@ textarea:focus {
   background: var(--accent);
 }
 .view-tab:hover:not(.active) { background: var(--hover-tint); color: var(--text-primary); }
+
+/* ─── Native <select> popups ──────────────────────────────────────
+   The select itself uses --surface-input, which on the dark theme is
+   rgba(255,255,255,0.055) — translucent. The OS draws the open option list on
+   its own white surface, so that translucent fill resolved to near-white and
+   the near-white option text became unreadable: a list you could open but not
+   read. Options need an OPAQUE background of their own. */
+select option {
+  background-color: var(--surface-solid);
+  color: var(--text-primary);
+}
+select option:checked,
+select option:hover {
+  background-color: var(--accent-soft);
+  color: var(--text-primary);
+}
+/* Firefox keeps the placeholder legible instead of inheriting the muted grey. */
+select option[value=""] { color: var(--text-secondary); }
+
+/* ─── Category + state, side by side ─── */
+.section-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 4px;
+}
+.section-row .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.section-row .field-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+/* When DailyMattr will refuse without it, the field says so before you publish
+   rather than after the upload. */
+.section-row .field.is-required select { border-color: var(--accent); }
+.helper-text.is-warning { color: var(--accent-dim); font-weight: 600; }
+
+@media (max-width: 420px) {
+  .section-row { grid-template-columns: 1fr; }
+}

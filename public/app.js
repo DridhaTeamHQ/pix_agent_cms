@@ -224,6 +224,10 @@ const state = {
   headline: "",
   detailText: "",
   sourceUrl: "",               // article URL from the last scrape (grounds the AI writer)
+  // Where the story is filed on the web app. Chosen by the writer, confirmed
+  // by QA at publish.
+  categoryId: "",
+  stateId: "",
   articleText: "",             // full scraped body text — what actually grounds the AI writer
   mainImage: null,
   ready: false,
@@ -632,6 +636,8 @@ function applySession(user) {
   // never use.
   syncDailyMattrAccess();
   if (user?.role === "qa") loadDailyMattrMeta({ force: true });
+  // Writers need the lists too, to file their own story.
+  if (user) loadSectionOptions();
   // Whoever just signed in gets their own list, not the previous user's.
   if (user && document.body.classList.contains("view-review")) loadReviewQueue();
   if (user && document.body.classList.contains("view-analytics")) {
@@ -5139,6 +5145,13 @@ async function publishToDailyMattr() {
     setDailyMattrStatus(mediaError, "error");
     return;
   }
+  /* DailyMattr rejects the State category without a state. Caught here so the
+     failure costs a click, not a multi-minute video encode and upload first. */
+  if (stateIsRequired(categoryId) && !stateId) {
+    setDailyMattrStatus("The State category needs a state. Choose one above, then publish.", "error");
+    dailymattrState?.focus();
+    return;
+  }
 
   dailymattrPublishBtn.disabled = true;
   const previousLabel = dailymattrPublishBtn.textContent;
@@ -5509,6 +5522,9 @@ function startNewPix() {
   state.detailTouched = false;
   state.sourceUrl = "";
   syncSourceUrlInput();
+  state.categoryId = "";
+  state.stateId = "";
+  syncSectionInputs();
   state.articleText = "";
   state.scrapedTitle = "";
   state.imageQuery = "";
@@ -5586,6 +5602,8 @@ function collectPixPayload() {
 
     // The scrape
     sourceUrl: state.sourceUrl || null,
+    categoryId: state.categoryId || null,
+    stateId: state.stateId || null,
     scrapedTitle: state.scrapedTitle || null,
     articleText: state.articleText || null,
     detailText: state.detailText || null,
@@ -5788,6 +5806,9 @@ async function loadPixIntoEditor(post) {
   state.articleText = post.article_text || "";
   state.sourceUrl = post.source_url || "";
   syncSourceUrlInput();
+  state.categoryId = post.category_id ? String(post.category_id) : "";
+  state.stateId = post.state_id ? String(post.state_id) : "";
+  syncSectionInputs();
   state.scrapedTitle = post.scraped_title || "";
   state.imageQuery = post.image_query || "";
   state.sourceImageUrl = post.source_image_url || null;
@@ -6181,6 +6202,84 @@ document.getElementById("writers-add-toggle")?.addEventListener("click", () => {
 });
 
 document.getElementById("writers-refresh")?.addEventListener("click", () => loadWriters());
+
+/* ── Section (category + state) ──────────────────────────────────────
+   The writer files the story while they build it: they have the context, and
+   QA would otherwise be guessing at review time. QA can still change it at
+   publish — this is the starting point, not a lock.
+
+   The one hard rule comes from DailyMattr: the "State" category REQUIRES a
+   state. Matched by NAME against their live list rather than by a hard-coded
+   id, so it survives them renumbering. Enforced on the server too — this is
+   the early, friendly half. */
+const postCategorySelect = document.getElementById("post-category");
+const postStateSelect = document.getElementById("post-state");
+const postSectionHint = document.getElementById("post-section-hint");
+
+let stateCategoryId = null;   // the id of the category literally named "State"
+
+function stateIsRequired(categoryId) {
+  return Boolean(stateCategoryId) && String(categoryId || "") === String(stateCategoryId);
+}
+
+/* Show the rule before it bites, rather than letting a publish fail on it. */
+function syncSectionHint() {
+  if (!postSectionHint) return;
+  const needsState = stateIsRequired(state.categoryId);
+  const field = document.getElementById("post-state-field");
+  if (field) field.classList.toggle("is-required", needsState);
+  if (needsState && !state.stateId) {
+    postSectionHint.textContent = "The State category needs a state — pick one.";
+    postSectionHint.className = "helper-text is-warning";
+  } else {
+    postSectionHint.textContent = "Where this story is filed on the web app.";
+    postSectionHint.className = "helper-text";
+  }
+}
+
+function syncSectionInputs() {
+  if (postCategorySelect && postCategorySelect.value !== (state.categoryId || "")) {
+    postCategorySelect.value = state.categoryId || "";
+  }
+  if (postStateSelect && postStateSelect.value !== (state.stateId || "")) {
+    postStateSelect.value = state.stateId || "";
+  }
+  syncSectionHint();
+}
+
+postCategorySelect?.addEventListener("change", () => {
+  state.categoryId = postCategorySelect.value;
+  syncSectionHint();
+  // Mirror into the publish panel so QA sees what the writer chose.
+  if (dailymattrCategory && dailymattrCategory.value !== state.categoryId) {
+    dailymattrCategory.value = state.categoryId;
+  }
+});
+postStateSelect?.addEventListener("change", () => {
+  state.stateId = postStateSelect.value;
+  syncSectionHint();
+  if (dailymattrState && dailymattrState.value !== state.stateId) {
+    dailymattrState.value = state.stateId;
+  }
+});
+
+/* Everyone signed in can read the lists — a writer needs them to file a story.
+   Publishing remains QA-only on the server. */
+async function loadSectionOptions() {
+  if (!postCategorySelect || !state.user) return;
+  try {
+    const res = await fetch(DAILYMATTR_META_ENDPOINT, { credentials: "same-origin" });
+    if (!res.ok) return;
+    const payload = await res.json();
+    const categories = payload.categories || [];
+    const states = payload.states || [];
+    const stateCat = categories.find((c) => /^state$/i.test(String(c.name).trim()));
+    stateCategoryId = stateCat ? String(stateCat.id) : null;
+    fillSelectOptions(postCategorySelect, categories, "Choose a category");
+    fillSelectOptions(postStateSelect, states, "Optional");
+    syncSectionInputs();
+  } catch { /* the picker is a convenience; the publish panel still works */ }
+}
 
 /* Source link — the writer can type it, not only inherit it from a scrape.
 

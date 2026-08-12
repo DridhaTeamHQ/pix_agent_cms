@@ -1260,6 +1260,48 @@ async function handlePix(req, res) {
    The browser sends exported slide PNGs here; this server adds the external
    credentials and forwards the publish request so the API key never reaches
    the client. */
+/* Which categories QA may publish into, and in what order.
+
+   DailyMattr offers 12; Shortly uses a subset, and the dropdown reads better
+   in editorial priority than in whatever order their API returns. The names
+   here are matched case-insensitively against their list and the IDs always
+   come from them — we never hard-code an ID, so if they renumber anything
+   this keeps working.
+
+   A name we ask for that they do not offer is skipped with a warning rather
+   than guessed at: sending an invented category_id would file the story under
+   the wrong section, which is worse than not offering it.
+
+   Override with DAILYMATTR_CATEGORIES="Entertainment,Technology,…", or set it
+   empty to show everything they offer. */
+const DAILYMATTR_CATEGORY_ORDER = (
+  env("DAILYMATTR_CATEGORIES") ||
+  "Entertainment,Technology,Lifestyle,State,International,National,Finance,Sports"
+).split(",").map((s) => s.trim()).filter(Boolean);
+
+let warnedMissingCategories = false;
+
+function applyCategoryPolicy(categories) {
+  if (!DAILYMATTR_CATEGORY_ORDER.length) return categories;
+
+  const byName = new Map(categories.map((c) => [String(c.name).trim().toLowerCase(), c]));
+  const kept = [];
+  const missing = [];
+  for (const name of DAILYMATTR_CATEGORY_ORDER) {
+    const hit = byName.get(name.toLowerCase());
+    if (hit) kept.push(hit);
+    else missing.push(name);
+  }
+
+  if (missing.length && !warnedMissingCategories) {
+    warnedMissingCategories = true;
+    console.warn(`⚠ DailyMattr does not offer: ${missing.join(", ")} — not shown to QA. Ask them to add it, or drop it from DAILYMATTR_CATEGORIES.`);
+  }
+  // Never hand QA an empty dropdown; if nothing matched, their names have
+  // changed and showing all of them beats showing none.
+  return kept.length ? kept : categories;
+}
+
 async function handleDailyMattrMeta(req, res) {
   const user = await currentUser(req);
   if (!user) {
@@ -1273,7 +1315,7 @@ async function handleDailyMattrMeta(req, res) {
 
   try {
     const meta = await fetchDailyMattrMeta(dailyMattrConfig());
-    sendJson(res, 200, meta);
+    sendJson(res, 200, { ...meta, categories: applyCategoryPolicy(meta.categories) });
   } catch (err) {
     console.warn("⚠ DailyMattr meta failed:", err.message);
     sendJson(res, 502, { error: err.message || "Could not load DailyMattr options." });

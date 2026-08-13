@@ -20,7 +20,14 @@ import { createUser, listUsers, setPassword, ensureAuthSchema } from "../../lib/
 
 const WRITER_PASSWORD = process.env.WRITER_PASSWORD || "writer@1234";
 const QA_PASSWORD = process.env.QA_PASSWORD || "qa@1234";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin@1234";
+/* The default admin. Usernames are lowercased and capped at 64 characters,
+   so an email address works as one unchanged.
+
+   The password sits here as a fallback, which means anyone who can read this
+   repository can sign in as the administrator. Set ADMIN_PASSWORD in the
+   environment and this literal is never used. */
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin@dridhatechnologies.com";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Shortly#2025";
 
 const ACCOUNTS = [
   { username: "writer1", role: "writer", displayName: "Content Writer 1", password: WRITER_PASSWORD },
@@ -31,7 +38,7 @@ const ACCOUNTS = [
   { username: "qa1", role: "qa", displayName: "QA Reviewer", password: QA_PASSWORD },
   // The admin owns the team roster and the full analytics. Without one seeded
   // the only route to a first admin account is a shell on the server.
-  { username: "admin", role: "admin", displayName: "Administrator", password: ADMIN_PASSWORD },
+  { username: ADMIN_USERNAME, role: "admin", displayName: "Administrator", password: ADMIN_PASSWORD },
 ];
 
 loadDotEnv();

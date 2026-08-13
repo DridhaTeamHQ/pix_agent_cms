@@ -3577,71 +3577,50 @@ function storyBodyText() {
   return (state.storyBody || "").trim();
 }
 
-/* One line of heading with the accent boxes behind its [bracketed] runs.
-   The poster headline does this too, but inline inside drawHeadline over a
-   wrapped multi-line block; a story heading is one short line, so this is the
-   same idea without the line-fitting. */
+/* One line of heading, with its [bracketed] runs set in the accent colour.
+
+   The poster headline marks its highlights with a filled block behind white
+   text. A story slide sits on a photograph rather than on a solid panel, and a
+   block there fights the picture instead of sitting on it — so the same
+   [bracket] markup paints the WORDS accent-blue and leaves the rest white.
+   Marked and unmarked words therefore differ by colour, not by background. */
 function drawStoryHeading(text, left, baselineTop, fontSize, s) {
   if (!text) return baselineTop;
   ctx.save();
   ctx.font = `600 ${Math.round(fontSize)}px 'Roboto Serif', 'Poppins', serif`;
   ctx.textBaseline = "top";
 
-  const parts = text.split(" ");
-  let cursor = left;
+  // Which words fall inside a highlighted run.
+  const words = [];
   let open = false;
-  let segStart = null;
-  let segWidth = 0;
-  const segments = [];
-
-  parts.forEach((rawWord, idx) => {
+  text.split(" ").forEach((rawWord) => {
     const opening = HIGHLIGHT_OPEN_CHAR.test(rawWord);
     const closing = HIGHLIGHT_CLOSE_CHAR.test(rawWord);
-    const clean = rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, "");
     if (opening) open = true;
-
-    const wordWidth = ctx.measureText(clean).width;
-    const advance = wordWidth + ctx.measureText(" ").width;
-    if (open && clean.length) {
-      if (segStart === null) segStart = cursor;
-      segWidth += (closing || idx === parts.length - 1) ? wordWidth : advance;
-    }
-    if ((closing || idx === parts.length - 1) && segStart !== null) {
-      segments.push({ x: segStart, w: segWidth });
-      segStart = null;
-      segWidth = 0;
-    }
+    words.push({ text: rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, ""), marked: open });
     if (closing) open = false;
-    cursor += advance;
   });
 
-  /* No brackets anywhere means the writer wants the whole heading marked —
-     on this layout the highlight IS the heading treatment, and an unhighlighted
-     line reads as a stray sentence rather than a kicker. */
-  if (!segments.length) {
-    const w = ctx.measureText(text.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, "")).width;
-    segments.push({ x: left, w });
-  }
+  /* No brackets anywhere means the writer wants the whole heading marked — on
+     this layout the accent IS the heading treatment, and a plain white line
+     reads as a stray sentence rather than a kicker. */
+  if (!words.some((w) => w.marked)) words.forEach((w) => { w.marked = true; });
 
-  ctx.fillStyle = state.accent;
-  const padX = fontSize * 0.16;
-  const padY = fontSize * 0.14;
-  segments.forEach((seg) => {
-    const bx = seg.x - padX;
-    const by = baselineTop - padY;
-    const bw = seg.w + padX * 2;
-    const bh = fontSize + padY * 2;
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, fontSize * 0.18);
-    else ctx.rect(bx, by, bw, bh);
-    ctx.fill();
-  });
-
-  ctx.fillStyle = "#ffffff";
-  ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
+  /* The shadow does the work the block used to: coloured text on a photograph
+     needs something to lift it off whatever happens to be behind it. */
+  ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
   ctx.shadowBlur = 14 * s;
   ctx.shadowOffsetY = 4 * s;
-  ctx.fillText(text.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, ""), left, baselineTop);
+
+  const space = ctx.measureText(" ").width;
+  let cursor = left;
+  for (const word of words) {
+    if (!word.text.length) continue;
+    ctx.fillStyle = word.marked ? state.accent : "#ffffff";
+    ctx.fillText(word.text, cursor, baselineTop);
+    cursor += ctx.measureText(word.text).width + space;
+  }
+
   ctx.restore();
 
   return baselineTop + fontSize;
@@ -3744,12 +3723,28 @@ function wrapPlainLines(text, maxWidth, maxLines) {
     let line = "";
     for (const word of trimmed.split(" ")) {
       const next = line ? `${line} ${word}` : word;
-      if (ctx.measureText(next).width <= maxWidth || !line) {
+      if (ctx.measureText(next).width <= maxWidth) {
         line = next;
-      } else {
-        lines.push(line);
-        line = word;
+        continue;
       }
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+
+      /* A single word wider than the column — a pasted URL, nearly always.
+         Letting it through whole (which is what an `|| !line` escape does)
+         put it half outside the frame with the tail simply gone. Break it at
+         the column edge instead: a URL split across two lines still reads,
+         one that walks off the canvas does not. */
+      let rest = word;
+      while (ctx.measureText(rest).width > maxWidth) {
+        let cut = 1;
+        while (cut < rest.length && ctx.measureText(rest.slice(0, cut + 1)).width <= maxWidth) cut++;
+        lines.push(rest.slice(0, cut));
+        rest = rest.slice(cut);
+      }
+      line = rest;
     }
     if (line) lines.push(line);
   }

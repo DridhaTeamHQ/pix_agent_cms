@@ -6142,6 +6142,30 @@ async function publishToDailyMattr() {
     return;
   }
 
+  /* The one genuinely irreversible action in the app: DailyMattr has no
+     delete route on the integration API, so a mistaken publish has to be
+     removed by hand from their portal. Worth one click to confirm, and worth
+     showing exactly what is about to go. */
+  const catLabel = dailymattrCategory?.selectedOptions?.[0]?.textContent || "none";
+  const stLabel = dailymattrState?.value ? (dailymattrState.selectedOptions?.[0]?.textContent || "") : "";
+  const hasVideo = Boolean(
+    state.videoEl && state.videoEl.readyState >= 2 && state.videoEl.videoWidth > 0 && state.trimEnd > state.trimStart
+  ) || Boolean(state.storedVideoUrl);
+  const extraCount = dailyMattrExtraFiles().length;
+  const pageCount = 1 + ((state.detailText || "").trim() ? 1 : 0) + (hasVideo ? 1 : 0) + extraCount;
+
+  const go = await confirmAction({
+    title: "Publish to DailyMattr?",
+    body: "This goes live on shortlyindia.com straight away. It cannot be undone from here — a mistake has to be removed from their portal by hand.",
+    facts: [
+      `Category: ${catLabel}${stLabel ? ` \u00b7 ${stLabel}` : ""}`,
+      `${pageCount} media item${pageCount === 1 ? "" : "s"}${hasVideo ? ", including the video" : ""}`,
+      state.pixId ? "The post will be marked approved" : "Not saved yet, so it will not be marked approved",
+    ],
+    confirmLabel: "Publish now",
+  });
+  if (!go) return;
+
   dailymattrPublishBtn.disabled = true;
   const previousLabel = dailymattrPublishBtn.textContent;
   dailymattrPublishBtn.textContent = "Publishing…";
@@ -6496,6 +6520,89 @@ if (postKeywordsInput) {
     if (dailymattrKeywords && !dailymattrDraftTouched.keywords) {
       dailymattrKeywords.value = state.keywords;
     }
+  });
+}
+
+/* ── Confirmation dialog ─────────────────────────────────────────────
+   Replaces window.confirm for the actions that cannot be taken back.
+
+   window.confirm is fine functionally, but it renders as a browser chrome
+   alert with no room to say WHAT is about to happen — and for publishing that
+   detail is the whole point: which section, how many files, whether a video
+   is going. It also cannot be styled, so it reads as a browser error rather
+   than part of the app.
+
+   Built on native <dialog>: Esc-to-cancel, focus trapping and top-layer
+   stacking come free, and this page has enough stacking contexts (the mobile
+   sheet, the aurora backdrop, the preview rail) that a hand-rolled overlay
+   would land behind something eventually.
+
+   Returns a promise for true/false so callers keep reading top to bottom. */
+const pixDialogEl = document.getElementById("pix-dialog");
+
+function confirmAction({ title, body = "", facts = [], confirmLabel = "Confirm", danger = false } = {}) {
+  // No <dialog> (very old browser, or the element was removed): fall back
+  // rather than silently proceeding with something irreversible.
+  if (!pixDialogEl || typeof pixDialogEl.showModal !== "function") {
+    return Promise.resolve(window.confirm(`${title}\n\n${body}`));
+  }
+
+  document.getElementById("pix-dialog-title").textContent = title;
+  const bodyEl = document.getElementById("pix-dialog-body");
+  bodyEl.textContent = body;
+  bodyEl.hidden = !body;
+
+  const factsEl = document.getElementById("pix-dialog-facts");
+  factsEl.textContent = "";
+  factsEl.hidden = !facts.length;
+  for (const fact of facts) {
+    const li = document.createElement("li");
+    li.textContent = fact;
+    factsEl.appendChild(li);
+  }
+
+  const confirmBtn = document.getElementById("pix-dialog-confirm");
+  confirmBtn.textContent = confirmLabel;
+  confirmBtn.classList.toggle("is-danger", Boolean(danger));
+
+  const cancelBtn = document.getElementById("pix-dialog-cancel");
+
+  return new Promise((resolve) => {
+    /* Resolve from whichever signal arrives first, rather than trusting the
+       "close" event alone.
+
+       That event is the obvious hook and it is what this originally used — but
+       it does not fire in every environment (measured: the dialog opened,
+       closed and set returnValue correctly while "close" never fired at all).
+       When that happens the promise never settles and the caller hangs
+       forever with no error: the Publish button would sit disabled and the
+       user would have no idea why. Button clicks are the signal we actually
+       control, so they decide, and the events are a safety net for Esc and
+       the backdrop. */
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      cancelBtn.removeEventListener("click", onCancel);
+      confirmBtn.removeEventListener("click", onConfirm);
+      pixDialogEl.removeEventListener("cancel", onCancel);
+      pixDialogEl.removeEventListener("close", onClose);
+      if (pixDialogEl.open) pixDialogEl.close();
+      resolve(value);
+    };
+    const onCancel = () => finish(false);
+    const onConfirm = () => finish(true);
+    const onClose = () => finish(pixDialogEl.returnValue === "confirm");
+
+    cancelBtn.addEventListener("click", onCancel);
+    confirmBtn.addEventListener("click", onConfirm);
+    pixDialogEl.addEventListener("cancel", onCancel);   // Esc
+    pixDialogEl.addEventListener("close", onClose);     // backdrop / programmatic
+
+    pixDialogEl.returnValue = "cancel";   // anything but an explicit yes means no
+    pixDialogEl.showModal();
+    // Focus Cancel, not Confirm: a stray Enter must not publish.
+    cancelBtn.focus();
   });
 }
 
@@ -7246,11 +7353,16 @@ function renderWriterRow(u) {
        like a broken password, not a switched-off account. That already
        happened once in production. Confirm before doing it; enabling needs no
        confirmation because it cannot lock anyone out. */
-    if (u.active && !window.confirm(
-      `Disable ${u.displayName || u.username}?\n\n`
-      + `They will be signed out immediately and will not be able to log in. `
-      + `Their posts stay exactly as they are.\n\nYou can re-enable them at any time.`
-    )) return;
+    if (u.active) {
+      const ok = await confirmAction({
+        title: `Disable ${u.displayName || u.username}?`,
+        body: "They will be signed out immediately and will not be able to log in. Sign-in will tell them the password is wrong, so let them know.",
+        facts: ["Their posts stay exactly as they are", "You can re-enable them at any time"],
+        confirmLabel: "Disable",
+        danger: true,
+      });
+      if (!ok) return;
+    }
     try {
       await usersRequest("/api/users/active", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -7665,7 +7777,17 @@ async function setPostApproval(post, approved, button) {
 }
 
 async function deleteReviewPost(post, itemEl) {
-  if (!window.confirm(`Delete "${post.headline || "this post"}" permanently?`)) return;
+  const ok = await confirmAction({
+    title: "Delete this post?",
+    body: `"${post.headline || "Untitled post"}" will be removed from the library for everyone. This cannot be undone.`,
+    facts: [
+      `Written by ${post.user_name || "unknown"}`,
+      post.approved ? "It is currently approved" : "It is still pending",
+    ],
+    confirmLabel: "Delete",
+    danger: true,
+  });
+  if (!ok) return;
   try {
     const response = await fetch(`/api/pix?id=${encodeURIComponent(post.id)}`, {
       method: "DELETE",

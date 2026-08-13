@@ -1035,6 +1035,23 @@
     </div>
   </section>
 
+  <!-- ═══ Confirmation dialog ═══
+       One <dialog> reused by every irreversible action. Native <dialog> gives
+       Esc-to-cancel, focus trapping and the top layer for free — a hand-rolled
+       overlay would have to reimplement all three, and the poster editor has
+       enough stacking contexts to get that wrong. -->
+  <dialog class="pix-dialog" id="pix-dialog" aria-labelledby="pix-dialog-title">
+    <form method="dialog" class="pix-dialog-inner">
+      <h3 class="pix-dialog-title" id="pix-dialog-title">Are you sure?</h3>
+      <p class="pix-dialog-body" id="pix-dialog-body"></p>
+      <ul class="pix-dialog-facts" id="pix-dialog-facts" hidden></ul>
+      <div class="pix-dialog-actions">
+        <button type="submit" value="cancel" class="btn-ghost" id="pix-dialog-cancel">Cancel</button>
+        <button type="submit" value="confirm" class="btn-primary" id="pix-dialog-confirm">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="./app.js"></script>
 </body>
 </html>

@@ -247,6 +247,17 @@
       <!-- ═══ Edit accordions (revealed after build) ═══ -->
       <div id="edit-panel" class="edit-panel acc-list" hidden>
 
+        <!-- Which page these controls are writing to. Without this the same
+             fields silently point somewhere else after a card is clicked,
+             which is the one way a multi-page editor gets confusing. -->
+        <div class="page-context" id="page-context" hidden>
+          <div class="page-context-main">
+            <span class="page-context-kicker">Editing</span>
+            <strong class="page-context-name" id="page-context-name">Page 1 · Poster</strong>
+          </div>
+          <button type="button" class="btn-ghost btn-tiny" id="page-context-back">Edit main post</button>
+        </div>
+
         <!-- Aspect Ratio -->
         <div class="acc" data-open="true">
           <button type="button" class="acc-head" aria-expanded="true">
@@ -332,11 +343,12 @@
           </div></div>
         </div>
 
-        <!-- Slide 2 video — replaces the Text card with a trimmed, branded clip.
-             Source is a YouTube/Instagram link or a local file. -->
+        <!-- Video — a trimmed, branded clip on its own page. Source is a
+             YouTube/Instagram link or a local file. Only reachable while a
+             Video page is selected, because the clip belongs to that page. -->
         <div class="acc" data-open="false" id="video-acc">
           <button type="button" class="acc-head" aria-expanded="false">
-            <span class="acc-title">Slide 2 Video</span>
+            <span class="acc-title">Video</span>
             <svg class="acc-chevron" width="14" height="14"><use href="#i-chevron"/></svg>
           </button>
           <div class="acc-body"><div class="acc-inner">
@@ -553,6 +565,11 @@
     <section class="glass-panel preview-panel">
       <div class="preview-header">
         <span class="preview-title">Live Preview</span>
+        <!-- The carousel is a fixed spine (poster + slide 2) plus pages the
+             writer adds. The count is in the header because the cap is the
+             thing people bump into, and a number they can see beats an
+             "Add page" button that silently stops working. -->
+        <span class="page-count-chip" id="page-count-chip">2 of 5 pages</span>
         <div class="preview-header-actions">
           <!-- The only way a post reaches the database. Nothing is stored on
                scrape, rewrite or download. -->
@@ -584,37 +601,93 @@
            export ship the Text image. -->
       <div class="preview-rail" id="preview-rail">
 
-        <figure class="preview-card" data-preview-mode="pix">
-          <figcaption class="preview-card-label"><span class="preview-card-num">1</span> Poster</figcaption>
+        <!-- The spine: a scrape always fills these, and they cannot be
+             removed. Poster is page 1, Text is page 2. Everything else —
+             including video — is added by hand. -->
+        <figure class="preview-card is-selected" data-preview-mode="pix" data-page="base">
+          <figcaption class="preview-card-label">
+            <button type="button" class="preview-card-grip" data-grip
+                    aria-label="Move this page — drag, or use the left and right arrow keys"
+                    title="Drag to reorder (or focus and press ← →)">⠿</button>
+            <span class="preview-card-num">1</span>
+            <span class="preview-card-type">Poster</span>
+          </figcaption>
           <div class="canvas-container">
-            <canvas id="post-canvas" width="920" height="1700" aria-label="Slide 1 — poster"></canvas>
+            <canvas id="post-canvas" width="920" height="1700" aria-label="Page 1 — poster"></canvas>
           </div>
-          <button type="button" class="btn-ghost preview-card-dl" data-download="pix">
-            <svg width="13" height="13" aria-hidden="true"><use href="#i-download"/></svg> Download
-          </button>
+          <p class="preview-card-slice" hidden></p>
+          <div class="preview-card-actions">
+            <button type="button" class="btn-ghost preview-card-edit" data-edit-page>
+              <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M11.3 2.2l2.5 2.5L6 12.5 3 13l.5-3z" fill="none"
+                      stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              </svg> Edit
+            </button>
+            <button type="button" class="btn-ghost preview-card-dl" data-download="pix">
+              <svg width="12" height="12" aria-hidden="true"><use href="#i-download"/></svg> Download
+            </button>
+          </div>
         </figure>
 
-        <figure class="preview-card" data-preview-mode="text">
-          <figcaption class="preview-card-label"><span class="preview-card-num">2</span> Text</figcaption>
+        <figure class="preview-card is-selected" data-preview-mode="text" data-page="base">
+          <figcaption class="preview-card-label">
+            <button type="button" class="preview-card-grip" data-grip
+                    aria-label="Move this page — drag, or use the left and right arrow keys"
+                    title="Drag to reorder (or focus and press ← →)">⠿</button>
+            <span class="preview-card-num">2</span>
+            <span class="preview-card-type">Text</span>
+          </figcaption>
           <div class="canvas-container">
-            <canvas id="text-canvas" width="920" height="1700" aria-label="Slide 2 — text card"></canvas>
+            <canvas id="text-canvas" width="920" height="1700" aria-label="Page 2 — text card"></canvas>
           </div>
-          <button type="button" class="btn-ghost preview-card-dl" data-download="text">
-            <svg width="13" height="13" aria-hidden="true"><use href="#i-download"/></svg> Download
-          </button>
+          <!-- Which of the paragraph's points this card carries, once there is
+               more than one text page to spread them over. -->
+          <p class="preview-card-slice" hidden></p>
+          <div class="preview-card-actions">
+            <button type="button" class="btn-ghost preview-card-edit" data-edit-page>
+              <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M11.3 2.2l2.5 2.5L6 12.5 3 13l.5-3z" fill="none"
+                      stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              </svg> Edit
+            </button>
+            <button type="button" class="btn-ghost preview-card-dl" data-download="text">
+              <svg width="12" height="12" aria-hidden="true"><use href="#i-download"/></svg> Download
+            </button>
+          </div>
         </figure>
 
-        <figure class="preview-card" data-preview-mode="video">
-          <figcaption class="preview-card-label"><span class="preview-card-num">2</span> Video</figcaption>
-          <div class="canvas-container">
-            <canvas id="video-canvas" width="920" height="1700" aria-label="Slide 2 — video"></canvas>
-          </div>
-          <button type="button" class="btn-ghost preview-card-dl" data-download="video">
-            <svg width="13" height="13" aria-hidden="true"><use href="#i-download"/></svg> Export MP4
-          </button>
-        </figure>
+        <!-- Added pages are injected here, immediately before the tile, so
+             the "+" always sits at the end of the run of pages — right
+             beside Text until something is added — and never after the X
+             export. -->
 
-        <figure class="preview-card" data-preview-mode="x">
+        <div class="preview-add" id="preview-add">
+          <button type="button" class="preview-add-btn" id="preview-add-btn"
+                  aria-haspopup="true" aria-expanded="false" title="Add another page">
+            <span class="preview-add-plus" aria-hidden="true">+</span>
+            <span class="preview-add-label">Add page</span>
+            <span class="preview-add-hint" id="preview-add-hint">3 left</span>
+          </button>
+          <!-- Replaces the tile's face while open rather than floating over
+               it, so nothing shows through and nothing spills onto the next
+               card. -->
+          <div class="preview-add-menu" id="preview-add-menu" role="menu" hidden>
+            <button type="button" role="menuitem" data-add-page="poster">
+              <span class="add-menu-icon" aria-hidden="true">▦</span> Poster page
+            </button>
+            <button type="button" role="menuitem" data-add-page="text">
+              <span class="add-menu-icon" aria-hidden="true">≡</span> Text page
+            </button>
+            <button type="button" role="menuitem" data-add-page="video">
+              <span class="add-menu-icon" aria-hidden="true">▶</span> Video page
+            </button>
+            <button type="button" class="preview-add-cancel" data-add-cancel>Cancel</button>
+          </div>
+        </div>
+
+        <!-- Not a carousel page — an export variant of the poster (2x,
+             cropped, Shortly logo). It rides along free of the 5-page cap. -->
+        <figure class="preview-card preview-card-pinned" data-preview-mode="x">
           <figcaption class="preview-card-label"><span class="preview-card-glyph">𝕏</span> For X</figcaption>
           <div class="canvas-container">
             <canvas id="x-canvas" width="920" height="1700" aria-label="Post image for X"></canvas>

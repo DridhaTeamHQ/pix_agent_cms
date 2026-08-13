@@ -252,6 +252,9 @@ const state = {
      for local uploads, `videoUrl` for scraped YouTube/Instagram links; the
      export path picks whichever is present. */
   videoEl: null,
+  // What the <video> element is actually playing. Kept so a video page that
+  // loses the shared player can reload the same source into its own.
+  videoSrc: "",
   videoUrl: "",             // resolved source URL (scrape path)
   videoFile: null,          // File object (local upload path)
   videoMeta: null,          // { title, duration, uploader, ... } from /resolve
@@ -2238,12 +2241,150 @@ function computeHeadlineLayoutAndTop() {
    `state._targetedRender` marks "paint once into the ctx I gave you", which
    is what the exporter and the per-card painters need; without it a nested
    renderPoster() would recurse back into painting all three. */
-const PREVIEW_CARDS = [
-  { mode: "pix",   canvas: document.getElementById("post-canvas") },
-  { mode: "text",  canvas: document.getElementById("text-canvas") },
-  { mode: "video", canvas: document.getElementById("video-canvas") },
-  { mode: "x",     canvas: document.getElementById("x-canvas") },
+
+/* ── Pages ──────────────────────────────────────────────────────────────
+   The carousel is a spine plus extras.
+
+   The spine is what a scrape produces and cannot be removed: Poster is
+   page 1 and Text is page 2. Everything else — including video — is added
+   by hand, up to MAX_PAGES in total, in any mix of poster / text / video.
+
+   Only one page is selected at a time, and the editor columns write to
+   whichever that is. Rather than thread a page argument through forty draw
+   and control functions, the selected page's values ARE `state`: switching
+   pages captures the outgoing page's fields out of state and applies the
+   incoming page's fields into it. Painting does the same swap per card, so
+   every page can be on screen at once while only one is live.
+
+   A field is either page-owned (listed below) or global. Global is the
+   default and covers everything that is a property of the post rather than
+   of one page in it: accent, logo, aspect ratio, the timestamp toggle. */
+
+const MAX_PAGES = 5;
+
+// The background image is owned by poster AND text pages: the text card
+// paints a blurred copy of it, so two text pages with one shared image
+// could not look different from each other.
+const IMAGE_PAGE_FIELDS = [
+  "mainImage", "imageOffset", "imageZoom", "overlayOpacity",
+  "filterPreset", "filterBrightness", "filterContrast", "filterSaturation", "filterBlur",
+  "sourceImageUrl", "productImageAnalysis",
 ];
+const POSTER_PAGE_FIELDS = [...IMAGE_PAGE_FIELDS, "headline", "tag", "fontSize", "headlineStyle"];
+/* A text page owns its background but not its words: the paragraph is one
+   body of text on the post, divided across the text pages at paint time.
+   See recomputeDetailSlices(). */
+const TEXT_PAGE_FIELDS   = [...IMAGE_PAGE_FIELDS];
+/* A video page owns its upload and its last encode as well as its clip:
+   two video pages that shared `storedVideoUrl` would publish each other's
+   footage. */
+const VIDEO_PAGE_FIELDS  = [
+  "videoEl", "videoSrc", "videoUrl", "videoFile", "videoMeta", "videoSourceKind",
+  "trimStart", "trimEnd", "videoMuted", "videoFocus", "videoCaption", "videoCaptionSize",
+  "storedVideoUrl", "storedVideoFor", "renderedClip",
+];
+
+// The spine is poster + text. Video is not part of it, so the base page
+// never owns a clip — only an added Video page does.
+const BASE_PAGE_FIELDS = [...new Set([...POSTER_PAGE_FIELDS, ...TEXT_PAGE_FIELDS, "detailText"])];
+const ALL_PAGE_FIELDS = [...new Set([...BASE_PAGE_FIELDS, ...VIDEO_PAGE_FIELDS])];
+
+const PAGE_TYPES = {
+  poster: { label: "Poster", mode: "pix",   download: "Download",  fields: POSTER_PAGE_FIELDS },
+  text:   { label: "Text",   mode: "text",  download: "Download",  fields: TEXT_PAGE_FIELDS },
+  video:  { label: "Video",  mode: "video", download: "Export MP4", fields: VIDEO_PAGE_FIELDS },
+};
+
+/* Which editor controls can reach a given page. Controls that cannot are
+   dimmed instead of hidden — the panel keeps its shape, so nothing jumps
+   when the selection changes. */
+const PAGE_SCOPE = {
+  base:   { headline: true,  detail: true,  tag: true,  image: true,  video: false },
+  poster: { headline: true,  detail: false, tag: true,  image: true,  video: false },
+  text:   { headline: false, detail: true,  tag: false, image: true,  video: false },
+  video:  { headline: false, detail: false, tag: false, image: false, video: true  },
+};
+
+const basePage = { id: "base", type: "base", el: null, cards: [], content: null };
+const pages = [basePage];
+let activePageId = "base";
+let pageSeq = 0;
+
+basePage.cards = Array.from(document.querySelectorAll('.preview-card[data-page="base"]')).map((el) => ({
+  el,
+  mode: el.dataset.previewMode,
+  canvas: el.querySelector("canvas"),
+  page: basePage,
+  detailSlice: null,     // set by recomputeDetailSlices() on text cards
+  sliceRange: null,
+}));
+
+/* ── Rail order ──
+   `pages` holds content; `slotOrder` holds the sequence the reader sees.
+   They are separate because the spine is one page with two cards, and a
+   card has to be movable on its own. Page numbers are slot positions, so
+   reordering renumbers by construction — there is nothing to keep in step. */
+const slotOrder = [...basePage.cards];
+
+function cardForElement(el) { return slotOrder.find((card) => card.el === el) || null; }
+
+const xPreviewCanvas = document.getElementById("x-canvas");
+
+function fieldsForPage(page) {
+  if (!page || page.type === "base") return BASE_PAGE_FIELDS;
+  return PAGE_TYPES[page.type]?.fields || [];
+}
+
+const CARD_LABELS = { pix: "Poster", text: "Text", video: "Video" };
+function cardLabel(card) { return CARD_LABELS[card.mode] || "Page"; }
+
+// Where a card sits in the rail, 1-based — what the writer sees on it.
+function cardNumber(card) { return slotOrder.indexOf(card) + 1; }
+
+function getPage(id) { return pages.find((p) => p.id === id) || basePage; }
+function activePage() { return getPage(activePageId); }
+function extraPages() { return pages.filter((p) => p !== basePage); }
+
+// One card, one page, one number. Counting the cards that are actually in
+// the rail is what stops the count and the rail drifting apart — that is
+// what let a full rail render six.
+function pageCount() { return slotOrder.length; }
+function canAddPage() { return pageCount() < MAX_PAGES; }
+
+/* Copy the plain {x,y} pairs so a stored page cannot be mutated later by a
+   drag on the live one. Images, Files and <video> elements are shared by
+   reference on purpose — they are the payload, not a value. */
+function clonePageValue(value) {
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    return { ...value };
+  }
+  return value;
+}
+
+function capturePageFields(fields) {
+  const out = {};
+  for (const field of fields) out[field] = clonePageValue(state[field]);
+  return out;
+}
+
+function applyPageFields(values) {
+  if (!values) return;
+  for (const key of Object.keys(values)) state[key] = values[key];
+}
+
+/* Fold live state back into the selected page before anything reads a page.
+   Fields the selected page does not own are still edits to the post, so
+   they land on the base page — otherwise changing the paragraph while an
+   added poster page is selected would vanish on the next repaint. */
+function syncActivePageContent() {
+  const page = activePage();
+  page.content = capturePageFields(fieldsForPage(page));
+  if (page !== basePage) {
+    const owned = new Set(fieldsForPage(page));
+    const rest = BASE_PAGE_FIELDS.filter((field) => !owned.has(field));
+    basePage.content = { ...(basePage.content || {}), ...capturePageFields(rest) };
+  }
+}
 
 function paintCardInto(target, mode) {
   if (!target) return;
@@ -2266,10 +2407,615 @@ function paintCardInto(target, mode) {
   }
 }
 
+/* ── Dividing the points across text pages ──
+   The paragraph stays one body of text — it is what gets saved, published
+   and searched, and splitting it into per-page copies would mean four
+   places to keep in step. Instead each text card is handed a slice of it
+   at paint time: six points over two text pages is 3 and 3, over three
+   pages 2/2/2, and seven over two is 4 and 3.
+
+   Because slices are derived rather than stored, adding, removing or
+   dragging a text page re-divides them on the next paint with nothing to
+   invalidate. */
+
+function detailPoints(text) {
+  return (text || "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^[•*-]\s*$/.test(line));
+}
+
+// Remainders go to the earliest pages, so 7 over 2 reads 4 then 3 — a
+// fuller first card looks deliberate where a fuller last one looks like
+// something overflowed.
+function distributePoints(points, buckets) {
+  const out = [];
+  let taken = 0;
+  let remainder = points.length % buckets;
+  const each = Math.floor(points.length / buckets);
+  for (let i = 0; i < buckets; i += 1) {
+    const size = each + (remainder > 0 ? 1 : 0);
+    if (remainder > 0) remainder -= 1;
+    out.push(points.slice(taken, taken + size));
+    taken += size;
+  }
+  return out;
+}
+
+let detailSliceKey = "";
+
+function recomputeDetailSlices({ force = false } = {}) {
+  const textCards = slotOrder.filter((card) => card.mode === "text");
+  const body = getFullDetailText();
+  const key = `${slotOrder.map((c) => c.mode).join(",")}|${body}`;
+  if (!force && key === detailSliceKey) return;
+  detailSliceKey = key;
+
+  // One text page carries the whole paragraph, exactly as it always did.
+  if (textCards.length < 2) {
+    for (const card of textCards) { card.detailSlice = null; card.sliceRange = null; }
+    syncSliceLabels();
+    return;
+  }
+
+  const points = detailPoints(body);
+  const chunks = distributePoints(points, textCards.length);
+  let next = 1;
+  textCards.forEach((card, i) => {
+    const chunk = chunks[i];
+    card.detailSlice = chunk.join("\n\n");
+    card.sliceRange = chunk.length ? [next, next + chunk.length - 1] : null;
+    next += chunk.length;
+  });
+  syncSliceLabels();
+}
+
+function syncSliceLabels() {
+  for (const card of slotOrder) {
+    const label = card.el.querySelector(".preview-card-slice");
+    if (!label) continue;
+    const range = card.sliceRange;
+    if (card.mode !== "text" || !card.detailSlice) {
+      label.hidden = true;
+      label.textContent = "";
+      continue;
+    }
+    label.hidden = false;
+    label.textContent = !range
+      ? "No points left for this page"
+      : (range[0] === range[1] ? `Point ${range[0]}` : `Points ${range[0]}–${range[1]}`);
+  }
+}
+
 function renderPoster() {
   // Export paths swap ctx themselves and want a single paint.
   if (state._targetedRender) { paintPoster(); return; }
-  for (const card of PREVIEW_CARDS) paintCardInto(card.canvas, card.mode);
+
+  syncActivePageContent();
+  recomputeDetailSlices();
+
+  // The live values, restored after the last card. Every page is painted
+  // through base first, so a page only overrides the fields it owns and
+  // inherits the rest of the post.
+  const live = capturePageFields(ALL_PAGE_FIELDS);
+
+  try {
+    for (const page of pages) {
+      applyPageFields(live);
+      applyPageFields(basePage.content);
+      if (page !== basePage) applyPageFields(page.content);
+      for (const card of page.cards) {
+        // A text card paints its slice of the paragraph, not the whole of it.
+        state._detailSlice = card.detailSlice || null;
+        paintCardInto(card.canvas, card.mode);
+      }
+      state._detailSlice = null;
+    }
+
+    // X is the poster again, so it always follows page 1 — never whichever
+    // page happens to be selected.
+    applyPageFields(live);
+    applyPageFields(basePage.content);
+    paintCardInto(xPreviewCanvas, "x");
+  } finally {
+    applyPageFields(live);
+  }
+}
+
+/* ── Page operations ── */
+
+function blankPageContent(type) {
+  const blank = {
+    mainImage: null,
+    imageOffset: { x: 0, y: 0 },
+    imageZoom: 100,
+    overlayOpacity: 100,
+    filterPreset: "none",
+    filterBrightness: 100,
+    filterContrast: 100,
+    filterSaturation: 100,
+    filterBlur: 0,
+    sourceImageUrl: null,
+    productImageAnalysis: null,
+    headline: "",
+    tag: "none",
+    fontSize: 0,
+    // Blank everywhere else, but a headline needs *a* style: inheriting the
+    // post's current one is the least surprising starting point.
+    headlineStyle: state.headlineStyle,
+    detailText: "",
+    videoEl: null,
+    videoSrc: "",
+    videoUrl: "",
+    videoFile: null,
+    videoMeta: null,
+    videoSourceKind: "link",
+    trimStart: 0,
+    trimEnd: 0,
+    videoMuted: false,
+    videoFocus: { x: 0.5, y: 0.5 },
+    storedVideoUrl: null,
+    storedVideoFor: null,
+    renderedClip: null,
+    videoCaption: "",
+    videoCaptionSize: state.videoCaptionSize,
+  };
+  const owned = new Set(fieldsForPage({ type }));
+  const content = {};
+  for (const field of owned) content[field] = clonePageValue(blank[field]);
+  return content;
+}
+
+/* Build and mount a page. Kept separate from addPage() so reopening a saved
+   post can rebuild its pages without each one stealing the selection and
+   capturing the live values on the way past. */
+function createPage(type, content) {
+  const spec = PAGE_TYPES[type];
+  const addTile = document.getElementById("preview-add");
+  if (!spec || !addTile) return null;
+
+  pageSeq += 1;
+  const id = `page-${pageSeq}`;
+
+  const fig = document.createElement("figure");
+  fig.className = "preview-card";
+  fig.dataset.page = id;
+  fig.dataset.previewMode = spec.mode;
+  fig.innerHTML = `
+          <figcaption class="preview-card-label">
+            <button type="button" class="preview-card-grip" data-grip
+                    aria-label="Move this page — drag, or use the left and right arrow keys"
+                    title="Drag to reorder (or focus and press &larr; &rarr;)">&#10287;</button>
+            <span class="preview-card-num"></span>
+            <span class="preview-card-type">${spec.label}</span>
+            <button type="button" class="preview-card-remove" data-remove-page
+                    aria-label="Remove this page" title="Remove this page">&times;</button>
+          </figcaption>
+          <div class="canvas-container">
+            <canvas width="${canvas.width}" height="${canvas.height}"></canvas>
+          </div>
+          <p class="preview-card-slice" hidden></p>
+          <div class="preview-card-actions">
+            <button type="button" class="btn-ghost preview-card-edit" data-edit-page>
+              <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M11.3 2.2l2.5 2.5L6 12.5 3 13l.5-3z" fill="none"
+                      stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              </svg> Edit
+            </button>
+            <button type="button" class="btn-ghost preview-card-dl" data-download="${spec.mode}">
+              <svg width="12" height="12" aria-hidden="true"><use href="#i-download"/></svg> ${spec.download}
+            </button>
+          </div>`;
+
+  const cardCanvas = fig.querySelector("canvas");
+  const page = {
+    id,
+    type,
+    el: fig,
+    cards: [],
+    content: { ...blankPageContent(type), ...(content || {}) },
+  };
+  page.cards = [{
+    el: fig, mode: spec.mode, canvas: cardCanvas, page, detailSlice: null, sliceRange: null,
+  }];
+
+  addTile.before(fig);
+  pages.push(page);
+  slotOrder.push(page.cards[0]);
+  if (type === "video") attachVideoReframe(cardCanvas, id);
+  return page;
+}
+
+function addPage(type) {
+  if (!canAddPage()) return null;
+  // A new page starts empty rather than as a copy of page 1: clearing a
+  // duplicate is more work than filling a blank.
+  const page = createPage(type, null);
+  if (!page) return null;
+
+  renumberPages();
+  setActivePage(page.id);
+  page.el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  return page;
+}
+
+/* ── Saving the page list ──
+   Only what survives a round trip: text, tags and framing. An added page's
+   image is a File or an <img> in memory — the save pipeline uploads page
+   1's image only, so a reopened post rebuilds its added pages empty of
+   media rather than pointing at something that is not there. */
+function serializePages() {
+  syncActivePageContent();
+  return extraPages().map((page) => {
+    const c = page.content || {};
+    const entry = { type: page.type };
+    if (page.type === "poster") {
+      entry.headline = c.headline || "";
+      entry.tag = c.tag || "none";
+      entry.fontSize = c.fontSize ?? 0;
+      entry.headlineStyle = c.headlineStyle;
+    }
+    // No text: a text page shows a slice of the post's paragraph, and the
+    // slice is derived from the page order on open.
+    if (page.type === "poster" || page.type === "text") {
+      entry.overlayOpacity = c.overlayOpacity ?? 100;
+      entry.imageZoom = c.imageZoom ?? 100;
+      entry.imageOffset = { x: c.imageOffset?.x ?? 0, y: c.imageOffset?.y ?? 0 };
+      entry.filters = {
+        preset: c.filterPreset || "none",
+        brightness: c.filterBrightness ?? 100,
+        contrast: c.filterContrast ?? 100,
+        saturation: c.filterSaturation ?? 100,
+        blur: c.filterBlur ?? 0,
+      };
+    }
+    if (page.type === "video") {
+      entry.video = {
+        url: c.videoUrl || null,
+        // The bucket copy is the only part of a clip that survives a reload,
+        // so it is the one piece of media a page does carry across.
+        storedUrl: c.storedVideoUrl || null,
+        storedFor: c.storedVideoFor || null,
+        sourceKind: c.videoSourceKind || "link",
+        trimStart: c.trimStart ?? 0,
+        trimEnd: c.trimEnd ?? 0,
+        muted: !!c.videoMuted,
+        focus: { x: c.videoFocus?.x ?? 0.5, y: c.videoFocus?.y ?? 0.5 },
+        caption: c.videoCaption || "",
+        captionSize: c.videoCaptionSize ?? state.videoCaptionSize,
+      };
+    }
+    return entry;
+  });
+}
+
+function restorePages(list) {
+  for (const page of extraPages()) {
+    if (page.parkedVideo) {
+      page.parkedVideo.removeAttribute("src");
+      page.parkedVideo.load();
+    }
+    page.el?.remove();
+  }
+  pages.length = 1;
+  slotOrder.length = 0;
+  slotOrder.push(...basePage.cards);
+  activePageId = "base";
+  playerOwner = null;
+
+  for (const entry of Array.isArray(list) ? list : []) {
+    if (!PAGE_TYPES[entry?.type] || !canAddPage()) break;
+    const content = {};
+    if (entry.type === "poster") {
+      content.headline = entry.headline || "";
+      content.tag = entry.tag || "none";
+      content.fontSize = numberOr(entry.fontSize, 0);
+      if (entry.headlineStyle) content.headlineStyle = entry.headlineStyle;
+    }
+    if (entry.type === "poster" || entry.type === "text") {
+      content.overlayOpacity = numberOr(entry.overlayOpacity, 100);
+      content.imageZoom = numberOr(entry.imageZoom, 100);
+      content.imageOffset = {
+        x: numberOr(entry.imageOffset?.x, 0),
+        y: numberOr(entry.imageOffset?.y, 0),
+      };
+      content.filterPreset = entry.filters?.preset || "none";
+      content.filterBrightness = numberOr(entry.filters?.brightness, 100);
+      content.filterContrast = numberOr(entry.filters?.contrast, 100);
+      content.filterSaturation = numberOr(entry.filters?.saturation, 100);
+      content.filterBlur = numberOr(entry.filters?.blur, 0);
+    }
+    if (entry.type === "video") {
+      content.videoUrl = entry.video?.url || "";
+      content.storedVideoUrl = entry.video?.storedUrl || null;
+      content.storedVideoFor = entry.video?.storedFor || null;
+      content.videoSourceKind = entry.video?.sourceKind || "link";
+      content.trimStart = numberOr(entry.video?.trimStart, 0);
+      content.trimEnd = numberOr(entry.video?.trimEnd, 0);
+      content.videoMuted = !!entry.video?.muted;
+      content.videoFocus = {
+        x: numberOr(entry.video?.focus?.x, 0.5),
+        y: numberOr(entry.video?.focus?.y, 0.5),
+      };
+      content.videoCaption = entry.video?.caption || "";
+      content.videoCaptionSize = numberOr(entry.video?.captionSize, state.videoCaptionSize);
+    }
+    createPage(entry.type, content);
+  }
+
+  renumberPages();
+}
+
+function removePage(id) {
+  const index = pages.findIndex((p) => p.id === id);
+  if (index <= 0) return;                    // the spine is not removable
+  const [page] = pages.splice(index, 1);
+
+  if (page.parkedVideo) {
+    page.parkedVideo.removeAttribute("src");
+    page.parkedVideo.load();
+    page.parkedVideo = null;
+  }
+  // The shared player would otherwise still be held by a page that no
+  // longer exists, and the next video page would decline to reload.
+  if (playerOwner === page) playerOwner = null;
+  for (const card of page.cards) {
+    const slot = slotOrder.indexOf(card);
+    if (slot >= 0) slotOrder.splice(slot, 1);
+  }
+  page.el?.remove();
+
+  if (activePageId === id) {
+    activePageId = "base";
+    applyPageFields(basePage.content);
+    adoptPageVideo(basePage);
+    syncEditorFromState();
+  }
+
+  renumberPages();
+  renderPoster();
+  setStatus("Page removed.", "success");
+}
+
+function renumberPages() {
+  const addTile = document.getElementById("preview-add");
+
+  slotOrder.forEach((card, index) => {
+    const number = index + 1;
+    const numEl = card.el.querySelector(".preview-card-num");
+    if (numEl) numEl.textContent = String(number);
+    card.canvas?.setAttribute("aria-label", `Page ${number} — ${cardLabel(card)}`);
+    // Re-inserting every card before the tile, in order, is what puts the
+    // rail in slot order — including after a drag.
+    addTile?.before(card.el);
+  });
+
+  const used = pageCount();
+  const chip = document.getElementById("page-count-chip");
+  if (chip) {
+    chip.textContent = `${used} of ${MAX_PAGES} pages`;
+    chip.classList.toggle("is-full", used >= MAX_PAGES);
+  }
+  const addBtn = document.getElementById("preview-add-btn");
+  if (addBtn) {
+    addBtn.disabled = !canAddPage();
+    addBtn.title = canAddPage()
+      ? "Add another page"
+      : `${MAX_PAGES} pages is the limit — remove one to add another.`;
+  }
+  const hint = document.getElementById("preview-add-hint");
+  if (hint) hint.textContent = canAddPage() ? `${MAX_PAGES - used} left` : "Full";
+
+  syncPageSelectionUI();
+}
+
+function setActivePage(id, { force = false } = {}) {
+  const next = getPage(id);
+  if (!force && next.id === activePageId) return;
+
+  syncActivePageContent();
+
+  activePageId = next.id;
+
+  applyPageFields(basePage.content);
+  if (next !== basePage) applyPageFields(next.content);
+
+  // Only another video page can take the shared player, so selecting a
+  // poster or text page leaves it — and its clip — exactly where it was.
+  if (next.type === "video") adoptPageVideo(next);
+  syncEditorFromState();
+  syncPageSelectionUI();
+  renderPoster();
+}
+
+function syncPageSelectionUI() {
+  document.querySelectorAll(".preview-card[data-page]").forEach((el) => {
+    el.classList.toggle("is-selected", el.dataset.page === activePageId);
+  });
+
+  const page = activePage();
+  const bar = document.getElementById("page-context");
+  const name = document.getElementById("page-context-name");
+  if (bar) bar.hidden = page === basePage;
+  if (name && page !== basePage) {
+    name.textContent = `Page ${cardNumber(page.cards[0])} · ${PAGE_TYPES[page.type]?.label || "Page"}`;
+  }
+
+  applyPageScope(page);
+}
+
+function applyPageScope(page) {
+  const scope = PAGE_SCOPE[page.type] || PAGE_SCOPE.base;
+  const setScope = (el, on) => {
+    if (!el) return;
+    el.classList.toggle("scope-off", !on);
+    if ("disabled" in el) el.disabled = !on;
+  };
+  setScope(headlineEdit, scope.headline);
+  setScope(detailEdit, scope.detail);
+  setScope(tagPresetsContainer, scope.tag);
+  setScope(document.getElementById("video-acc"), scope.video);
+  setScope(imagePanel, scope.image);
+}
+
+/* Push state back into the controls after a page switch — without this the
+   panel would show the previous page's values over the new page's canvas. */
+function syncEditorFromState() {
+  if (headlineEdit) headlineEdit.value = state.headline || "";
+  if (detailEdit) detailEdit.value = state.detailText || "";
+  syncControl(imgOffsetX, state.imageOffset?.x ?? 0);
+  syncControl(imgOffsetY, state.imageOffset?.y ?? 0);
+  syncControl(imgZoom, state.imageZoom);
+  syncControl(fontSizeInput, state.fontSize);
+  syncControl(overlayOpacityInput, state.overlayOpacity);
+  syncFilterUI();
+
+  if (tagPresetsContainer) {
+    tagPresetsContainer.querySelectorAll(".preset-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.tag === state.tag);
+    });
+  }
+
+  const captionInput = document.getElementById("video-caption");
+  if (captionInput) captionInput.value = state.videoCaption || "";
+  syncControl(document.getElementById("video-caption-size"), state.videoCaptionSize);
+  const muteInput = document.getElementById("video-mute");
+  if (muteInput) muteInput.checked = !!state.videoMuted;
+  const videoEditor = document.getElementById("video-editor");
+  if (videoEditor) videoEditor.hidden = !(state.videoSrc || state.videoUrl || state.videoFile);
+  syncTrimUI();
+}
+
+/* ── One player, several video pages ──
+   The editor has a single <video>, and `playerOwner` is the page whose clip
+   is currently in it. Selecting a poster or text page changes nothing: the
+   owner keeps the player, so the common case — one video page — never
+   reloads. Only a second video page taking the player forces the previous
+   owner onto a detached copy, parked at its own trim point, so its card
+   keeps painting its own footage. */
+let playerOwner = null;
+
+function parkPageVideo(page) {
+  if (!page || !videoPreviewEl || page.type !== "video") return;
+
+  const src = videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "";
+  const content = page.content || (page.content = {});
+  content.videoSrc = src;
+  if (!src) { content.videoEl = null; return; }
+
+  let parked = page.parkedVideo;
+  if (!parked) {
+    parked = document.createElement("video");
+    parked.muted = true;
+    parked.playsInline = true;
+    parked.preload = "auto";
+    page.parkedVideo = parked;
+  }
+
+  const at = videoPreviewEl.currentTime || content.trimStart || 0;
+  if (parked.getAttribute("src") !== src) {
+    parked.src = src;
+    parked.addEventListener("loadeddata", () => {
+      try { parked.currentTime = at; } catch { /* seek before metadata */ }
+      renderPoster();
+    }, { once: true });
+    parked.load();
+  } else {
+    try { parked.currentTime = at; } catch { /* nothing loaded yet */ }
+  }
+  content.videoEl = parked;
+}
+
+function adoptPageVideo(page) {
+  if (!page || !videoPreviewEl || page.type !== "video") return;
+
+  const content = page.content || (page.content = {});
+
+  // Already holding this page's clip — nothing to move.
+  if (playerOwner === page) {
+    content.videoEl = videoPreviewEl;
+    state.videoEl = videoPreviewEl;
+    return;
+  }
+
+  if (playerOwner && playerOwner !== page) parkPageVideo(playerOwner);
+
+  const wanted = content.videoSrc || "";
+  const current = videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "";
+
+  if (wanted && wanted !== current) {
+    const at = content.trimStart || 0;
+    videoPreviewEl.addEventListener("loadeddata", () => {
+      try { videoPreviewEl.currentTime = at; } catch { /* seek before metadata */ }
+      renderPoster();
+    }, { once: true });
+    videoPreviewEl.src = wanted;
+    videoPreviewEl.load();
+  } else if (!wanted && current) {
+    videoPreviewEl.removeAttribute("src");
+    videoPreviewEl.load();
+  }
+
+  playerOwner = page;
+  content.videoEl = videoPreviewEl;
+  state.videoEl = videoPreviewEl;
+  state.videoSrc = wanted;
+}
+
+/* The page whose clip save and publish should use. Extra video pages get a
+   preview and their own Export MP4, but a post ships one video. */
+function primaryVideoPage() {
+  const withClip = pages.find((p) => p.type === "video"
+    && (p.content?.videoUrl || p.content?.videoFile || p.content?.storedVideoUrl));
+  return withClip || pages.find((p) => p.type === "video") || null;
+}
+
+function primaryVideoContent() {
+  return primaryVideoPage()?.content || {};
+}
+
+/* Run something that reads and writes the post's video against the primary
+   video page, whatever is selected. Anything it produces — a fresh encode,
+   an uploaded URL — is folded back into that page rather than left on the
+   page the writer happens to be looking at. */
+async function withPrimaryVideo(fn) {
+  syncActivePageContent();
+  const live = capturePageFields(VIDEO_PAGE_FIELDS);
+  const page = primaryVideoPage();
+
+  applyPageFields(page
+    ? Object.fromEntries(VIDEO_PAGE_FIELDS.map((f) => [f, clonePageValue(page.content?.[f])]))
+    : blankPageContent("video"));
+
+  try {
+    return await fn();
+  } finally {
+    if (page) Object.assign(page.content, capturePageFields(VIDEO_PAGE_FIELDS));
+    applyPageFields(live);
+  }
+}
+
+/* Reopening a post saved before video became its own page: its clip has to
+   land somewhere, so give it one. */
+function ensureVideoPage() {
+  return pages.find((p) => p.type === "video") || (canAddPage() ? createPage("video", null) : null);
+}
+
+/* restoreStoredVideo() finishes asynchronously, on loadedmetadata, and
+   writes the trim range into live state — by which time the selection has
+   moved back to page 1. Registering after it (listeners run in order) lets
+   us catch those values and file them under the page they belong to. */
+function bindRestoredVideoToPage(page) {
+  if (!videoPreviewEl || !page) return;
+  videoPreviewEl.addEventListener("loadedmetadata", () => {
+    Object.assign(page.content, capturePageFields(VIDEO_PAGE_FIELDS), {
+      videoEl: videoPreviewEl,
+      videoSrc: videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "",
+    });
+    playerOwner = page;
+    if (activePageId === page.id) syncEditorFromState();
+    renderPoster();
+  }, { once: true });
 }
 
 function paintPoster() {
@@ -3677,21 +4423,38 @@ function makeSvgImage(svg) {
 
 /* ── Helpers ── */
 
+/* The whole paragraph, from whichever field is currently authoritative —
+   the draft box while Write Text is open, the editor box while typing, the
+   saved value otherwise. Slices are cut from this. */
+function getFullDetailText() {
+  if (!state.isDownloading && state.previewMode === "text") {
+    const isWritingText = writeForm && !writeForm.hidden;
+    return isWritingText && writeDetail
+      ? writeDetail.value
+      : (detailEdit?.value ?? state.detailText ?? "");
+  }
+  return state.detailText || "";
+}
+
 function getDetailTextForPreview() {
   // No headline fallback anywhere in here. The headline belongs to slide 1;
   // echoing it onto slide 2 is the bug, not a graceful default. An empty
   // paragraph shows a prompt instead, which is honest about the card being
   // unfinished rather than looking deliberately duplicated.
   const fallback = "Add key points in Text Paragraph, or generate them from a link.";
-  if (!state.isDownloading && state.previewMode === "text") {
-    const isWritingText = writeForm && !writeForm.hidden;
-    const draftText = isWritingText && writeDetail
-      ? writeDetail.value
-      : (detailEdit?.value ?? state.detailText ?? "");
-    return limitDetailTextClient(draftText.trim() ? draftText : fallback, { preserveOpenBullet: true });
+
+  // Painting a text card that owns a slice: show only its share of the
+  // points, and say so plainly when the division left it with none.
+  if (state._detailSlice !== null && state._detailSlice !== undefined) {
+    const slice = state._detailSlice.trim();
+    return limitDetailTextClient(slice || "No points left for this page — add more to the paragraph.");
   }
 
-  return limitDetailTextClient((state.detailText || "").trim() || fallback);
+  const text = getFullDetailText();
+  if (!state.isDownloading && state.previewMode === "text") {
+    return limitDetailTextClient(text.trim() ? text : fallback, { preserveOpenBullet: true });
+  }
+  return limitDetailTextClient(text.trim() || fallback);
 }
 
 function handleDetailBulletEnter(event) {
@@ -4924,7 +5687,15 @@ if (videoPreviewEl) {
   // always false and the card never updated on play or seek.
   videoPreviewEl.addEventListener("play", () => startVideoPreviewLoop());
   ["seeked", "loadeddata", "pause", "ended"].forEach((ev) =>
-    videoPreviewEl.addEventListener(ev, () => renderPoster())
+    videoPreviewEl.addEventListener(ev, () => {
+      // Remember what is loaded, so a video page that later gives up the
+      // shared player can reload the same source into its own. Loading a
+      // clip is also how a page claims the player in the first place.
+      state.videoSrc = videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "";
+      const current = activePage();
+      if (current.type === "video") playerOwner = current;
+      renderPoster();
+    })
   );
 }
 
@@ -4980,6 +5751,28 @@ async function downloadSlide(mode) {
 const previewRail = document.getElementById("preview-rail");
 if (previewRail) {
   previewRail.addEventListener("click", async (e) => {
+    // Removing a page must not also select it on the way out.
+    const removeBtn = e.target.closest("[data-remove-page]");
+    if (removeBtn) {
+      const owner = removeBtn.closest("[data-page]");
+      if (owner) removePage(owner.dataset.page);
+      return;
+    }
+
+    /* Selecting first is what makes the per-card exports correct: every
+       export path reads live state, so the page has to be live before the
+       render starts. Clicking Download on page 4 therefore selects page 4,
+       which is also what the writer expects to see happen. */
+    const cardEl = e.target.closest(".preview-card[data-page]");
+    if (cardEl) setActivePage(cardEl.dataset.page);
+
+    // "Edit" is the same selection, said out loud — the controls that write
+    // to this page are in the left column, and on mobile behind the sheet.
+    if (e.target.closest("[data-edit-page]")) {
+      openEditorForPage(cardEl);
+      return;
+    }
+
     const btn = e.target.closest("[data-download]");
     if (!btn) return;
     const mode = btn.dataset.download;
@@ -4994,7 +5787,7 @@ if (previewRail) {
     // The video slide is an MP4 from the server, not a canvas PNG.
     if (mode === "video") {
       if (!state.videoUrl && !state.videoFile) {
-        setStatus("Add a video in Slide 2 Video first.", "error");
+        setStatus("Load a video into this page first — open the Video panel.", "error");
         return;
       }
       exportVideoClip();
@@ -5004,15 +5797,191 @@ if (previewRail) {
     btn.disabled = true;
     const label = btn.textContent;
     btn.textContent = "Rendering…";
+    // Export the slice this card shows, not the whole paragraph — the file
+    // has to match the card it was downloaded from.
+    const card = cardEl ? cardForElement(cardEl) : null;
+    state._detailSlice = card?.detailSlice || null;
     try {
       const r = await downloadSlide(mode);
-      setStatus(r ? `Slide downloaded (${r.width}×${r.height}).` : "Export failed.", r ? "success" : "error");
+      setStatus(r ? `Page downloaded (${r.width}×${r.height}).` : "Export failed.", r ? "success" : "error");
     } finally {
+      state._detailSlice = null;
       btn.disabled = false;
       btn.textContent = label;
     }
   });
 }
+
+/* Put the writer in front of the controls for the page they just picked.
+   On mobile that means opening the sheet; on both, the section that
+   matters for this page type. */
+function openEditorForPage(cardEl) {
+  const page = activePage();
+  const openAccordion = (el) => {
+    const acc = el?.closest(".acc");
+    if (!acc || acc.dataset.open === "true") return;
+    acc.dataset.open = "true";
+    acc.querySelector(":scope > .acc-head")?.setAttribute("aria-expanded", "true");
+  };
+
+  if (isMobile()) setSheetOpen(true);
+
+  const mode = cardEl?.dataset.previewMode;
+  const focusTarget = page.type === "video" || mode === "video"
+    ? document.getElementById("video-url")
+    : (mode === "text" ? detailEdit : headlineEdit);
+
+  openAccordion(focusTarget);
+  requestAnimationFrame(() => {
+    focusTarget?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (focusTarget && !focusTarget.disabled) focusTarget.focus({ preventScroll: true });
+  });
+}
+
+/* ── Reordering ──
+   Dragging the grip moves a page; every number, and the division of the
+   paragraph's points, follows from the new order on the next paint.
+
+   The grip is a button rather than the whole card for two reasons: the
+   video card already claims pointer drags for reframing, and a focusable
+   grip gives the whole feature a keyboard path (← →) that a drag cannot. */
+
+function moveSlot(card, toIndex) {
+  const from = slotOrder.indexOf(card);
+  if (from < 0) return false;
+  let to = Math.max(0, Math.min(toIndex, slotOrder.length));
+  if (from < to) to -= 1;
+  if (to === from) return false;
+  slotOrder.splice(from, 1);
+  slotOrder.splice(to, 0, card);
+  renumberPages();
+  return true;
+}
+
+(() => {
+  const rail = document.getElementById("preview-rail");
+  if (!rail) return;
+
+  let dragging = null;
+
+  // Cards are only draggable while their own grip is held, so a plain drag
+  // across a card never starts a reorder.
+  rail.addEventListener("pointerdown", (e) => {
+    const grip = e.target.closest("[data-grip]");
+    const fig = grip?.closest(".preview-card[data-page]");
+    if (fig) fig.draggable = true;
+  });
+  rail.addEventListener("pointerup", () => {
+    if (!dragging) rail.querySelectorAll(".preview-card[draggable]").forEach((el) => { el.draggable = false; });
+  });
+
+  rail.addEventListener("dragstart", (e) => {
+    const fig = e.target.closest(".preview-card[data-page]");
+    if (!fig || !fig.draggable) { e.preventDefault(); return; }
+    dragging = cardForElement(fig);
+    if (!dragging) { e.preventDefault(); return; }
+    fig.classList.add("is-dragging");
+    e.dataTransfer.effectAllowed = "move";
+    // Firefox refuses to start a drag without payload.
+    e.dataTransfer.setData("text/plain", fig.dataset.page || "page");
+  });
+
+  rail.addEventListener("dragover", (e) => {
+    if (!dragging) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const overEl = e.target.closest?.(".preview-card[data-page]");
+    if (!overEl || overEl === dragging.el) return;
+    const over = cardForElement(overEl);
+    if (!over) return;
+    const rect = overEl.getBoundingClientRect();
+    const after = e.clientX > rect.left + rect.width / 2;
+    moveSlot(dragging, slotOrder.indexOf(over) + (after ? 1 : 0));
+  });
+
+  rail.addEventListener("drop", (e) => { if (dragging) e.preventDefault(); });
+
+  rail.addEventListener("dragend", () => {
+    if (dragging) dragging.el.classList.remove("is-dragging");
+    rail.querySelectorAll(".preview-card[draggable]").forEach((el) => { el.draggable = false; });
+    dragging = null;
+    // The order changed, so the points divide differently.
+    recomputeDetailSlices({ force: true });
+    renderPoster();
+  });
+
+  // Keyboard path: focus a grip, then arrow the page along the rail.
+  rail.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const grip = e.target.closest("[data-grip]");
+    const card = grip && cardForElement(grip.closest(".preview-card[data-page]"));
+    if (!card) return;
+    e.preventDefault();
+    const at = slotOrder.indexOf(card);
+    if (!moveSlot(card, e.key === "ArrowLeft" ? at - 1 : at + 2)) return;
+    recomputeDetailSlices({ force: true });
+    renderPoster();
+    grip.focus();
+    card.el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  });
+})();
+
+/* ── Add page ──
+   A menu rather than three buttons: the tile sits in the rail at card
+   width, and three labels do not fit there without shrinking to the point
+   of being guesswork. */
+(() => {
+  const tile = document.getElementById("preview-add");
+  const btn = document.getElementById("preview-add-btn");
+  const menu = document.getElementById("preview-add-menu");
+  if (!tile || !btn || !menu) return;
+
+  const setMenuOpen = (open) => {
+    menu.hidden = !open;
+    // The tile swaps its face for the choices, so the open state lives on
+    // the tile — it is what hides the button and widens the column.
+    tile.classList.toggle("is-open", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) menu.querySelector("[data-add-page]")?.focus();
+  };
+  const closeMenu = () => setMenuOpen(false);
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!canAddPage()) return;
+    setMenuOpen(menu.hidden);
+  });
+
+  menu.addEventListener("click", (e) => {
+    if (e.target.closest("[data-add-cancel]")) {
+      closeMenu();
+      btn.focus();
+      return;
+    }
+    const item = e.target.closest("[data-add-page]");
+    if (!item) return;
+    closeMenu();
+    addPage(item.dataset.addPage);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!menu.hidden && !tile.contains(e.target)) closeMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMenu();
+  });
+})();
+
+// The way back when an added page is selected. Page 1 is where the post's
+// own fields live, so this is also "stop editing an extra".
+document.getElementById("page-context-back")?.addEventListener("click", () => {
+  setActivePage("base");
+  document.getElementById("post-canvas")
+    ?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+});
+
+// First paint of the counter, the add tile and the selection ring.
+renumberPages();
 
 
 /* ── Rail navigation ──
@@ -5078,7 +6047,13 @@ async function loadDailyMattrMeta({ force = false } = {}) {
 
    videoClipKey() covers trim range, mute, focus, caption and ratio, so any
    edit invalidates 1 and 2 and correctly forces a re-render. */
-async function resolvePublishClip(onStatus = () => {}) {
+function resolvePublishClip(onStatus = () => {}) {
+  // The clip lives on a video page, so read it from there rather than from
+  // whichever page QA left selected.
+  return withPrimaryVideo(() => resolvePublishClipFromState(onStatus));
+}
+
+async function resolvePublishClipFromState(onStatus = () => {}) {
   const clipKey = videoClipKey();
   if (!clipKey) return null;
 
@@ -5345,14 +6320,19 @@ dailymattrMediaInputs.forEach((item) => {
 })();
 
 
-/* ── Drag to reframe the video slide ──
+/* ── Drag to reframe a video page ──
    Cropping a landscape clip to 9:16 throws away most of its width, so the
    default centre crop often cuts the subject in half. Dragging the video
    card picks the slice to keep. The value is normalised, so the preview and
-   ffmpeg's crop agree at any resolution. */
-(() => {
-  const card = document.getElementById("video-canvas");
+   ffmpeg's crop agree at any resolution.
+
+   Every video page gets this, so the handler takes the canvas and the page
+   it belongs to: the drag edits live state, which means the page has to be
+   the selected one first. Grabbing an unselected card selects it, so the
+   gesture works on first touch rather than needing a click to arm it. */
+function attachVideoReframe(card, pageId) {
   if (!card) return;
+  card.classList.add("video-reframe");
 
   let dragging = false;
   let startX = 0, startY = 0, startFocus = null;
@@ -5374,6 +6354,7 @@ dailymattrMediaInputs.forEach((item) => {
   }
 
   function pointerDown(e) {
+    if (pageId && activePageId !== pageId) setActivePage(pageId);
     if (!hasVideo()) return;
     dragging = true;
     startX = e.clientX;
@@ -5415,10 +6396,14 @@ dailymattrMediaInputs.forEach((item) => {
 
   // Double-click recentres — quicker than dragging back by feel.
   card.addEventListener("dblclick", () => {
+    if (pageId && activePageId !== pageId) setActivePage(pageId);
     state.videoFocus = { x: 0.5, y: 0.5 };
     renderPoster();
   });
-})();
+}
+
+// Video pages get this when they are created; there is no video card on the
+// spine any more, so nothing to attach here.
 
 // Timestamp toggle — the stamp is on by default; some posters do not want it.
 const showTimestampInput = document.getElementById("show-timestamp");
@@ -5692,22 +6677,32 @@ function collectDesignSnapshot() {
       saturation: state.filterSaturation,
       blur: state.filterBlur,
     },
-    video: {
-      sourceKind: state.videoSourceKind,
-      url: state.videoUrl || null,
-      // The bucket copy: the rendered clip, already cut to the range below
-      // and with the caption burned in. `url` above is the original link,
-      // which for a scraped clip is a signed URL that expires within hours.
-      storedUrl: state.storedVideoUrl || null,
-      storedTrimmed: Boolean(state.storedVideoUrl),
-      title: state.videoMeta?.title || null,
-      trimStart: state.trimStart,
-      trimEnd: state.trimEnd,
-      muted: state.videoMuted,
-      focus: { ...state.videoFocus },
-      caption: state.videoCaption || null,
-      captionSize: state.videoCaptionSize,
-    },
+    /* The post's video. Read off the primary video page rather than live
+       state: the clip belongs to that page now, and saving while page 1 is
+       selected must not write out whatever video fields happen to be left
+       over in state. */
+    video: (() => {
+      const v = primaryVideoContent();
+      return {
+        sourceKind: v.videoSourceKind || "link",
+        url: v.videoUrl || null,
+        // The bucket copy: the rendered clip, already cut to the range below
+        // and with the caption burned in. `url` above is the original link,
+        // which for a scraped clip is a signed URL that expires within hours.
+        storedUrl: v.storedVideoUrl || null,
+        storedTrimmed: Boolean(v.storedVideoUrl),
+        title: v.videoMeta?.title || null,
+        trimStart: v.trimStart ?? 0,
+        trimEnd: v.trimEnd ?? 0,
+        muted: Boolean(v.videoMuted),
+        focus: { x: v.videoFocus?.x ?? 0.5, y: v.videoFocus?.y ?? 0.5 },
+        caption: v.videoCaption || null,
+        captionSize: v.videoCaptionSize ?? state.videoCaptionSize,
+      };
+    })(),
+    // Pages the writer added on top of the spine. The spine itself is the
+    // rest of this snapshot, so only the extras are listed.
+    pages: serializePages(),
     savedAt: new Date().toISOString(),
   };
 }
@@ -5848,7 +6843,20 @@ async function loadPixIntoEditor(post) {
   // A stored image is a URL; it goes back through the proxy exactly as it did
   // the first time. An upload has no URL, so the poster opens without it.
   // A stored video plays straight from the bucket.
-  if (design.video?.storedUrl) restoreStoredVideo(design.video);
+  /* A stored clip belongs to a Video page. Posts saved before video became
+     its own page carry no page list, so give them a page to land in. */
+  if (design.video?.storedUrl) {
+    const videoPage = ensureVideoPage();
+    if (videoPage) {
+      renumberPages();
+      setActivePage(videoPage.id);
+      restoreStoredVideo(design.video);
+      bindRestoredVideoToPage(videoPage);
+      setActivePage("base");
+    } else {
+      setStatus("Opened, but this post is full — its video has no page to open into.", "error");
+    }
+  }
 
   state.mainImage = null;
   if (post.main_image_url) {
@@ -5904,6 +6912,11 @@ function applyDesignSnapshot(design, post) {
   syncControl(filterSaturationInput, state.filterSaturation);
   syncControl(filterBlurInput, state.filterBlur);
   if (accentHexLabel) accentHexLabel.textContent = String(state.accent).toUpperCase();
+
+  // Rebuild the added pages, then hand the editor back to page 1 — which is
+  // what the writer is looking at when a post opens.
+  restorePages(design.pages);
+  setActivePage("base", { force: true });
 }
 
 function numberOr(value, fallback) {
@@ -6570,6 +7583,9 @@ function pixFingerprint() {
     state.showTimestamp,
     article.headline, (article.bullets || []).join("|"), article.tweet,
     state.videoUrl, state.trimStart, state.trimEnd, state.videoCaption,
+    // Added pages are part of the post, so editing one has to light the
+    // unsaved dot the same way editing page 1 does.
+    JSON.stringify(serializePages()),
   ]);
 }
 
@@ -6668,8 +7684,9 @@ async function ensureMediaUploaded(onProgress = () => {}) {
   // Video: store the trim range, not the source. A 17-minute upload is far
   // over Supabase's per-file limit and nobody wants those minutes back — the
   // clip between start and end is the thing that gets published.
-  const clipKey = videoClipKey();
-  if (clipKey && state.storedVideoFor !== clipKey) {
+  await withPrimaryVideo(async () => {
+    const clipKey = videoClipKey();
+    if (!clipKey || state.storedVideoFor === clipKey) return;
     try {
       let blob = state.renderedClip?.key === clipKey ? state.renderedClip.blob : null;
       if (!blob) {
@@ -6684,7 +7701,7 @@ async function ensureMediaUploaded(onProgress = () => {}) {
     } catch (err) {
       problems.push(`video not stored (${err.message})`);
     }
-  }
+  });
 
   return problems;
 }

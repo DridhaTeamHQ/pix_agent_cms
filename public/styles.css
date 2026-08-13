@@ -3965,6 +3965,361 @@ textarea:focus {
   justify-content: center;
 }
 
+/* Cards now carry a grip, a number, a type and sometimes a remove button,
+   so the label row is a layout rather than a line of text. */
+.preview-card-label {
+  gap: 5px;
+}
+
+/* ── Pages: selection, the add tile, and the pinned X card ───────────
+   Cards are the page list, so they carry the two things a list needs:
+   which row you are editing, and how to add or drop one. */
+
+.page-count-chip {
+  padding: 3px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 100px;
+  background: var(--surface-input);
+  color: var(--text-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.page-count-chip.is-full {
+  border-color: var(--accent);
+  color: var(--accent-dim);
+  background: var(--accent-soft);
+}
+
+/* Every page card is a target — the X card is not, so it keeps the
+   default cursor and never takes the selected ring. */
+.preview-card[data-page] {
+  cursor: pointer;
+}
+
+.preview-card[data-page] .canvas-container {
+  border-color: transparent;
+  transition: var(--transition);
+}
+
+.preview-card[data-page]:hover .canvas-container {
+  border-color: var(--border-color);
+}
+
+.preview-card[data-page].is-selected .canvas-container {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 6px 18px -10px var(--accent);
+}
+
+.preview-card[data-page].is-selected .preview-card-label {
+  color: var(--text-primary);
+}
+
+.preview-card[data-page].is-selected .preview-card-num {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* The label row carries the remove control on added pages, so it has to
+   stretch rather than hug its text. */
+.preview-card-label {
+  width: 100%;
+}
+
+/* ── Grip ──
+   Only the grip starts a reorder: the video card claims pointer drags for
+   reframing, and a focusable grip is the whole keyboard path (← →). */
+.preview-card-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: grab;
+  opacity: 0.55;
+  transition: var(--transition);
+}
+
+.preview-card:hover .preview-card-grip,
+.preview-card-grip:focus-visible {
+  opacity: 1;
+  color: var(--accent-dim);
+  background: var(--accent-soft);
+}
+
+.preview-card-grip:active {
+  cursor: grabbing;
+}
+
+.preview-card.is-dragging {
+  opacity: 0.45;
+}
+
+.preview-card.is-dragging .canvas-container {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+
+/* ── Which points this card carries ── */
+.preview-card-slice {
+  margin: 0;
+  font-size: 0.63rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.preview-card-slice[hidden] {
+  display: none;
+}
+
+/* ── Edit / Download ── */
+.preview-card-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.preview-card-actions .btn-ghost {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 7px 4px;
+  font-size: 0.7rem;
+  justify-content: center;
+}
+
+.preview-card-edit {
+  gap: 4px;
+}
+
+.preview-card.is-selected .preview-card-edit {
+  border-color: var(--accent);
+  color: var(--accent-dim);
+}
+
+.preview-card-remove {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.preview-card-remove:hover {
+  border-color: var(--danger, #ff5f56);
+  color: var(--danger, #ff5f56);
+  background: rgba(255, 95, 86, 0.12);
+}
+
+.preview-card-type {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* ── Add tile ──
+   The choices replace the tile's own face rather than floating over it: a
+   popover on a narrow tile inside a horizontally scrolling rail either
+   overlaps the label underneath it or spills across the next card, and it
+   did both. Filling the tile has neither failure mode. */
+/* One width for both states — wide enough that "Poster page" sits on a
+   single line when open. Animating the width instead just interpolates
+   flex-basis while the rail reflows, for a few pixels of difference. */
+.preview-add {
+  flex: 0 0 clamp(144px, 24%, 168px);
+  align-self: stretch;
+  display: flex;
+  scroll-snap-align: start;
+  /* Clears the card label row so the tile lines up with the canvases. */
+  padding-top: 25px;
+  padding-bottom: 37px;
+}
+
+.preview-add.is-open .preview-add-btn {
+  display: none;
+}
+
+.preview-add-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 10px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md, 12px);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.preview-add-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-dim);
+  background: var(--accent-soft);
+}
+
+.preview-add-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.preview-add-plus {
+  font-size: 1.35rem;
+  line-height: 1;
+  font-weight: 300;
+}
+
+.preview-add-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.preview-add-hint {
+  font-size: 0.63rem;
+  opacity: 0.75;
+}
+
+.preview-add-menu {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md, 12px);
+  /* Opaque on purpose — --surface-card is a 3.5% white wash in the dark
+     theme, which let everything behind it read straight through. */
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-md, 0 16px 34px -14px rgba(0, 0, 0, 0.6));
+}
+
+.preview-add-menu[hidden] {
+  display: none;
+}
+
+.preview-add-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--surface-input);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.preview-add-menu button:hover,
+.preview-add-menu button:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.add-menu-icon {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  opacity: 0.7;
+}
+
+.preview-add-cancel {
+  margin-top: 2px;
+  justify-content: center;
+  font-size: 0.68rem !important;
+  color: var(--text-muted) !important;
+  background: transparent !important;
+}
+
+/* The X card is an export variant, not a page — a divider says so without
+   a second label. */
+.preview-card-pinned {
+  padding-left: 14px;
+  border-left: 1px dashed var(--border-color);
+}
+
+/* ── "Editing — page N" bar + scoping ──
+   Controls that cannot reach the selected page are dimmed rather than
+   hidden: the panel keeps its shape, so nothing jumps when selection
+   changes, and it is obvious why a field is not accepting input. */
+.page-context {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md, 12px);
+  background: var(--accent-soft);
+}
+
+.page-context[hidden] {
+  display: none;
+}
+
+.page-context-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.page-context-kicker {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+}
+
+.page-context-name {
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.page-context #page-context-back {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.scope-off {
+  opacity: 0.38;
+  pointer-events: none;
+}
+
 /* ── Arrows ── */
 .rail-nav {
   display: inline-flex;
@@ -4015,13 +4370,14 @@ textarea:focus {
   }
 }
 
-/* The video card is draggable to reframe the crop. */
-#video-canvas {
+/* A video card is draggable to reframe the crop. Video pages are created at
+   runtime, so the class carries this rather than an id. */
+.video-reframe {
   cursor: grab;
   touch-action: none;
 }
 
-#video-canvas.dragging {
+.video-reframe.dragging {
   cursor: grabbing;
 }
 /* ─── Search boxes (Review + Analytics) ───────────────────────────

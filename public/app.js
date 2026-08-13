@@ -6156,10 +6156,12 @@ async function publishToDailyMattr() {
     clip.videoEl && clip.videoEl.readyState >= 2 && clip.videoEl.videoWidth > 0 && clip.trimEnd > clip.trimStart
   ) || Boolean(clip.storedVideoUrl);
   const extraCount = dailyMattrExtraFiles().length;
-  // Media items being published, not pages in the rail — publish sends the
-  // poster, the text slide and one clip. Named apart from pageCount() so it
-  // does not shadow it.
-  const mediaCount = 1 + ((state.detailText || "").trim() ? 1 : 0) + (hasVideo ? 1 : 0) + extraCount;
+  /* Count the same way the assembly does — every card in the rail plus the
+     attached files — or the dialog promises a number the publish will not
+     deliver. It previously counted a fixed poster+text+clip, which silently
+     under-reported the moment a third page existed. */
+  const railCount = slotOrder.filter((card) => card.mode !== "video" || hasVideo).length;
+  const mediaCount = railCount + extraCount;
 
   const go = await confirmAction({
     title: "Publish to DailyMattr?",
@@ -6179,11 +6181,6 @@ async function publishToDailyMattr() {
   setDailyMattrStatus("Rendering slide images…");
 
   try {
-    const poster = await exportSlidePng("pix", DAILYMATTR_EXPORT_LONG_EDGES);
-    if (!poster?.blob) {
-      setDailyMattrStatus("Could not render the poster slide.", "error");
-      return;
-    }
 
     const form = new FormData();
     form.append("content_en", content);
@@ -6194,44 +6191,73 @@ async function publishToDailyMattr() {
     // sending a story live IS the approval. Absent when the poster was never
     // saved, in which case there is no library row to mark.
     if (state.pixId) form.append("pix_id", state.pixId);
-    const outboundMedia = [{
-      blob: poster.blob,
-      filename: `${slugify(state.headline || "pix-post")}.png`,
-    }];
+    /* Publish every page in the rail, in the order the reader will swipe
+       them — not a fixed poster-plus-text pair.
 
-    /* Media order is the publishing order — DailyMattr shows item 1 as the
-       cover. Poster first, then the text card, then the video, then anything
-       QA attached by hand. Images and video may be mixed freely.
+       This used to export exactly one "pix" card and one "text" card. Once
+       pages became addable (up to five, of any type) that quietly dropped
+       everything past the first two: a writer could build a four-page story,
+       press publish, and have pages three and four vanish with no warning.
+       The confirmation dialog counted the same way, so it did not warn
+       either — it under-reported and the mismatch was invisible.
 
-       The "For X" card is deliberately NOT published. It is a Twitter/X
-       crop with its own framing and safe areas, produced for manual posting
-       there; on the news app it would appear as a duplicate of the poster in
-       the wrong aspect. Only "pix" and "text" are ever exported here — if a
-       future card is added, it has to be opted in on this list explicitly. */
+       Each card is exported from ITS page. setActivePage swaps the page's
+       content into live state (headline, tag, filters, framing) and
+       syncActivePageContent folds the current one back first, so a second
+       poster page exports its own headline rather than page one's. The
+       original selection is restored in the finally, whatever happens.
+
+       The "For X" card stays out of this: it is a Twitter/X crop with its own
+       framing, and on the news app it would read as a duplicate of the poster
+       in the wrong aspect. It is not in slotOrder, so it is excluded by
+       construction rather than by a filter someone has to remember. */
     const slug = slugify(state.headline || "pix-post");
+    const outboundMedia = [];
+    const restorePageId = activePageId;
+    try {
+      for (const card of slotOrder) {
+        const n = outboundMedia.length + 1;
+        setActivePage(card.el?.dataset?.page || "base", { force: true });
 
-    if ((state.detailText || "").trim()) {
-      const textSlide = await exportSlidePng("text", DAILYMATTR_EXPORT_LONG_EDGES);
-      if (!textSlide?.blob) {
-        setDailyMattrStatus("Could not render the text card.", "error");
-        return;
+        if (card.mode === "video") {
+          setDailyMattrStatus(`Preparing page ${n} (video)…`);
+          const clip = await resolvePublishClip((msg) => setDailyMattrStatus(msg));
+          if (!clip) continue;                       // no clip on this page yet
+          if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
+            const mb = (v) => (v / 1048576).toFixed(1);
+            setDailyMattrStatus(
+              `Page ${n}'s clip is ${mb(clip.size)} MB, over the ${mb(DAILYMATTR_MAX_MEDIA_BYTES)} MB limit. Shorten the trim range and try again.`,
+              "error",
+            );
+            return;
+          }
+          outboundMedia.push({ blob: clip, filename: `${slug}-p${n}.mp4` });
+          continue;
+        }
+
+        // A text card shows one slice of the paragraph; export the slice that
+        // card displays, or the file will not match what is on screen.
+        setDailyMattrStatus(`Rendering page ${n}…`);
+        state._detailSlice = card.detailSlice || null;
+        let shot = null;
+        try {
+          shot = await exportSlidePng(card.mode, DAILYMATTR_EXPORT_LONG_EDGES);
+        } finally {
+          state._detailSlice = null;
+        }
+        if (!shot?.blob) {
+          setDailyMattrStatus(`Could not render page ${n}.`, "error");
+          return;
+        }
+        outboundMedia.push({ blob: shot.blob, filename: `${slug}-p${n}.png` });
       }
-      outboundMedia.push({ blob: textSlide.blob, filename: `${slug}-text.png` });
+    } finally {
+      setActivePage(restorePageId, { force: true });
     }
 
-    // Reuses the already-rendered clip or the bucket copy when either is
-    // current, so a reopened post does not re-download its original source.
-    const clip = await resolvePublishClip((msg) => setDailyMattrStatus(msg));
-    if (clip) {
-      if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
-        const mb = (n) => (n / 1048576).toFixed(1);
-        setDailyMattrStatus(
-          `The clip is ${mb(clip.size)} MB, over the ${mb(DAILYMATTR_MAX_MEDIA_BYTES)} MB limit. Shorten the trim range and try again.`,
-          "error",
-        );
-        return;
-      }
-      outboundMedia.push({ blob: clip, filename: `${slug}-video.mp4` });
+    if (!outboundMedia.length) {
+      setDailyMattrStatus("There is nothing to publish yet — build at least one page.", "error");
+      return;
     }
 
     dailyMattrExtraFiles().forEach(({ file }) => {

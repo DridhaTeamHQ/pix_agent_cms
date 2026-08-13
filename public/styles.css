@@ -4661,3 +4661,48 @@ select option[value=""] { color: var(--text-secondary); }
   padding: 10px 18px;
   white-space: nowrap;
 }
+
+/* ─── Date on the slide ─── */
+.date-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.date-row .field { flex: 1 1 auto; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.date-row .field-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.date-row input[type="date"] {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+.date-row input[type="date"]:focus { outline: none; border-color: var(--accent); }
+/* The native picker icon is drawn black, which vanishes on the dark theme. */
+:root[data-theme="dark"] .date-row input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) opacity(0.7);
+}
+.date-row .btn-ghost { flex: 0 0 auto; width: auto; padding: 9px 14px; white-space: nowrap; }
+
+#post-keywords {
+  width: 100%;
+  padding: 9px 12px;
+  margin-top: 4px;
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+#post-keywords:focus { outline: none; border-color: var(--accent); }

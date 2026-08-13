@@ -268,7 +268,12 @@ const state = {
   // null = use the current date at paint time. Only set to a Date if a
   // specific day ever needs pinning; leaving it null is what keeps an
   // open tab honest across midnight.
+  // The date printed on the slide. Null means "use today", which is what it
+  // did before this was editable.
   createdAt: null,
+  // Sent to DailyMattr with the post. Chosen here rather than inferred at
+  // publish so the writer's wording survives.
+  keywords: "",
   showTimestamp: true,
   videoCaption: "",         // burned into the clip, bottom-anchored
   videoCaptionSize: 40,     // design px at 920×1700; scaled per ratio
@@ -971,7 +976,8 @@ function syncDailyMattrDraft({ force = false } = {}) {
     dailymattrContent.value = defaultDailyMattrContent();
   }
   if (dailymattrKeywords && (!dailymattrDraftTouched.keywords || force)) {
-    dailymattrKeywords.value = inferDailyMattrKeywords();
+    // The writer's own keywords win over a guess from the headline.
+    dailymattrKeywords.value = (state.keywords || "").trim() || inferDailyMattrKeywords();
   }
 }
 
@@ -5131,7 +5137,13 @@ async function publishToDailyMattr() {
   const categoryId = dailymattrCategory?.value || "";
   const stateId = dailymattrState?.value || "";
   const content = (dailymattrContent?.value || "").trim() || defaultDailyMattrContent();
-  const keywords = (dailymattrKeywords?.value || "").trim() || inferDailyMattrKeywords();
+  /* Priority: what QA typed here, then what the writer saved with the post,
+     then a guess from the headline. The writer's wording used to be discarded
+     — keywords were only ever inferred at publish time — so a deliberate
+     choice lost to an automatic one. */
+  const keywords = (dailymattrKeywords?.value || "").trim()
+    || (state.keywords || "").trim()
+    || inferDailyMattrKeywords();
   const mediaError = validateDailyMattrExtraFiles();
   if (!categoryId) {
     setDailyMattrStatus("Choose a DailyMattr category.", "error");
@@ -5421,6 +5433,68 @@ dailymattrMediaInputs.forEach((item) => {
 })();
 
 // Timestamp toggle — the stamp is on by default; some posters do not want it.
+/* ── Date on the slide, and keywords ─────────────────────────────────
+   state.createdAt existed but was never assigned, so formatCreatedAt() always
+   fell through to new Date() — the stamp read "today" and no one could change
+   it. That is wrong whenever a story is written up a day after the event.
+
+   Kept as a real Date in state and stored as ISO in the design snapshot, so
+   the value survives a save and does not drift with the reader's timezone.
+   Null still means "today", which is the behaviour everything had before. */
+const postDateInput = document.getElementById("post-date");
+const postKeywordsInput = document.getElementById("post-keywords");
+
+function toDateInputValue(d) {
+  // <input type="date"> wants local YYYY-MM-DD. toISOString() would convert to
+  // UTC first, which in IST (UTC+5:30) shows the previous day before 05:30.
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function syncDateAndKeywordInputs() {
+  if (postDateInput) {
+    const d = state.createdAt instanceof Date && !isNaN(state.createdAt) ? state.createdAt : new Date();
+    const want = toDateInputValue(d);
+    if (postDateInput.value !== want) postDateInput.value = want;
+  }
+  if (postKeywordsInput && postKeywordsInput.value !== (state.keywords || "")) {
+    postKeywordsInput.value = state.keywords || "";
+  }
+}
+
+if (postDateInput) {
+  postDateInput.addEventListener("change", () => {
+    const raw = postDateInput.value;
+    if (!raw) { state.createdAt = null; renderPoster(); return; }
+    // Parse as LOCAL midday, not midnight: midnight in a timezone behind UTC
+    // can roll the date back a day when it is normalised.
+    const [y, m, d] = raw.split("-").map(Number);
+    const parsed = new Date(y, m - 1, d, 12, 0, 0);
+    state.createdAt = isNaN(parsed) ? null : parsed;
+    renderPoster();
+  });
+}
+
+// Start the field on today rather than blank — an empty date box reads as
+// "no date", when the slide has always stamped the current one.
+syncDateAndKeywordInputs();
+
+document.getElementById("post-date-today")?.addEventListener("click", () => {
+  state.createdAt = null;      // null = follow the clock, as before
+  syncDateAndKeywordInputs();
+  renderPoster();
+});
+
+if (postKeywordsInput) {
+  postKeywordsInput.addEventListener("input", () => {
+    state.keywords = postKeywordsInput.value;
+    // Mirror into the publish panel so QA sees what the writer wrote.
+    if (dailymattrKeywords && !dailymattrDraftTouched.keywords) {
+      dailymattrKeywords.value = state.keywords;
+    }
+  });
+}
+
 const showTimestampInput = document.getElementById("show-timestamp");
 if (showTimestampInput) {
   showTimestampInput.addEventListener("change", () => {
@@ -5525,6 +5599,9 @@ function startNewPix() {
   state.categoryId = "";
   state.stateId = "";
   syncSectionInputs();
+  state.createdAt = null;
+  state.keywords = "";
+  syncDateAndKeywordInputs();
   state.articleText = "";
   state.scrapedTitle = "";
   state.imageQuery = "";
@@ -5684,6 +5761,10 @@ function collectDesignSnapshot() {
     logo: { x: state.logoX, y: state.logoY, size: state.logoSize },
     tag: state.tag,
     showTimestamp: state.showTimestamp,
+    createdAt: state.createdAt instanceof Date && !isNaN(state.createdAt)
+      ? state.createdAt.toISOString()
+      : null,
+    keywords: state.keywords || "",
     previewMode: state.previewMode,
     filters: {
       preset: state.filterPreset,
@@ -5883,6 +5964,10 @@ function applyDesignSnapshot(design, post) {
   state.logoY = numberOr(design.logo?.y, state.logoY);
   state.logoSize = numberOr(design.logo?.size, state.logoSize);
   state.showTimestamp = design.showTimestamp !== false;
+  const restoredDate = design.createdAt ? new Date(design.createdAt) : null;
+  state.createdAt = restoredDate && !isNaN(restoredDate) ? restoredDate : null;
+  state.keywords = typeof design.keywords === "string" ? design.keywords : "";
+  syncDateAndKeywordInputs();
 
   const filters = design.filters || {};
   state.filterPreset = filters.preset || "none";
@@ -6119,6 +6204,17 @@ function renderWriterRow(u) {
     toggleBtn.title = "You cannot disable your own account.";
   }
   toggleBtn.addEventListener("click", async () => {
+    /* Disabling has no visible consequence on this screen beyond a greyed row,
+       but it locks the person out completely — and a disabled account fails
+       login with "Incorrect username or password", so from their side it looks
+       like a broken password, not a switched-off account. That already
+       happened once in production. Confirm before doing it; enabling needs no
+       confirmation because it cannot lock anyone out. */
+    if (u.active && !window.confirm(
+      `Disable ${u.displayName || u.username}?\n\n`
+      + `They will be signed out immediately and will not be able to log in. `
+      + `Their posts stay exactly as they are.\n\nYou can re-enable them at any time.`
+    )) return;
     try {
       await usersRequest("/api/users/active", {
         method: "POST", headers: { "Content-Type": "application/json" },

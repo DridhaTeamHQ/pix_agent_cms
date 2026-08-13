@@ -319,6 +319,20 @@
               <input type="checkbox" id="show-timestamp" checked />
               <span>Show creation time on the Text slide</span>
             </label>
+            <!-- The stamp defaulted to today with no way to change it, which is
+                 wrong for a story written up a day or two after the event. -->
+            <div class="date-row" id="post-date-row">
+              <label class="field">
+                <span class="field-label">Date on the slide</span>
+                <input type="date" id="post-date" />
+              </label>
+              <button type="button" class="btn-ghost" id="post-date-today">Today</button>
+            </div>
+            <small class="helper-text">Leave it on today unless the story is being posted later.</small>
+
+            <h3 class="acc-subtitle">Keywords</h3>
+            <input type="text" id="post-keywords" placeholder="politics, local, election" />
+            <small class="helper-text">Up to 10, comma separated. Sent with the post to the web app.</small>
             <h3 class="acc-subtitle">Tag Badge</h3>
             <div class="preset-grid" id="tag-presets">
               <button type="button" class="preset-btn active" data-tag="none"          title="No Tag">None</button>

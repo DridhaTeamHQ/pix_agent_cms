@@ -3550,7 +3550,11 @@ const STORY = {
   headingSize: 44,       // against the 920x1700 reference frame
   bodySize: 46,
   bodyLineHeight: 62,
-  maxBodyLines: 7,
+  /* Raised from 7 once typed line breaks started counting: a short list burns
+     a line per item, so the old cap cut off copy that fitted the frame fine.
+     Ten still clears the picture — ten lines plus a heading leaves the block
+     starting a little above the halfway mark. */
+  maxBodyLines: 10,
   gapAfterHeading: 34,
   bottomPadding: 300,
 };
@@ -3560,8 +3564,13 @@ function storyHeadingText() {
      on it and nothing else — inheriting the headline put the poster's words
      on every story slide, which then had to be cleared by hand on each one,
      and an untouched page looked finished when it was not. Empty means empty:
-     the heading is simply not drawn, and the body moves up to fill the space. */
-  return (state.storyHeading || "").trim();
+     the heading is simply not drawn, and the body moves up to fill the space.
+
+     Whitespace is flattened because the heading is drawn as one line: the
+     accent box is measured across a single run, so a typed break would put
+     the highlight in the wrong place rather than start a second row. Breaks
+     belong in the body. */
+  return (state.storyHeading || "").replace(/\s+/g, " ").trim();
 }
 
 function storyBodyText() {
@@ -3649,7 +3658,9 @@ function drawStoryScreen() {
   ctx.fillStyle = "#070707";
   ctx.fillRect(0, 0, W, H);
 
-  drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s);
+  // "none": a story slide shows its picture sharp. The gradient below is what
+  // makes the copy readable, not a blur across the whole frame.
+  drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s, "none");
 
   // Clear at the top so the picture is the picture; solid at the bottom so
   // the copy sits on ink rather than on whatever the photo happens to be.
@@ -3714,19 +3725,40 @@ function drawStoryScreen() {
    bullets, neither of which a story body wants — the copy is short and the
    size should be the same on every slide of a set. */
 function wrapPlainLines(text, maxWidth, maxLines) {
-  const words = String(text).replace(/\s+/g, " ").trim().split(" ");
   const lines = [];
-  let line = "";
-  for (const word of words) {
-    const next = line ? `${line} ${word}` : word;
-    if (ctx.measureText(next).width <= maxWidth || !line) {
-      line = next;
-    } else {
-      lines.push(line);
-      line = word;
+
+  /* The writer's own line breaks come first, and each block is wrapped to the
+     column after that. One greedy pass over `\s+`-collapsed text — which is
+     what this used to be — threw every deliberate break away, so a typed list
+     came out as a single run-on line and pressing Enter appeared to do
+     nothing at all. A break is a break; only runs of spaces and tabs inside a
+     line are worth collapsing. */
+  const blocks = String(text).replace(/\r\n?/g, "\n").split("\n");
+
+  for (const block of blocks) {
+    const trimmed = block.replace(/[ \t]+/g, " ").trim();
+    if (!trimmed) {
+      lines.push("");             // a blank line the writer left stays blank
+      continue;
     }
+    let line = "";
+    for (const word of trimmed.split(" ")) {
+      const next = line ? `${line} ${word}` : word;
+      if (ctx.measureText(next).width <= maxWidth || !line) {
+        line = next;
+      } else {
+        lines.push(line);
+        line = word;
+      }
+    }
+    if (line) lines.push(line);
   }
-  if (line) lines.push(line);
+
+  /* Trailing blanks are just the cursor resting on a new row. Counting them
+     would spend the line budget on nothing and, since the block is laid out
+     bottom-up, shove the copy upward as you type. */
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+
   if (lines.length > maxLines) {
     lines.length = maxLines;
     lines[maxLines - 1] = `${lines[maxLines - 1].replace(/[\s.,;:]+$/, "")}…`;
@@ -3808,7 +3840,12 @@ function drawTimestamp(x, y, s) {
   ctx.restore();
 }
 
-function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom, scale = 1) {
+/* `filter` defaults to the Text slide's treatment: heavily blurred and dimmed,
+   because there the picture is a backdrop for a wall of copy and has to stay
+   out of its way. A story slide is the opposite — the photo is the point, and
+   the gradient alone keeps the lower copy legible — so it passes "none" and
+   gets the image sharp. */
+function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom, scale = 1, filter) {
   const bleed = 34 * scale;
   const drawX = x - bleed;
   const drawY = y - bleed;
@@ -3821,7 +3858,7 @@ function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom
   const focal = image.__focalPoint || { x: image.width / 2, y: image.height / 2 };
 
   ctx.save();
-  ctx.filter = `blur(${Math.round(18 * scale)}px) brightness(62%) contrast(108%) saturate(72%)`;
+  ctx.filter = filter || `blur(${Math.round(18 * scale)}px) brightness(62%) contrast(108%) saturate(72%)`;
   drawBlurredCoverLayer(null);
   drawBlurredCoverLayer(offset);
   ctx.restore();

@@ -2354,7 +2354,12 @@ const PAGE_SCOPE = {
   base:   { headline: true,  detail: true,  tag: true,  image: true,  video: false },
   poster: { headline: true,  detail: false, tag: true,  image: true,  video: false },
   text:   { headline: false, detail: true,  tag: false, image: true,  video: false },
-  story:  { headline: true,  detail: true,  tag: false, image: true,  video: false },
+  /* A story page writes its own heading and its own body, into storyHeading
+     and storyBody. The post-level headline and paragraph boxes are therefore
+     off here: they are not this page's copy, and leaving them live meant a
+     writer aiming at the story heading hit the POST headline instead and
+     silently rewrote the poster. Story pages get their own two boxes. */
+  story:  { headline: false, detail: false, tag: false, image: true,  video: false },
   video:  { headline: false, detail: false, tag: false, image: false, video: true  },
 };
 

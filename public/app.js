@@ -2771,6 +2771,79 @@ function restorePages(list) {
   renumberPages();
 }
 
+/* Take a card out of the rail without destroying the page behind it.
+
+   The two spine cards both live on `basePage`, which owns the post itself —
+   the headline, the image, the paragraph. Deleting that page would take the
+   post with it, which is why removePage() refuses index 0. But refusing to
+   remove the CARD was a different rule wearing the same coat: a story that is
+   only a video, or only a poster, is an ordinary thing to want, and there was
+   no way to say so.
+
+   So the card leaves slotOrder and the DOM while the page stays. Putting it
+   back is just pushing the card in again — see restoreSpineCards(). */
+function removeCard(card) {
+  const slot = slotOrder.indexOf(card);
+  if (slot < 0) return;
+  // A post with no pages is not a post.
+  if (slotOrder.length <= 1) {
+    setStatus("A post needs at least one page.", "error");
+    return;
+  }
+
+  slotOrder.splice(slot, 1);
+  card.el?.remove();
+
+  // The selection may have been sitting on the card that just left.
+  if (!slotOrder.some((c) => c.el?.dataset?.page === activePageId)) {
+    const next = slotOrder[0];
+    if (next) setActivePage(next.el?.dataset?.page || "base", { force: true });
+  }
+
+  renumberPages();
+  renderPoster();
+  setStatus("Page removed.", "success");
+}
+
+/* Which spine cards are in the rail right now. Saved with the post, because
+   otherwise removing the text page and reopening would quietly bring it back
+   and the removal would look like it had failed. */
+function spineCardsInRail() {
+  return slotOrder.filter((c) => c.el?.dataset?.page === "base").map((c) => c.mode);
+}
+
+function restoreSpineCards(modes) {
+  // Older posts have no spine list. Leaving both in is the behaviour they
+  // were saved under, so that is what they get.
+  if (!Array.isArray(modes)) return;
+  let changed = false;
+  for (const card of basePage.cards) {
+    const present = slotOrder.includes(card);
+    const wanted = modes.includes(card.mode);
+    if (present && !wanted) {
+      slotOrder.splice(slotOrder.indexOf(card), 1);
+      card.el?.remove();
+      changed = true;
+    } else if (!present && wanted) {
+      /* Back to the front, in the spine's own order, rather than appended.
+         A returning poster belongs at the start of the story — pushing it
+         onto the end would silently reorder the post on open. */
+      const at = card.mode === "pix" ? 0 : Math.min(1, slotOrder.length);
+      slotOrder.splice(at, 0, card);
+      changed = true;
+    }
+  }
+  /* renumberPages() is what actually puts a card back on screen — it
+     re-inserts every element before the add tile. restorePages() already ran
+     it before this point, so without this call a restored card would sit in
+     slotOrder while never appearing in the rail: present in the data, absent
+     from the page. */
+  if (changed) {
+    renumberPages();
+    renderPoster();
+  }
+}
+
 function removePage(id) {
   const index = pages.findIndex((p) => p.id === id);
   if (index <= 0) return;                    // the spine is not removable
@@ -6063,10 +6136,19 @@ const previewRail = document.getElementById("preview-rail");
 if (previewRail) {
   previewRail.addEventListener("click", async (e) => {
     // Removing a page must not also select it on the way out.
-    const removeBtn = e.target.closest("[data-remove-page]");
+    const removeBtn = e.target.closest("[data-remove-page], [data-remove-card]");
     if (removeBtn) {
       const owner = removeBtn.closest("[data-page]");
-      if (owner) removePage(owner.dataset.page);
+      if (!owner) return;
+      /* A spine card removes only itself; an added page removes the page.
+         Both spine cards share one page, so removing the page would take the
+         other card — and the post's content — with it. */
+      if (owner.dataset.page === "base") {
+        const card = cardForElement(owner);
+        if (card) removeCard(card);
+      } else {
+        removePage(owner.dataset.page);
+      }
       return;
     }
 
@@ -7250,6 +7332,9 @@ function collectDesignSnapshot() {
     // Pages the writer added on top of the spine. The spine itself is the
     // rest of this snapshot, so only the extras are listed.
     pages: serializePages(),
+    // Which spine cards are still in the rail. Without this, removing the
+    // poster or the text page comes undone on the next open.
+    spine: spineCardsInRail(),
     savedAt: new Date().toISOString(),
   };
 }
@@ -7469,6 +7554,7 @@ function applyDesignSnapshot(design, post) {
   // Rebuild the added pages, then hand the editor back to page 1 — which is
   // what the writer is looking at when a post opens.
   restorePages(design.pages);
+  restoreSpineCards(design.spine);
   setActivePage("base", { force: true });
 }
 

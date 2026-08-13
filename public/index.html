@@ -616,9 +616,11 @@
            export ship the Text image. -->
       <div class="preview-rail" id="preview-rail">
 
-        <!-- The spine: a scrape always fills these, and they cannot be
-             removed. Poster is page 1, Text is page 2. Everything else —
-             including video — is added by hand. -->
+        <!-- The spine: a scrape always fills these, and they start as pages 1
+             and 2. They can be removed like any other page — a story that is
+             only a video, or only a poster, is a real thing to want. The base
+             PAGE survives either way, because it owns the post's headline,
+             image and paragraph; only its card leaves the rail. -->
         <figure class="preview-card is-selected" data-preview-mode="pix" data-page="base">
           <figcaption class="preview-card-label">
             <button type="button" class="preview-card-grip" data-grip
@@ -626,6 +628,8 @@
                     title="Drag to reorder (or focus and press ← →)">⠿</button>
             <span class="preview-card-num">1</span>
             <span class="preview-card-type">Poster</span>
+            <button type="button" class="preview-card-remove" data-remove-card
+                    aria-label="Remove the poster page" title="Remove this page">&times;</button>
           </figcaption>
           <div class="canvas-container">
             <canvas id="post-canvas" width="920" height="1700" aria-label="Page 1 — poster"></canvas>
@@ -651,6 +655,8 @@
                     title="Drag to reorder (or focus and press ← →)">⠿</button>
             <span class="preview-card-num">2</span>
             <span class="preview-card-type">Text</span>
+            <button type="button" class="preview-card-remove" data-remove-card
+                    aria-label="Remove the text page" title="Remove this page">&times;</button>
           </figcaption>
           <div class="canvas-container">
             <canvas id="text-canvas" width="920" height="1700" aria-label="Page 2 — text card"></canvas>

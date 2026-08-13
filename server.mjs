@@ -20,7 +20,7 @@ import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
   login, logout, sessionUser, purgeExpiredSessions,
   throttleCheck, throttleRecordFailure, throttleClear,
-  ROLES, createUser, listUsers, setPassword, setUserActive, normaliseUsername,
+  ROLES, createUser, listUsers, setPassword, setUserActive, normaliseUsername, isAdmin,
 } from "./lib/auth.js";
 import { handlePixRequest } from "./lib/pix-api.js";
 import { handlePixAnalyticsRequest } from "./lib/pix-analytics.js";
@@ -1676,9 +1676,21 @@ async function handleUsers(req, res) {
     sendJson(res, 401, { error: "Sign in to manage accounts." });
     return;
   }
-  if (user.role !== "qa") {
-    sendJson(res, 403, { error: "Only QA can manage accounts." });
-    return;
+  /* The roster belongs to the admin, not to QA.
+
+     One exception, and it is the difference between a policy and a locked
+     door: if no admin account exists yet, QA may still manage accounts. The
+     alternative is a system where the only way to make the first admin is a
+     shell on the server, and where tightening this rule would have locked the
+     existing team out of their own tool the moment it deployed. The exception
+     closes by itself the instant an admin exists. */
+  if (!isAdmin(user.role)) {
+    const adminExists = (await listUsers()).some((u) => u.role === "admin" && u.active);
+    if (adminExists || user.role !== "qa") {
+      sendJson(res, 403, { error: "Only an admin can manage accounts." });
+      return;
+    }
+    console.warn(`⚠ no admin account yet — allowing ${user.username} (qa) to manage accounts`);
   }
   if (!dbConfigured()) {
     sendJson(res, 503, { error: "The database is not configured." });

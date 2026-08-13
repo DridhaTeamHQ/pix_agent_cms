@@ -20,6 +20,7 @@ import { createUser, listUsers, setPassword, ensureAuthSchema } from "../../lib/
 
 const WRITER_PASSWORD = process.env.WRITER_PASSWORD || "writer@1234";
 const QA_PASSWORD = process.env.QA_PASSWORD || "qa@1234";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin@1234";
 
 const ACCOUNTS = [
   { username: "writer1", role: "writer", displayName: "Content Writer 1", password: WRITER_PASSWORD },
@@ -28,6 +29,9 @@ const ACCOUNTS = [
   { username: "writer4", role: "writer", displayName: "Content Writer 4", password: WRITER_PASSWORD },
   { username: "writer5", role: "writer", displayName: "Content Writer 5", password: WRITER_PASSWORD },
   { username: "qa1", role: "qa", displayName: "QA Reviewer", password: QA_PASSWORD },
+  // The admin owns the team roster and the full analytics. Without one seeded
+  // the only route to a first admin account is a shell on the server.
+  { username: "admin", role: "admin", displayName: "Administrator", password: ADMIN_PASSWORD },
 ];
 
 loadDotEnv();

@@ -118,8 +118,9 @@
           <svg width="14" height="14" aria-hidden="true"><use href="#i-doc"/></svg>
           Analytics
         </button>
-        <!-- QA manages the team, so account creation lives with QA. -->
-        <button type="button" class="view-tab qa-only" data-view="writers" role="tab" aria-selected="false">
+        <!-- The team roster is the admin's, not QA's: it is reporting about
+             colleagues rather than a review tool. -->
+        <button type="button" class="view-tab admin-only" data-view="writers" role="tab" aria-selected="false">
           <svg width="14" height="14" aria-hidden="true"><use href="#i-check"/></svg>
           Writers
         </button>

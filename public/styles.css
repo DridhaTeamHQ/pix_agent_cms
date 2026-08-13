@@ -330,7 +330,11 @@ body.auth-ready .agent-auth-gate {
    a glance from the writer accounts. */
 /* Before the session resolves the role is still empty — stay hidden until we
    positively know the user is QA, so nothing flashes for a writer. */
-body:not([data-role="qa"]) .qa-only { display: none; }
+/* An admin can do everything QA can, so they must see everything marked
+   qa-only too — gating on the literal string "qa" would have hidden the
+   review filters from the one role that outranks it. */
+body:not([data-role="qa"]):not([data-role="admin"]) .qa-only { display: none; }
+body:not([data-role="admin"]) .admin-only { display: none; }
 
 .role-badge.is-qa {
   background: rgba(16, 152, 110, 0.14);
@@ -2585,7 +2589,7 @@ body.view-writers .edit-sheet {
    enough to stay on one line. */
 .analytics-roster-list {
   display: grid;
-  grid-template-columns: 34px minmax(90px, 1fr) repeat(5, minmax(max-content, 104px));
+  grid-template-columns: 34px minmax(90px, 1fr) repeat(6, minmax(max-content, 96px));
   /* The column gap belongs to the list too — a subgrid that declares its own
      would resolve different track positions and undo the alignment. */
   row-gap: 8px;
@@ -2612,7 +2616,7 @@ body.view-writers .edit-sheet {
 @supports not (grid-template-columns: subgrid) {
   .analytics-roster-list { display: block; }
   .roster-row {
-    grid-template-columns: 34px minmax(90px, 1fr) repeat(5, minmax(0, 118px));
+    grid-template-columns: 34px minmax(90px, 1fr) repeat(6, minmax(0, 112px));
     gap: 14px;
     margin-bottom: 8px;
   }
@@ -5187,4 +5191,33 @@ select option[value=""] { color: var(--text-secondary); }
   .pix-dialog-actions { flex-direction: column-reverse; }
   .pix-dialog-actions .btn-ghost,
   .pix-dialog-actions .btn-primary { width: 100%; }
+}
+
+/* ─── Weekly output column ─────────────────────────────────────────
+   The headline number on the roster: what this writer produced in the last
+   seven days, with an arrow against the seven before it. A lifetime total
+   says who has been here longest; this says who is producing now. */
+.roster-week { font-weight: 700; font-variant-numeric: tabular-nums; }
+.roster-week.is-up { color: var(--green); }
+.roster-week.is-down { color: var(--red); }
+.roster-week.is-flat { color: var(--text-primary); }
+
+/* Same figure on the Writers roster, where it sits under the name. */
+.writers-week {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-dim);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+/* An admin badge should not read as QA — same powers, different job. */
+.role-badge.is-admin {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-dim);
 }

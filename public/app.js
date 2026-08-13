@@ -633,13 +633,25 @@ function validateDailyMattrExtraFiles() {
   return "";
 }
 
+/* Capability checks, so a new role does not mean hunting every `=== "qa"`
+   in the file. An admin is a superset of QA. */
+function roleLabel(role) {
+  return role === "admin" ? "Admin" : role === "qa" ? "QA" : "Writer";
+}
+
+function canReviewRole(role) { return role === "qa" || role === "admin"; }
+function isAdminRole(role) { return role === "admin"; }
+
 function applySession(user) {
   state.user = user || null;
   document.body.dataset.role = user?.role || "";
   if (accountName) accountName.textContent = user?.displayName || user?.username || "—";
   if (accountRole) {
-    accountRole.textContent = user?.role === "qa" ? "QA" : "Writer";
-    accountRole.classList.toggle("is-qa", user?.role === "qa");
+    // The badge names the role, it does not test a capability — an admin
+    // showing "QA" here is simply wrong, however similar their powers are.
+    accountRole.textContent = roleLabel(user?.role);
+    accountRole.classList.toggle("is-qa", canReviewRole(user?.role));
+    accountRole.classList.toggle("is-admin", isAdminRole(user?.role));
   }
   if (accountBox) accountBox.hidden = !user;
   if (logoutBtn) logoutBtn.hidden = !user;
@@ -650,14 +662,14 @@ function applySession(user) {
   // and don't spend a DailyMattr round-trip loading options a writer can
   // never use.
   syncDailyMattrAccess();
-  if (user?.role === "qa") loadDailyMattrMeta({ force: true });
+  if (canReviewRole(user?.role)) loadDailyMattrMeta({ force: true });
   // Writers need the lists too, to file their own story.
   if (user) loadSectionOptions();
   // Whoever just signed in gets their own list, not the previous user's.
   if (user && document.body.classList.contains("view-review")) loadReviewQueue();
   if (user && document.body.classList.contains("view-analytics")) {
     // A writer signing in on the analytics view has no analytics to see.
-    if (user.role === "qa") loadAnalytics({ force: true });
+    if (canReviewRole(user.role)) loadAnalytics({ force: true });
     else setView("poster");
   }
 }
@@ -738,7 +750,7 @@ if (logoutBtn) {
 /** True when this user may write to `post` (a library row). */
 function canEditPost(post) {
   if (!state.user) return false;
-  if (state.user.role === "qa") return true;
+  if (canReviewRole(state.user.role)) return true;
   return !post?.user_login_id || post.user_login_id === state.user.id;
 }
 
@@ -941,7 +953,7 @@ function setPostStatus(msg, kind) {
    button is not a permission. */
 function syncDailyMattrAccess() {
   const panel = document.getElementById("dailymattr-panel");
-  if (panel) panel.hidden = state.user?.role !== "qa";
+  if (panel) panel.hidden = !canReviewRole(state.user?.role);
 }
 
 function setDailyMattrStatus(message, kind) {
@@ -4642,22 +4654,22 @@ function renderAnalyticsSummary(summary = {}, role = "writer") {
   const rateSub = document.getElementById("analytics-rate-sub");
 
   if (sentSub) {
-    sentSub.textContent = role === "qa"
+    sentSub.textContent = canReviewRole(role)
       ? `${formatCount(summary.active_writers || 0)} writers active in the pipeline`
       : "Posts you have sent into the workflow";
   }
   if (approvedSub) {
-    approvedSub.textContent = role === "qa"
+    approvedSub.textContent = canReviewRole(role)
       ? `${formatCount(summary.approved_by_me_count || 0)} approved by you`
       : "Posts QA has approved";
   }
   if (pendingSub) {
-    pendingSub.textContent = role === "qa"
+    pendingSub.textContent = canReviewRole(role)
       ? "Still waiting for QA action"
       : "Your posts still in review";
   }
   if (rateSub) {
-    rateSub.textContent = role === "qa"
+    rateSub.textContent = canReviewRole(role)
       ? `${formatCount(summary.active_qas || 0)} QA reviewers active`
       : "Share of your posts approved";
   }
@@ -4665,8 +4677,8 @@ function renderAnalyticsSummary(summary = {}, role = "writer") {
 
 function renderAnalyticsMeta(summary = {}, role = "writer") {
   if (!analyticsMetaList || !analyticsMetaTitle) return;
-  analyticsMetaTitle.textContent = role === "qa" ? "Approval health" : "Your pipeline health";
-  const items = role === "qa"
+  analyticsMetaTitle.textContent = canReviewRole(role) ? "Approval health" : "Your pipeline health";
+  const items = canReviewRole(role)
     ? [
         ["Active writers", formatCount(summary.active_writers || 0)],
         ["Active QA reviewers", formatCount(summary.active_qas || 0)],
@@ -4811,11 +4823,21 @@ function renderWriterRoster() {
     // disagree with the columns either side of it. A writer with nothing sent
     // has no rate — 0% would read as a verdict nobody made.
     const rate = sent ? Math.round((approved / sent) * 100) : null;
+    /* Output over the last seven days. A lifetime total tells you who has
+       been here longest; this tells you who is producing now, which is the
+       question anyone actually asks of a roster. The arrow compares it with
+       the seven days before, so a number that is falling says so. */
+    const week = Number(row.week_count) || 0;
+    const prevWeek = Number(row.prev_week_count) || 0;
+    const trend = week > prevWeek ? "up" : week < prevWeek ? "down" : "flat";
+    const trendMark = trend === "up" ? "↑" : trend === "down" ? "↓" : "";
+    const weekTitle = `${week} this week vs ${prevWeek} the week before`;
     const name = escapeRosterText(row.user_name || (isQa ? "Unknown QA" : "Unknown writer"));
     return `
       <div class="roster-row">
         <span class="roster-avatar">${escapeRosterText(rosterInitials(row.user_name))}</span>
         <span class="roster-name" title="${name}">${name}</span>
+        <span class="roster-cell roster-week is-${trend}" title="${weekTitle}">${isQa ? "—" : `${formatCount(week)}${trendMark}`}</span>
         <span class="roster-cell roster-sent">${isQa ? "—" : formatCount(sent)}</span>
         <span class="roster-cell roster-approved">${formatCount(approved)}</span>
         <span class="roster-cell roster-rejected">${formatCount(rejected)}</span>
@@ -4829,6 +4851,7 @@ function renderWriterRoster() {
     <div class="roster-row roster-head-row">
       <span></span>
       <span>${isQa ? "Reviewer" : "Writer"}</span>
+      <span class="roster-cell">This week</span>
       <span class="roster-cell">Total sent</span>
       <span class="roster-cell">Approved</span>
       <span class="roster-cell">Rejected</span>
@@ -5107,7 +5130,7 @@ function renderAnalyticsRecent() {
 
 async function loadAnalytics({ force = false } = {}) {
   if (!analyticsView || !state.user) return;
-  if (state.user.role !== "qa") return;
+  if (!canReviewRole(state.user.role)) return;
   if (!force && analyticsLoadedForRole === state.user.role) return;
 
   if (analyticsRefreshBtn) analyticsRefreshBtn.disabled = true;
@@ -5137,9 +5160,13 @@ async function loadAnalytics({ force = false } = {}) {
     analyticsRecentRows = Array.isArray(analytics.recent) ? analytics.recent : [];
     renderAnalyticsRecent();
 
-    if (analyticsTitle) analyticsTitle.innerHTML = role === "qa" ? "QA pipeline,<br>clearly measured." : "Your writing flow,<br>clearly measured.";
+    if (analyticsTitle) {
+      analyticsTitle.innerHTML = role === "admin" ? "Team output,<br>clearly measured."
+        : role === "qa" ? "QA pipeline,<br>clearly measured."
+        : "Your writing flow,<br>clearly measured.";
+    }
     if (analyticsDesc) {
-      analyticsDesc.textContent = role === "qa"
+      analyticsDesc.textContent = canReviewRole(role)
         ? "Track what the writers are sending, what is still waiting, and how quickly the QA desk is clearing approvals."
         : "Track how many posts you have sent, how many QA has approved, and how much is still waiting in the queue.";
     }
@@ -5159,7 +5186,12 @@ async function loadAnalytics({ force = false } = {}) {
     renderAnalyticsSummary(analytics.summary, role);
     renderAnalyticsMeta(analytics.summary, role);
 
-    if (role === "qa") {
+    /* "full" (admin) gets the team roster and the reviewer table; "basic"
+       (QA) gets their own line only. The server decides which it sent and
+       says so, rather than the client inferring it from the role — the two
+       could otherwise disagree and render a roster the payload does not
+       contain. */
+    if ((payload.scope || "full") === "full" && canReviewRole(role)) {
       setWriterRoster(analytics.writers || [], analytics.qas || [], analytics.summary?.pending_count || 0);
     } else {
       setWriterRoster([{
@@ -5194,7 +5226,10 @@ function setView(view) {
   if ((view === "review" || view === "analytics" || view === "writers") && !state.user) view = "poster";
   // Analytics and Writers are QA-only; a writer landing here (stale tab, deep
   // link) goes home. The server refuses them too — this is only the redirect.
-  if ((view === "analytics" || view === "writers") && state.user?.role !== "qa") view = "poster";
+  if (view === "analytics" && !canReviewRole(state.user?.role)) view = "poster";
+  // The roster is the admin's screen; QA landing here (stale tab, deep link)
+  // goes home. The server refuses it too.
+  if (view === "writers" && !isAdminRole(state.user?.role)) view = "poster";
 
   document.body.classList.toggle("view-article", view === "article");
   document.body.classList.toggle("view-review", view === "review");
@@ -7479,7 +7514,7 @@ let reviewFilter = "all";   // "all" | "pending" | "approved" — QA only
 /* Title, tab label and blurb all follow the role. Called whenever a session
    resolves, so a writer signing in after QA never sees QA's wording. */
 function syncReviewCopy() {
-  const isQa = state.user?.role === "qa";
+  const isQa = canReviewRole(state.user?.role);
   if (reviewTabLabel) reviewTabLabel.textContent = isQa ? "Review" : "My posts";
   if (reviewTitle) reviewTitle.innerHTML = isQa ? "Review<br>and approve." : "Your<br>saved posts.";
   if (reviewDesc) {
@@ -7548,7 +7583,7 @@ let selectedWriterId = null;
    who is absent from the post table entirely), while the analytics writers
    board knows how much each has produced. Neither alone is the answer. */
 async function loadWriters() {
-  if (!writersList || state.user?.role !== "qa") return;
+  if (!writersList || !isAdminRole(state.user?.role)) return;
   setWritersStatus("Loading writers...");
   try {
     const [{ users }, analytics] = await Promise.all([
@@ -7562,6 +7597,7 @@ async function loadWriters() {
       if (row.user_login_id) {
         writerStats.set(row.user_login_id, {
           sent: row.sent_count || 0,
+          week: row.week_count || 0,
           approved: row.approved_count || 0,
           pending: row.pending_count || 0,
         });
@@ -7611,11 +7647,22 @@ function renderWriterRow(u) {
   meta.className = "writers-item-meta";
   const stats = writerStats.get(u.id);
   meta.textContent = [
-    u.role === "qa" ? "QA" : "Writer",
+    roleLabel(u.role),
     stats ? `${stats.sent} post${stats.sent === 1 ? "" : "s"}` : "no posts yet",
     u.active ? null : "disabled",
   ].filter(Boolean).join(" \u00b7 ");
   main.append(name, meta);
+
+  /* This week's output, called out rather than buried in the meta line \u2014 it is
+     the number the roster exists to answer. A lifetime total tells you who has
+     been here longest, not who is producing now. */
+  if (stats) {
+    const week = document.createElement("span");
+    week.className = "writers-week";
+    week.textContent = `${stats.week} this week`;
+    week.title = "Posts created in the last 7 days";
+    main.appendChild(week);
+  }
   open.append(avatar, main);
 
   const actions = document.createElement("div");
@@ -7706,7 +7753,7 @@ async function openWriter(u) {
   const stats = writerStats.get(u.id);
   document.getElementById("writer-detail-meta").textContent = [
     u.username,
-    u.role === "qa" ? "QA" : "Writer",
+    roleLabel(u.role),
     stats ? `${stats.approved} approved \u00b7 ${stats.pending} pending` : "no posts yet",
   ].join(" \u00b7 ");
 
@@ -7966,7 +8013,7 @@ async function loadReviewQueue() {
           ? "Nothing rejected."
           : reviewFilter === "awaiting"
             ? "Nothing waiting — every saved post has a verdict."
-            : state.user?.role === "qa"
+            : canReviewRole(state.user?.role)
               ? "No posts saved yet."
               : "You have not saved a post yet. Build one, then press Save.";
       reviewList.appendChild(empty);
@@ -8043,7 +8090,7 @@ function renderReviewItem(post) {
   actions.append(open);
 
   // Approving and deleting are QA's; a writer would only ever get a 403.
-  if (state.user?.role === "qa") {
+  if (canReviewRole(state.user?.role)) {
     const approve = document.createElement("button");
     approve.type = "button";
     approve.className = "btn-ghost" + (post.approved ? "" : " btn-approve");

@@ -3,6 +3,7 @@
 // trigger CORS errors (e.g. when drawing onto a canvas).
 
 import { USER_AGENT } from "../lib/http.js";
+import { ScrapeValidationError, fetchPublicImage } from "../lib/scrape-security.js";
 
 export const config = {
   api: { responseLimit: "10mb" },
@@ -21,25 +22,14 @@ export default async function handler(req, res) {
       return;
     }
 
-    const parsed = new URL(target);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      res.status(400).json({ error: "Only http and https image URLs are supported." });
-      return;
-    }
-
-    const r = await fetch(parsed, { headers: { "user-agent": USER_AGENT } });
-    if (!r.ok) {
-      res.status(502).json({ error: `Image source returned ${r.status}.` });
-      return;
-    }
-    const contentType = r.headers.get("content-type") || "application/octet-stream";
-    const buf = Buffer.from(await r.arrayBuffer());
+    const { buffer: buf, contentType } = await fetchPublicImage(target, { userAgent: USER_AGENT });
 
     res.setHeader("Content-Type", contentType);
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.status(200).send(buf);
   } catch (err) {
-    res.status(500).json({ error: err.message || "Image proxy failed." });
+    const status = err instanceof ScrapeValidationError ? err.status : 500;
+    res.status(status).json({ error: err.message || "Image proxy failed." });
   }
 }

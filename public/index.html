@@ -112,9 +112,16 @@
           <svg width="14" height="14" aria-hidden="true"><use href="#i-check"/></svg>
           <span id="review-tab-label">Review</span>
         </button>
-        <button type="button" class="view-tab" data-view="analytics" role="tab" aria-selected="false">
+        <!-- Analytics is a QA-only view: it reports on the whole team's
+             throughput, which a writer has no business seeing. -->
+        <button type="button" class="view-tab qa-only" data-view="analytics" role="tab" aria-selected="false">
           <svg width="14" height="14" aria-hidden="true"><use href="#i-doc"/></svg>
           Analytics
+        </button>
+        <!-- QA manages the team, so account creation lives with QA. -->
+        <button type="button" class="view-tab qa-only" data-view="writers" role="tab" aria-selected="false">
+          <svg width="14" height="14" aria-hidden="true"><use href="#i-check"/></svg>
+          Writers
         </button>
       </div>
 
@@ -240,6 +247,17 @@
       <!-- ═══ Edit accordions (revealed after build) ═══ -->
       <div id="edit-panel" class="edit-panel acc-list" hidden>
 
+        <!-- Which page these controls are writing to. Without this the same
+             fields silently point somewhere else after a card is clicked,
+             which is the one way a multi-page editor gets confusing. -->
+        <div class="page-context" id="page-context" hidden>
+          <div class="page-context-main">
+            <span class="page-context-kicker">Editing</span>
+            <strong class="page-context-name" id="page-context-name">Page 1 · Poster</strong>
+          </div>
+          <button type="button" class="btn-ghost btn-tiny" id="page-context-back">Edit main post</button>
+        </div>
+
         <!-- Aspect Ratio -->
         <div class="acc" data-open="true">
           <button type="button" class="acc-head" aria-expanded="true">
@@ -285,10 +303,47 @@
             <h3 class="acc-subtitle">Text Paragraph</h3>
             <textarea id="detail-edit" rows="12" placeholder="Edit the paragraph shown in Text preview..."></textarea>
             <small class="helper-text">This copy appears in the Text preview.</small>
+
+          <!-- Lives in the shared editor rather than the Write Text panel so it
+               serves both flows: a scrape fills it in, a hand-written post can
+               have it typed. Shown in Review and searchable. -->
+          <h3 class="acc-subtitle">Source Link</h3>
+          <input type="url" id="source-url-edit" placeholder="https://example.com/article" />
+          <small class="helper-text">Where the story came from. Filled automatically when you scrape a link.</small>
+
+          <!-- The writer files the story, because they have the context. QA can
+               still change it at publish; this is the starting point, not a
+               lock. -->
+          <h3 class="acc-subtitle">Section</h3>
+          <div class="section-row">
+            <label class="field">
+              <span class="field-label">Category</span>
+              <select id="post-category"><option value="">Choose a category</option></select>
+            </label>
+            <label class="field" id="post-state-field">
+              <span class="field-label">State</span>
+              <select id="post-state"><option value="">Optional</option></select>
+            </label>
+          </div>
+          <small class="helper-text" id="post-section-hint">Where this story is filed on the web app.</small>
             <label class="checkbox-row" style="margin-top:8px;">
               <input type="checkbox" id="show-timestamp" checked />
               <span>Show creation time on the Text slide</span>
             </label>
+            <!-- The stamp defaulted to today with no way to change it, which is
+                 wrong for a story written up a day or two after the event. -->
+            <div class="date-row" id="post-date-row">
+              <label class="field">
+                <span class="field-label">Date on the slide</span>
+                <input type="date" id="post-date" />
+              </label>
+              <button type="button" class="btn-ghost" id="post-date-today">Today</button>
+            </div>
+            <small class="helper-text">Leave it on today unless the story is being posted later.</small>
+
+            <h3 class="acc-subtitle">Keywords</h3>
+            <input type="text" id="post-keywords" placeholder="politics, local, election" />
+            <small class="helper-text">Up to 10, comma separated. Sent with the post to the web app.</small>
             <h3 class="acc-subtitle">Tag Badge</h3>
             <div class="preset-grid" id="tag-presets">
               <button type="button" class="preset-btn active" data-tag="none"          title="No Tag">None</button>
@@ -302,11 +357,12 @@
           </div></div>
         </div>
 
-        <!-- Slide 2 video — replaces the Text card with a trimmed, branded clip.
-             Source is a YouTube/Instagram link or a local file. -->
+        <!-- Video — a trimmed, branded clip on its own page. Source is a
+             YouTube/Instagram link or a local file. Only reachable while a
+             Video page is selected, because the clip belongs to that page. -->
         <div class="acc" data-open="false" id="video-acc">
           <button type="button" class="acc-head" aria-expanded="false">
-            <span class="acc-title">Slide 2 Video</span>
+            <span class="acc-title">Video</span>
             <svg class="acc-chevron" width="14" height="14"><use href="#i-chevron"/></svg>
           </button>
           <div class="acc-body"><div class="acc-inner">
@@ -523,6 +579,11 @@
     <section class="glass-panel preview-panel">
       <div class="preview-header">
         <span class="preview-title">Live Preview</span>
+        <!-- The carousel is a fixed spine (poster + slide 2) plus pages the
+             writer adds. The count is in the header because the cap is the
+             thing people bump into, and a number they can see beats an
+             "Add page" button that silently stops working. -->
+        <span class="page-count-chip" id="page-count-chip">2 of 5 pages</span>
         <div class="preview-header-actions">
           <!-- The only way a post reaches the database. Nothing is stored on
                scrape, rewrite or download. -->
@@ -554,37 +615,93 @@
            export ship the Text image. -->
       <div class="preview-rail" id="preview-rail">
 
-        <figure class="preview-card" data-preview-mode="pix">
-          <figcaption class="preview-card-label"><span class="preview-card-num">1</span> Poster</figcaption>
+        <!-- The spine: a scrape always fills these, and they cannot be
+             removed. Poster is page 1, Text is page 2. Everything else —
+             including video — is added by hand. -->
+        <figure class="preview-card is-selected" data-preview-mode="pix" data-page="base">
+          <figcaption class="preview-card-label">
+            <button type="button" class="preview-card-grip" data-grip
+                    aria-label="Move this page — drag, or use the left and right arrow keys"
+                    title="Drag to reorder (or focus and press ← →)">⠿</button>
+            <span class="preview-card-num">1</span>
+            <span class="preview-card-type">Poster</span>
+          </figcaption>
           <div class="canvas-container">
-            <canvas id="post-canvas" width="920" height="1700" aria-label="Slide 1 — poster"></canvas>
+            <canvas id="post-canvas" width="920" height="1700" aria-label="Page 1 — poster"></canvas>
           </div>
-          <button type="button" class="btn-ghost preview-card-dl" data-download="pix">
-            <svg width="13" height="13" aria-hidden="true"><use href="#i-download"/></svg> Download
-          </button>
+          <p class="preview-card-slice" hidden></p>
+          <div class="preview-card-actions">
+            <button type="button" class="btn-ghost preview-card-edit" data-edit-page>
+              <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M11.3 2.2l2.5 2.5L6 12.5 3 13l.5-3z" fill="none"
+                      stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              </svg> Edit
+            </button>
+            <button type="button" class="btn-ghost preview-card-dl" data-download="pix">
+              <svg width="12" height="12" aria-hidden="true"><use href="#i-download"/></svg> Download
+            </button>
+          </div>
         </figure>
 
-        <figure class="preview-card" data-preview-mode="text">
-          <figcaption class="preview-card-label"><span class="preview-card-num">2</span> Text</figcaption>
+        <figure class="preview-card is-selected" data-preview-mode="text" data-page="base">
+          <figcaption class="preview-card-label">
+            <button type="button" class="preview-card-grip" data-grip
+                    aria-label="Move this page — drag, or use the left and right arrow keys"
+                    title="Drag to reorder (or focus and press ← →)">⠿</button>
+            <span class="preview-card-num">2</span>
+            <span class="preview-card-type">Text</span>
+          </figcaption>
           <div class="canvas-container">
-            <canvas id="text-canvas" width="920" height="1700" aria-label="Slide 2 — text card"></canvas>
+            <canvas id="text-canvas" width="920" height="1700" aria-label="Page 2 — text card"></canvas>
           </div>
-          <button type="button" class="btn-ghost preview-card-dl" data-download="text">
-            <svg width="13" height="13" aria-hidden="true"><use href="#i-download"/></svg> Download
-          </button>
+          <!-- Which of the paragraph's points this card carries, once there is
+               more than one text page to spread them over. -->
+          <p class="preview-card-slice" hidden></p>
+          <div class="preview-card-actions">
+            <button type="button" class="btn-ghost preview-card-edit" data-edit-page>
+              <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M11.3 2.2l2.5 2.5L6 12.5 3 13l.5-3z" fill="none"
+                      stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              </svg> Edit
+            </button>
+            <button type="button" class="btn-ghost preview-card-dl" data-download="text">
+              <svg width="12" height="12" aria-hidden="true"><use href="#i-download"/></svg> Download
+            </button>
+          </div>
         </figure>
 
-        <figure class="preview-card" data-preview-mode="video">
-          <figcaption class="preview-card-label"><span class="preview-card-num">2</span> Video</figcaption>
-          <div class="canvas-container">
-            <canvas id="video-canvas" width="920" height="1700" aria-label="Slide 2 — video"></canvas>
-          </div>
-          <button type="button" class="btn-ghost preview-card-dl" data-download="video">
-            <svg width="13" height="13" aria-hidden="true"><use href="#i-download"/></svg> Export MP4
-          </button>
-        </figure>
+        <!-- Added pages are injected here, immediately before the tile, so
+             the "+" always sits at the end of the run of pages — right
+             beside Text until something is added — and never after the X
+             export. -->
 
-        <figure class="preview-card" data-preview-mode="x">
+        <div class="preview-add" id="preview-add">
+          <button type="button" class="preview-add-btn" id="preview-add-btn"
+                  aria-haspopup="true" aria-expanded="false" title="Add another page">
+            <span class="preview-add-plus" aria-hidden="true">+</span>
+            <span class="preview-add-label">Add page</span>
+            <span class="preview-add-hint" id="preview-add-hint">3 left</span>
+          </button>
+          <!-- Replaces the tile's face while open rather than floating over
+               it, so nothing shows through and nothing spills onto the next
+               card. -->
+          <div class="preview-add-menu" id="preview-add-menu" role="menu" hidden>
+            <button type="button" role="menuitem" data-add-page="poster">
+              <span class="add-menu-icon" aria-hidden="true">▦</span> Poster page
+            </button>
+            <button type="button" role="menuitem" data-add-page="text">
+              <span class="add-menu-icon" aria-hidden="true">≡</span> Text page
+            </button>
+            <button type="button" role="menuitem" data-add-page="video">
+              <span class="add-menu-icon" aria-hidden="true">▶</span> Video page
+            </button>
+            <button type="button" class="preview-add-cancel" data-add-cancel>Cancel</button>
+          </div>
+        </div>
+
+        <!-- Not a carousel page — an export variant of the poster (2x,
+             cropped, Shortly logo). It rides along free of the 5-page cap. -->
+        <figure class="preview-card preview-card-pinned" data-preview-mode="x">
           <figcaption class="preview-card-label"><span class="preview-card-glyph">𝕏</span> For X</figcaption>
           <div class="canvas-container">
             <canvas id="x-canvas" width="920" height="1700" aria-label="Post image for X"></canvas>
@@ -635,8 +752,42 @@
           <textarea id="dailymattr-content" rows="3" placeholder="This is sent as content_en to DailyMattr."></textarea>
         </label>
 
+        <div class="publish-media" aria-labelledby="dailymattr-media-title">
+          <div class="publish-media-head">
+            <div>
+              <span class="field-label" id="dailymattr-media-title">Additional media outputs</span>
+              <p class="helper-text">Add any mix of images and videos. Each file is optional.</p>
+            </div>
+            <span class="publish-mode" id="dailymattr-media-mode">0 / 3 added</span>
+          </div>
+
+          <div class="publish-media-grid">
+            <div class="publish-media-slot" data-media-slot="3">
+              <span class="publish-media-number">Extra 1</span>
+              <span class="publish-media-name" id="dailymattr-media-name-3">Add image or video</span>
+              <label class="btn-ghost publish-media-pick" for="dailymattr-media-3">Choose file</label>
+              <input type="file" id="dailymattr-media-3" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime" hidden />
+              <button type="button" class="publish-media-remove" data-remove-media="3" aria-label="Remove additional media file 1" hidden>&times;</button>
+            </div>
+            <div class="publish-media-slot" data-media-slot="4">
+              <span class="publish-media-number">Extra 2</span>
+              <span class="publish-media-name" id="dailymattr-media-name-4">Add image or video</span>
+              <label class="btn-ghost publish-media-pick" for="dailymattr-media-4">Choose file</label>
+              <input type="file" id="dailymattr-media-4" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime" hidden />
+              <button type="button" class="publish-media-remove" data-remove-media="4" aria-label="Remove additional media file 2" hidden>&times;</button>
+            </div>
+            <div class="publish-media-slot" data-media-slot="5">
+              <span class="publish-media-number">Extra 3</span>
+              <span class="publish-media-name" id="dailymattr-media-name-5">Add image or video</span>
+              <label class="btn-ghost publish-media-pick" for="dailymattr-media-5">Choose file</label>
+              <input type="file" id="dailymattr-media-5" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime" hidden />
+              <button type="button" class="publish-media-remove" data-remove-media="5" aria-label="Remove additional media file 3" hidden>&times;</button>
+            </div>
+          </div>
+        </div>
+
         <div class="publish-actions">
-          <p class="helper-text publish-help">Publishes the poster as page 1 and the text slide as page 2 when paragraph copy exists.</p>
+          <p class="helper-text publish-help">Publishes the headline poster, an available text card or video, and any added JPG, PNG, WEBP, MP4 or MOV files. Images and videos can be mixed.</p>
           <button type="button" class="btn-primary publish-submit" id="dailymattr-publish-btn">Publish to DailyMattr</button>
         </div>
 
@@ -713,6 +864,11 @@
           <button type="button" class="review-filter" data-filter="approved" role="tab" aria-selected="false">Approved</button>
           <button type="button" class="review-filter" data-filter="rejected" role="tab" aria-selected="false">Rejected</button>
         </div>
+        <!-- Searches server-side, so it reaches past the 100-row page rather
+             than filtering only what is already on screen. -->
+        <label class="review-search">
+          <input type="search" id="review-search" placeholder="Search headline, writer or source…" />
+        </label>
         <button type="button" class="btn-ghost" id="review-refresh">Refresh</button>
       </div>
 
@@ -722,52 +878,51 @@
   </section>
 
   <section class="analytics-shell" id="analytics-view" hidden>
-    <div class="glass-panel analytics-panel">
-      <header class="analytics-intro">
-        <div>
-          <span class="analytics-kicker">Workflow Analytics</span>
-          <h1 id="analytics-title">Content flow,<br>at a glance.</h1>
-          <p class="desc" id="analytics-desc">See how many posts writers are sending and how quickly QA is clearing the queue.</p>
-        </div>
-        <button type="button" class="btn-ghost" id="analytics-refresh">Refresh</button>
-      </header>
+    <header class="analytics-intro">
+      <div>
+        <span class="analytics-kicker">Workflow Analytics</span>
+        <h1 id="analytics-title">Content flow,<br>at a glance.</h1>
+        <p class="desc" id="analytics-desc">See how many posts writers are sending and how quickly QA is clearing the queue.</p>
+      </div>
+      <button type="button" class="btn-ghost" id="analytics-refresh">Refresh</button>
+    </header>
 
-      <p class="status-text" id="analytics-status" role="status" aria-live="polite"></p>
+    <p class="status-text" id="analytics-status" role="status" aria-live="polite"></p>
 
-      <section class="analytics-hero">
-        <div class="analytics-stat-card accent-a">
-          <span class="analytics-stat-label">Sent</span>
-          <strong class="analytics-stat-value" data-analytics-value="sent">0</strong>
-          <span class="analytics-stat-sub" id="analytics-sent-sub">Posts saved in the workflow</span>
-        </div>
-        <div class="analytics-stat-card accent-b">
-          <span class="analytics-stat-label">Approved</span>
-          <strong class="analytics-stat-value" data-analytics-value="approved">0</strong>
-          <span class="analytics-stat-sub" id="analytics-approved-sub">Cleared by QA</span>
-        </div>
-        <div class="analytics-stat-card accent-c">
-          <span class="analytics-stat-label">Pending</span>
-          <strong class="analytics-stat-value" data-analytics-value="pending">0</strong>
-          <span class="analytics-stat-sub" id="analytics-pending-sub">Waiting in the queue</span>
-        </div>
-        <div class="analytics-stat-card accent-d">
-          <span class="analytics-stat-label">Approval Rate</span>
-          <strong class="analytics-stat-value" data-analytics-value="rate">0%</strong>
-          <span class="analytics-stat-sub" id="analytics-rate-sub">Share of posts approved</span>
-        </div>
-      </section>
+    <section class="analytics-hero">
+      <div class="analytics-stat-card accent-a">
+        <span class="analytics-stat-label">Sent</span>
+        <strong class="analytics-stat-value" data-analytics-value="sent">0</strong>
+        <span class="analytics-stat-sub" id="analytics-sent-sub">Posts saved in the workflow</span>
+      </div>
+      <div class="analytics-stat-card accent-b">
+        <span class="analytics-stat-label">Approved</span>
+        <strong class="analytics-stat-value" data-analytics-value="approved">0</strong>
+        <span class="analytics-stat-sub" id="analytics-approved-sub">Cleared by QA</span>
+      </div>
+      <div class="analytics-stat-card accent-c">
+        <span class="analytics-stat-label">Pending</span>
+        <strong class="analytics-stat-value" data-analytics-value="pending">0</strong>
+        <span class="analytics-stat-sub" id="analytics-pending-sub">Waiting in the queue</span>
+      </div>
+      <div class="analytics-stat-card accent-d">
+        <span class="analytics-stat-label">Approval Rate</span>
+        <strong class="analytics-stat-value" data-analytics-value="rate">0%</strong>
+        <span class="analytics-stat-sub" id="analytics-rate-sub">Share of posts approved</span>
+      </div>
+    </section>
 
-      <section class="analytics-grid analytics-meta-grid">
-        <article class="analytics-card analytics-meta-card">
-          <div class="analytics-card-head">
-            <div>
-              <span class="analytics-card-label">Workflow Health</span>
-              <h3 id="analytics-meta-title">Throughput</h3>
-            </div>
+    <section class="analytics-grid analytics-meta-grid">
+      <article class="analytics-card analytics-meta-card">
+        <div class="analytics-card-head">
+          <div>
+            <span class="analytics-card-label">Workflow Health</span>
+            <h3 id="analytics-meta-title">Throughput</h3>
           </div>
-          <div class="analytics-metric-list" id="analytics-meta-list"></div>
-        </article>
-      </section>
+        </div>
+        <div class="analytics-metric-list" id="analytics-meta-list"></div>
+      </article>
+    </section>
 
       <section class="analytics-grid analytics-roster-grid">
         <article class="analytics-card analytics-roster-card" id="analytics-roster-card">
@@ -825,8 +980,104 @@
         </article>
       </section>
 
+    <section class="analytics-grid analytics-board-grid">
+      <!-- Recent content, each row naming its writer. The roster above says who
+           is producing overall; this says who wrote THIS story, and opens it. -->
+      <article class="analytics-card analytics-card-wide">
+        <div class="analytics-card-head">
+          <div>
+            <span class="analytics-card-label">Content</span>
+            <h3>Recent posts and who wrote them</h3>
+          </div>
+          <label class="analytics-search">
+            <input type="search" id="analytics-search" placeholder="Filter by headline or writer…" />
+          </label>
+        </div>
+        <div class="analytics-recent" id="analytics-recent"></div>
+      </article>
+    </section>
+  </section>
+
+  <!-- ═══ Writers (QA only) ═══
+       Two jobs on one page: the roster of who writes for you, and — on
+       clicking any of them — everything that writer has produced. Account
+       admin (create / reset / disable) hangs off each row rather than sitting
+       in a separate form, because it is the rarer action. -->
+  <section class="review-shell" id="writers-view" hidden>
+    <header class="review-head">
+      <div>
+        <h2 class="review-title">Content<br>writers.</h2>
+        <p class="review-desc">Everyone who writes for Shortly. Pick a name to see their stories.</p>
+      </div>
+      <button type="button" class="btn-primary writers-add-toggle" id="writers-add-toggle">+ Add writer</button>
+    </header>
+
+    <form class="writers-form" id="writer-create-form" hidden>
+      <label class="field">
+        <span class="field-label">Username</span>
+        <input type="text" id="writer-username" placeholder="writer6" autocomplete="off" required />
+      </label>
+      <label class="field">
+        <span class="field-label">Display name</span>
+        <input type="text" id="writer-display" placeholder="Content Writer 6" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input type="text" id="writer-password" placeholder="at least 6 characters" autocomplete="off" required />
+      </label>
+      <label class="field">
+        <span class="field-label">Role</span>
+        <select id="writer-role">
+          <option value="writer" selected>Writer</option>
+          <option value="qa">QA</option>
+        </select>
+      </label>
+      <button type="submit" class="btn-primary" id="writer-create-btn">Create account</button>
+      <small class="helper-text writers-form-note">Shown in plain text so you can pass it on — it is stored hashed and can never be read back.</small>
+    </form>
+
+    <div class="review-toolbar">
+      <p id="writers-status" class="status-text" role="status" aria-live="polite"></p>
+      <button type="button" class="btn-ghost" id="writers-refresh">Refresh</button>
+    </div>
+
+    <div class="writers-layout">
+      <ul class="writers-list" id="writers-list"></ul>
+
+      <section class="writer-detail" id="writer-detail" aria-live="polite">
+        <div class="writer-detail-empty" id="writer-detail-empty">
+          <p>Pick a writer to see everything they have written.</p>
+        </div>
+        <div class="writer-detail-body" id="writer-detail-body" hidden>
+          <header class="writer-detail-head">
+            <div>
+              <h3 id="writer-detail-name">—</h3>
+              <p class="writer-detail-meta" id="writer-detail-meta"></p>
+            </div>
+          </header>
+          <ul class="review-list" id="writer-posts"></ul>
+        </div>
+      </section>
+
     </div>
   </section>
+
+  <!-- ═══ Confirmation dialog ═══
+       One <dialog> reused by every irreversible action. Native <dialog> gives
+       Esc-to-cancel, focus trapping and the top layer for free — a hand-rolled
+       overlay would have to reimplement all three, and the poster editor has
+       enough stacking contexts to get that wrong. -->
+  <dialog class="pix-dialog" id="pix-dialog" aria-labelledby="pix-dialog-title">
+    <form method="dialog" class="pix-dialog-inner">
+      <h3 class="pix-dialog-title" id="pix-dialog-title">Are you sure?</h3>
+      <p class="pix-dialog-body" id="pix-dialog-body"></p>
+      <ul class="pix-dialog-facts" id="pix-dialog-facts" hidden></ul>
+      <div class="pix-dialog-actions">
+        <button type="submit" value="cancel" class="btn-ghost" id="pix-dialog-cancel">Cancel</button>
+        <button type="submit" value="confirm" class="btn-primary" id="pix-dialog-confirm">Confirm</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="./app.js"></script>
 </body>

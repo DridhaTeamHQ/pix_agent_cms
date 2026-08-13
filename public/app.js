@@ -231,6 +231,10 @@ const state = {
   headline: "",
   detailText: "",
   sourceUrl: "",               // article URL from the last scrape (grounds the AI writer)
+  // Where the story is filed on the web app. Chosen by the writer, confirmed
+  // by QA at publish.
+  categoryId: "",
+  stateId: "",
   articleText: "",             // full scraped body text — what actually grounds the AI writer
   mainImage: null,
   ready: false,
@@ -255,6 +259,9 @@ const state = {
      for local uploads, `videoUrl` for scraped YouTube/Instagram links; the
      export path picks whichever is present. */
   videoEl: null,
+  // What the <video> element is actually playing. Kept so a video page that
+  // loses the shared player can reload the same source into its own.
+  videoSrc: "",
   videoUrl: "",             // resolved source URL (scrape path)
   videoFile: null,          // File object (local upload path)
   videoMeta: null,          // { title, duration, uploader, ... } from /resolve
@@ -271,7 +278,12 @@ const state = {
   // null = use the current date at paint time. Only set to a Date if a
   // specific day ever needs pinning; leaving it null is what keeps an
   // open tab honest across midnight.
+  // The date printed on the slide. Null means "use today", which is what it
+  // did before this was editable.
   createdAt: null,
+  // Sent to DailyMattr with the post. Chosen here rather than inferred at
+  // publish so the writer's wording survives.
+  keywords: "",
   showTimestamp: true,
   videoCaption: "",         // burned into the clip, bottom-anchored
   videoCaptionSize: 40,     // design px at 920×1700; scaled per ratio
@@ -553,6 +565,14 @@ const dailymattrKeywords = document.getElementById("dailymattr-keywords");
 const dailymattrContent = document.getElementById("dailymattr-content");
 const dailymattrPublishBtn = document.getElementById("dailymattr-publish-btn");
 const dailymattrStatus = document.getElementById("dailymattr-status");
+const dailymattrMediaMode = document.getElementById("dailymattr-media-mode");
+const dailymattrMediaInputs = [3, 4, 5].map((slot) => ({
+  slot,
+  input: document.getElementById(`dailymattr-media-${slot}`),
+  name: document.getElementById(`dailymattr-media-name-${slot}`),
+  card: document.querySelector(`[data-media-slot="${slot}"]`),
+  remove: document.querySelector(`[data-remove-media="${slot}"]`),
+}));
 
 const DAILYMATTR_META_ENDPOINT = "/api/dailymattr/meta";
 const DAILYMATTR_PUBLISH_ENDPOINT = "/api/dailymattr/publish";
@@ -562,9 +582,56 @@ const DAILYMATTR_EXPORT_LONG_EDGES = [3840, 2560];
 // too so an oversized clip fails in a second with a useful message, rather
 // than after uploading tens of megabytes only to be cut off by busboy.
 const DAILYMATTR_MAX_MEDIA_BYTES = 64 * 1024 * 1024;
-const dailymattrDraftTouched = { content: false, keywords: false };
+// DailyMattr accepts five media items per Buzz post, images and video mixed.
+const DAILYMATTR_MAX_MEDIA_ITEMS = 5;
+const dailymattrDraftTouched = { content: false, keywords: false, category: false, state: false };
 let dailymattrMetaLoaded = false;
 let analyticsLoadedForRole = "";
+
+function isDailyMattrVideo(file) {
+  return Boolean(file && /^video\/(mp4|quicktime)$/i.test(file.type));
+}
+
+function isDailyMattrImage(file) {
+  return Boolean(file && /^image\/(jpeg|png|webp)$/i.test(file.type));
+}
+
+function dailyMattrExtraFiles() {
+  return dailymattrMediaInputs
+    .map(({ slot, input }) => ({ slot, file: input?.files?.[0] || null }))
+    .filter(({ file }) => file);
+}
+
+function syncDailyMattrMediaCount() {
+  if (!dailymattrMediaMode) return;
+  dailymattrMediaMode.textContent = `${dailyMattrExtraFiles().length} / 3 added`;
+  dailymattrMediaMode.className = "publish-mode";
+}
+
+function resetDailyMattrMediaSlot(item) {
+  if (item.input) item.input.value = "";
+  if (item.name) item.name.textContent = "Add image or video";
+  if (item.card) item.card.classList.remove("has-file");
+  if (item.remove) item.remove.hidden = true;
+  syncDailyMattrMediaCount();
+}
+
+function resetDailyMattrExtraMedia() {
+  dailymattrMediaInputs.forEach(resetDailyMattrMediaSlot);
+}
+
+function validateDailyMattrExtraFiles() {
+  const extras = dailyMattrExtraFiles();
+  for (const { slot, file } of extras) {
+    if (!isDailyMattrImage(file) && !isDailyMattrVideo(file)) {
+      return `Output ${slot} must be a JPG, PNG, WEBP, MP4 or MOV file.`;
+    }
+    if (file.size > DAILYMATTR_MAX_MEDIA_BYTES) {
+      return `Output ${slot} is ${(file.size / 1048576).toFixed(1)} MB. The limit is ${DAILYMATTR_MAX_MEDIA_BYTES / 1048576} MB per file.`;
+    }
+  }
+  return "";
+}
 
 function applySession(user) {
   state.user = user || null;
@@ -584,9 +651,15 @@ function applySession(user) {
   // never use.
   syncDailyMattrAccess();
   if (user?.role === "qa") loadDailyMattrMeta({ force: true });
+  // Writers need the lists too, to file their own story.
+  if (user) loadSectionOptions();
   // Whoever just signed in gets their own list, not the previous user's.
   if (user && document.body.classList.contains("view-review")) loadReviewQueue();
-  if (user && document.body.classList.contains("view-analytics")) loadAnalytics({ force: true });
+  if (user && document.body.classList.contains("view-analytics")) {
+    // A writer signing in on the analytics view has no analytics to see.
+    if (user.role === "qa") loadAnalytics({ force: true });
+    else setView("poster");
+  }
 }
 
 function setAuthState(status, message) {
@@ -913,7 +986,8 @@ function syncDailyMattrDraft({ force = false } = {}) {
     dailymattrContent.value = defaultDailyMattrContent();
   }
   if (dailymattrKeywords && (!dailymattrDraftTouched.keywords || force)) {
-    dailymattrKeywords.value = inferDailyMattrKeywords();
+    // The writer's own keywords win over a guess from the headline.
+    dailymattrKeywords.value = (state.keywords || "").trim() || inferDailyMattrKeywords();
   }
 }
 
@@ -1902,6 +1976,7 @@ async function runScrape() {
     // paywalled or JS-rendered pages, silently degrading to headline-only.
     state.articleText = payload.articleText || "";
     state.sourceUrl = payload.sourceUrl || scrapeUrlInput.value.trim();
+    syncSourceUrlInput();
     state.ready = true;
     state.scrapedTitle = payload.title || "";
     state.imageQuery = payload.imageQuery || "";
@@ -2179,12 +2254,150 @@ function computeHeadlineLayoutAndTop() {
    `state._targetedRender` marks "paint once into the ctx I gave you", which
    is what the exporter and the per-card painters need; without it a nested
    renderPoster() would recurse back into painting all three. */
-const PREVIEW_CARDS = [
-  { mode: "pix",   canvas: document.getElementById("post-canvas") },
-  { mode: "text",  canvas: document.getElementById("text-canvas") },
-  { mode: "video", canvas: document.getElementById("video-canvas") },
-  { mode: "x",     canvas: document.getElementById("x-canvas") },
+
+/* ── Pages ──────────────────────────────────────────────────────────────
+   The carousel is a spine plus extras.
+
+   The spine is what a scrape produces and cannot be removed: Poster is
+   page 1 and Text is page 2. Everything else — including video — is added
+   by hand, up to MAX_PAGES in total, in any mix of poster / text / video.
+
+   Only one page is selected at a time, and the editor columns write to
+   whichever that is. Rather than thread a page argument through forty draw
+   and control functions, the selected page's values ARE `state`: switching
+   pages captures the outgoing page's fields out of state and applies the
+   incoming page's fields into it. Painting does the same swap per card, so
+   every page can be on screen at once while only one is live.
+
+   A field is either page-owned (listed below) or global. Global is the
+   default and covers everything that is a property of the post rather than
+   of one page in it: accent, logo, aspect ratio, the timestamp toggle. */
+
+const MAX_PAGES = 5;
+
+// The background image is owned by poster AND text pages: the text card
+// paints a blurred copy of it, so two text pages with one shared image
+// could not look different from each other.
+const IMAGE_PAGE_FIELDS = [
+  "mainImage", "imageOffset", "imageZoom", "overlayOpacity",
+  "filterPreset", "filterBrightness", "filterContrast", "filterSaturation", "filterBlur",
+  "sourceImageUrl", "productImageAnalysis",
 ];
+const POSTER_PAGE_FIELDS = [...IMAGE_PAGE_FIELDS, "headline", "tag", "fontSize", "headlineStyle"];
+/* A text page owns its background but not its words: the paragraph is one
+   body of text on the post, divided across the text pages at paint time.
+   See recomputeDetailSlices(). */
+const TEXT_PAGE_FIELDS   = [...IMAGE_PAGE_FIELDS];
+/* A video page owns its upload and its last encode as well as its clip:
+   two video pages that shared `storedVideoUrl` would publish each other's
+   footage. */
+const VIDEO_PAGE_FIELDS  = [
+  "videoEl", "videoSrc", "videoUrl", "videoFile", "videoMeta", "videoSourceKind",
+  "trimStart", "trimEnd", "videoMuted", "videoFocus", "videoCaption", "videoCaptionSize",
+  "storedVideoUrl", "storedVideoFor", "renderedClip",
+];
+
+// The spine is poster + text. Video is not part of it, so the base page
+// never owns a clip — only an added Video page does.
+const BASE_PAGE_FIELDS = [...new Set([...POSTER_PAGE_FIELDS, ...TEXT_PAGE_FIELDS, "detailText"])];
+const ALL_PAGE_FIELDS = [...new Set([...BASE_PAGE_FIELDS, ...VIDEO_PAGE_FIELDS])];
+
+const PAGE_TYPES = {
+  poster: { label: "Poster", mode: "pix",   download: "Download",  fields: POSTER_PAGE_FIELDS },
+  text:   { label: "Text",   mode: "text",  download: "Download",  fields: TEXT_PAGE_FIELDS },
+  video:  { label: "Video",  mode: "video", download: "Export MP4", fields: VIDEO_PAGE_FIELDS },
+};
+
+/* Which editor controls can reach a given page. Controls that cannot are
+   dimmed instead of hidden — the panel keeps its shape, so nothing jumps
+   when the selection changes. */
+const PAGE_SCOPE = {
+  base:   { headline: true,  detail: true,  tag: true,  image: true,  video: false },
+  poster: { headline: true,  detail: false, tag: true,  image: true,  video: false },
+  text:   { headline: false, detail: true,  tag: false, image: true,  video: false },
+  video:  { headline: false, detail: false, tag: false, image: false, video: true  },
+};
+
+const basePage = { id: "base", type: "base", el: null, cards: [], content: null };
+const pages = [basePage];
+let activePageId = "base";
+let pageSeq = 0;
+
+basePage.cards = Array.from(document.querySelectorAll('.preview-card[data-page="base"]')).map((el) => ({
+  el,
+  mode: el.dataset.previewMode,
+  canvas: el.querySelector("canvas"),
+  page: basePage,
+  detailSlice: null,     // set by recomputeDetailSlices() on text cards
+  sliceRange: null,
+}));
+
+/* ── Rail order ──
+   `pages` holds content; `slotOrder` holds the sequence the reader sees.
+   They are separate because the spine is one page with two cards, and a
+   card has to be movable on its own. Page numbers are slot positions, so
+   reordering renumbers by construction — there is nothing to keep in step. */
+const slotOrder = [...basePage.cards];
+
+function cardForElement(el) { return slotOrder.find((card) => card.el === el) || null; }
+
+const xPreviewCanvas = document.getElementById("x-canvas");
+
+function fieldsForPage(page) {
+  if (!page || page.type === "base") return BASE_PAGE_FIELDS;
+  return PAGE_TYPES[page.type]?.fields || [];
+}
+
+const CARD_LABELS = { pix: "Poster", text: "Text", video: "Video" };
+function cardLabel(card) { return CARD_LABELS[card.mode] || "Page"; }
+
+// Where a card sits in the rail, 1-based — what the writer sees on it.
+function cardNumber(card) { return slotOrder.indexOf(card) + 1; }
+
+function getPage(id) { return pages.find((p) => p.id === id) || basePage; }
+function activePage() { return getPage(activePageId); }
+function extraPages() { return pages.filter((p) => p !== basePage); }
+
+// One card, one page, one number. Counting the cards that are actually in
+// the rail is what stops the count and the rail drifting apart — that is
+// what let a full rail render six.
+function pageCount() { return slotOrder.length; }
+function canAddPage() { return pageCount() < MAX_PAGES; }
+
+/* Copy the plain {x,y} pairs so a stored page cannot be mutated later by a
+   drag on the live one. Images, Files and <video> elements are shared by
+   reference on purpose — they are the payload, not a value. */
+function clonePageValue(value) {
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    return { ...value };
+  }
+  return value;
+}
+
+function capturePageFields(fields) {
+  const out = {};
+  for (const field of fields) out[field] = clonePageValue(state[field]);
+  return out;
+}
+
+function applyPageFields(values) {
+  if (!values) return;
+  for (const key of Object.keys(values)) state[key] = values[key];
+}
+
+/* Fold live state back into the selected page before anything reads a page.
+   Fields the selected page does not own are still edits to the post, so
+   they land on the base page — otherwise changing the paragraph while an
+   added poster page is selected would vanish on the next repaint. */
+function syncActivePageContent() {
+  const page = activePage();
+  page.content = capturePageFields(fieldsForPage(page));
+  if (page !== basePage) {
+    const owned = new Set(fieldsForPage(page));
+    const rest = BASE_PAGE_FIELDS.filter((field) => !owned.has(field));
+    basePage.content = { ...(basePage.content || {}), ...capturePageFields(rest) };
+  }
+}
 
 function paintCardInto(target, mode) {
   if (!target) return;
@@ -2207,10 +2420,615 @@ function paintCardInto(target, mode) {
   }
 }
 
+/* ── Dividing the points across text pages ──
+   The paragraph stays one body of text — it is what gets saved, published
+   and searched, and splitting it into per-page copies would mean four
+   places to keep in step. Instead each text card is handed a slice of it
+   at paint time: six points over two text pages is 3 and 3, over three
+   pages 2/2/2, and seven over two is 4 and 3.
+
+   Because slices are derived rather than stored, adding, removing or
+   dragging a text page re-divides them on the next paint with nothing to
+   invalidate. */
+
+function detailPoints(text) {
+  return (text || "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^[•*-]\s*$/.test(line));
+}
+
+// Remainders go to the earliest pages, so 7 over 2 reads 4 then 3 — a
+// fuller first card looks deliberate where a fuller last one looks like
+// something overflowed.
+function distributePoints(points, buckets) {
+  const out = [];
+  let taken = 0;
+  let remainder = points.length % buckets;
+  const each = Math.floor(points.length / buckets);
+  for (let i = 0; i < buckets; i += 1) {
+    const size = each + (remainder > 0 ? 1 : 0);
+    if (remainder > 0) remainder -= 1;
+    out.push(points.slice(taken, taken + size));
+    taken += size;
+  }
+  return out;
+}
+
+let detailSliceKey = "";
+
+function recomputeDetailSlices({ force = false } = {}) {
+  const textCards = slotOrder.filter((card) => card.mode === "text");
+  const body = getFullDetailText();
+  const key = `${slotOrder.map((c) => c.mode).join(",")}|${body}`;
+  if (!force && key === detailSliceKey) return;
+  detailSliceKey = key;
+
+  // One text page carries the whole paragraph, exactly as it always did.
+  if (textCards.length < 2) {
+    for (const card of textCards) { card.detailSlice = null; card.sliceRange = null; }
+    syncSliceLabels();
+    return;
+  }
+
+  const points = detailPoints(body);
+  const chunks = distributePoints(points, textCards.length);
+  let next = 1;
+  textCards.forEach((card, i) => {
+    const chunk = chunks[i];
+    card.detailSlice = chunk.join("\n\n");
+    card.sliceRange = chunk.length ? [next, next + chunk.length - 1] : null;
+    next += chunk.length;
+  });
+  syncSliceLabels();
+}
+
+function syncSliceLabels() {
+  for (const card of slotOrder) {
+    const label = card.el.querySelector(".preview-card-slice");
+    if (!label) continue;
+    const range = card.sliceRange;
+    if (card.mode !== "text" || !card.detailSlice) {
+      label.hidden = true;
+      label.textContent = "";
+      continue;
+    }
+    label.hidden = false;
+    label.textContent = !range
+      ? "No points left for this page"
+      : (range[0] === range[1] ? `Point ${range[0]}` : `Points ${range[0]}–${range[1]}`);
+  }
+}
+
 function renderPoster() {
   // Export paths swap ctx themselves and want a single paint.
   if (state._targetedRender) { paintPoster(); return; }
-  for (const card of PREVIEW_CARDS) paintCardInto(card.canvas, card.mode);
+
+  syncActivePageContent();
+  recomputeDetailSlices();
+
+  // The live values, restored after the last card. Every page is painted
+  // through base first, so a page only overrides the fields it owns and
+  // inherits the rest of the post.
+  const live = capturePageFields(ALL_PAGE_FIELDS);
+
+  try {
+    for (const page of pages) {
+      applyPageFields(live);
+      applyPageFields(basePage.content);
+      if (page !== basePage) applyPageFields(page.content);
+      for (const card of page.cards) {
+        // A text card paints its slice of the paragraph, not the whole of it.
+        state._detailSlice = card.detailSlice || null;
+        paintCardInto(card.canvas, card.mode);
+      }
+      state._detailSlice = null;
+    }
+
+    // X is the poster again, so it always follows page 1 — never whichever
+    // page happens to be selected.
+    applyPageFields(live);
+    applyPageFields(basePage.content);
+    paintCardInto(xPreviewCanvas, "x");
+  } finally {
+    applyPageFields(live);
+  }
+}
+
+/* ── Page operations ── */
+
+function blankPageContent(type) {
+  const blank = {
+    mainImage: null,
+    imageOffset: { x: 0, y: 0 },
+    imageZoom: 100,
+    overlayOpacity: 100,
+    filterPreset: "none",
+    filterBrightness: 100,
+    filterContrast: 100,
+    filterSaturation: 100,
+    filterBlur: 0,
+    sourceImageUrl: null,
+    productImageAnalysis: null,
+    headline: "",
+    tag: "none",
+    fontSize: 0,
+    // Blank everywhere else, but a headline needs *a* style: inheriting the
+    // post's current one is the least surprising starting point.
+    headlineStyle: state.headlineStyle,
+    detailText: "",
+    videoEl: null,
+    videoSrc: "",
+    videoUrl: "",
+    videoFile: null,
+    videoMeta: null,
+    videoSourceKind: "link",
+    trimStart: 0,
+    trimEnd: 0,
+    videoMuted: false,
+    videoFocus: { x: 0.5, y: 0.5 },
+    storedVideoUrl: null,
+    storedVideoFor: null,
+    renderedClip: null,
+    videoCaption: "",
+    videoCaptionSize: state.videoCaptionSize,
+  };
+  const owned = new Set(fieldsForPage({ type }));
+  const content = {};
+  for (const field of owned) content[field] = clonePageValue(blank[field]);
+  return content;
+}
+
+/* Build and mount a page. Kept separate from addPage() so reopening a saved
+   post can rebuild its pages without each one stealing the selection and
+   capturing the live values on the way past. */
+function createPage(type, content) {
+  const spec = PAGE_TYPES[type];
+  const addTile = document.getElementById("preview-add");
+  if (!spec || !addTile) return null;
+
+  pageSeq += 1;
+  const id = `page-${pageSeq}`;
+
+  const fig = document.createElement("figure");
+  fig.className = "preview-card";
+  fig.dataset.page = id;
+  fig.dataset.previewMode = spec.mode;
+  fig.innerHTML = `
+          <figcaption class="preview-card-label">
+            <button type="button" class="preview-card-grip" data-grip
+                    aria-label="Move this page — drag, or use the left and right arrow keys"
+                    title="Drag to reorder (or focus and press &larr; &rarr;)">&#10287;</button>
+            <span class="preview-card-num"></span>
+            <span class="preview-card-type">${spec.label}</span>
+            <button type="button" class="preview-card-remove" data-remove-page
+                    aria-label="Remove this page" title="Remove this page">&times;</button>
+          </figcaption>
+          <div class="canvas-container">
+            <canvas width="${canvas.width}" height="${canvas.height}"></canvas>
+          </div>
+          <p class="preview-card-slice" hidden></p>
+          <div class="preview-card-actions">
+            <button type="button" class="btn-ghost preview-card-edit" data-edit-page>
+              <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M11.3 2.2l2.5 2.5L6 12.5 3 13l.5-3z" fill="none"
+                      stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              </svg> Edit
+            </button>
+            <button type="button" class="btn-ghost preview-card-dl" data-download="${spec.mode}">
+              <svg width="12" height="12" aria-hidden="true"><use href="#i-download"/></svg> ${spec.download}
+            </button>
+          </div>`;
+
+  const cardCanvas = fig.querySelector("canvas");
+  const page = {
+    id,
+    type,
+    el: fig,
+    cards: [],
+    content: { ...blankPageContent(type), ...(content || {}) },
+  };
+  page.cards = [{
+    el: fig, mode: spec.mode, canvas: cardCanvas, page, detailSlice: null, sliceRange: null,
+  }];
+
+  addTile.before(fig);
+  pages.push(page);
+  slotOrder.push(page.cards[0]);
+  if (type === "video") attachVideoReframe(cardCanvas, id);
+  return page;
+}
+
+function addPage(type) {
+  if (!canAddPage()) return null;
+  // A new page starts empty rather than as a copy of page 1: clearing a
+  // duplicate is more work than filling a blank.
+  const page = createPage(type, null);
+  if (!page) return null;
+
+  renumberPages();
+  setActivePage(page.id);
+  page.el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  return page;
+}
+
+/* ── Saving the page list ──
+   Only what survives a round trip: text, tags and framing. An added page's
+   image is a File or an <img> in memory — the save pipeline uploads page
+   1's image only, so a reopened post rebuilds its added pages empty of
+   media rather than pointing at something that is not there. */
+function serializePages() {
+  syncActivePageContent();
+  return extraPages().map((page) => {
+    const c = page.content || {};
+    const entry = { type: page.type };
+    if (page.type === "poster") {
+      entry.headline = c.headline || "";
+      entry.tag = c.tag || "none";
+      entry.fontSize = c.fontSize ?? 0;
+      entry.headlineStyle = c.headlineStyle;
+    }
+    // No text: a text page shows a slice of the post's paragraph, and the
+    // slice is derived from the page order on open.
+    if (page.type === "poster" || page.type === "text") {
+      entry.overlayOpacity = c.overlayOpacity ?? 100;
+      entry.imageZoom = c.imageZoom ?? 100;
+      entry.imageOffset = { x: c.imageOffset?.x ?? 0, y: c.imageOffset?.y ?? 0 };
+      entry.filters = {
+        preset: c.filterPreset || "none",
+        brightness: c.filterBrightness ?? 100,
+        contrast: c.filterContrast ?? 100,
+        saturation: c.filterSaturation ?? 100,
+        blur: c.filterBlur ?? 0,
+      };
+    }
+    if (page.type === "video") {
+      entry.video = {
+        url: c.videoUrl || null,
+        // The bucket copy is the only part of a clip that survives a reload,
+        // so it is the one piece of media a page does carry across.
+        storedUrl: c.storedVideoUrl || null,
+        storedFor: c.storedVideoFor || null,
+        sourceKind: c.videoSourceKind || "link",
+        trimStart: c.trimStart ?? 0,
+        trimEnd: c.trimEnd ?? 0,
+        muted: !!c.videoMuted,
+        focus: { x: c.videoFocus?.x ?? 0.5, y: c.videoFocus?.y ?? 0.5 },
+        caption: c.videoCaption || "",
+        captionSize: c.videoCaptionSize ?? state.videoCaptionSize,
+      };
+    }
+    return entry;
+  });
+}
+
+function restorePages(list) {
+  for (const page of extraPages()) {
+    if (page.parkedVideo) {
+      page.parkedVideo.removeAttribute("src");
+      page.parkedVideo.load();
+    }
+    page.el?.remove();
+  }
+  pages.length = 1;
+  slotOrder.length = 0;
+  slotOrder.push(...basePage.cards);
+  activePageId = "base";
+  playerOwner = null;
+
+  for (const entry of Array.isArray(list) ? list : []) {
+    if (!PAGE_TYPES[entry?.type] || !canAddPage()) break;
+    const content = {};
+    if (entry.type === "poster") {
+      content.headline = entry.headline || "";
+      content.tag = entry.tag || "none";
+      content.fontSize = numberOr(entry.fontSize, 0);
+      if (entry.headlineStyle) content.headlineStyle = entry.headlineStyle;
+    }
+    if (entry.type === "poster" || entry.type === "text") {
+      content.overlayOpacity = numberOr(entry.overlayOpacity, 100);
+      content.imageZoom = numberOr(entry.imageZoom, 100);
+      content.imageOffset = {
+        x: numberOr(entry.imageOffset?.x, 0),
+        y: numberOr(entry.imageOffset?.y, 0),
+      };
+      content.filterPreset = entry.filters?.preset || "none";
+      content.filterBrightness = numberOr(entry.filters?.brightness, 100);
+      content.filterContrast = numberOr(entry.filters?.contrast, 100);
+      content.filterSaturation = numberOr(entry.filters?.saturation, 100);
+      content.filterBlur = numberOr(entry.filters?.blur, 0);
+    }
+    if (entry.type === "video") {
+      content.videoUrl = entry.video?.url || "";
+      content.storedVideoUrl = entry.video?.storedUrl || null;
+      content.storedVideoFor = entry.video?.storedFor || null;
+      content.videoSourceKind = entry.video?.sourceKind || "link";
+      content.trimStart = numberOr(entry.video?.trimStart, 0);
+      content.trimEnd = numberOr(entry.video?.trimEnd, 0);
+      content.videoMuted = !!entry.video?.muted;
+      content.videoFocus = {
+        x: numberOr(entry.video?.focus?.x, 0.5),
+        y: numberOr(entry.video?.focus?.y, 0.5),
+      };
+      content.videoCaption = entry.video?.caption || "";
+      content.videoCaptionSize = numberOr(entry.video?.captionSize, state.videoCaptionSize);
+    }
+    createPage(entry.type, content);
+  }
+
+  renumberPages();
+}
+
+function removePage(id) {
+  const index = pages.findIndex((p) => p.id === id);
+  if (index <= 0) return;                    // the spine is not removable
+  const [page] = pages.splice(index, 1);
+
+  if (page.parkedVideo) {
+    page.parkedVideo.removeAttribute("src");
+    page.parkedVideo.load();
+    page.parkedVideo = null;
+  }
+  // The shared player would otherwise still be held by a page that no
+  // longer exists, and the next video page would decline to reload.
+  if (playerOwner === page) playerOwner = null;
+  for (const card of page.cards) {
+    const slot = slotOrder.indexOf(card);
+    if (slot >= 0) slotOrder.splice(slot, 1);
+  }
+  page.el?.remove();
+
+  if (activePageId === id) {
+    activePageId = "base";
+    applyPageFields(basePage.content);
+    adoptPageVideo(basePage);
+    syncEditorFromState();
+  }
+
+  renumberPages();
+  renderPoster();
+  setStatus("Page removed.", "success");
+}
+
+function renumberPages() {
+  const addTile = document.getElementById("preview-add");
+
+  slotOrder.forEach((card, index) => {
+    const number = index + 1;
+    const numEl = card.el.querySelector(".preview-card-num");
+    if (numEl) numEl.textContent = String(number);
+    card.canvas?.setAttribute("aria-label", `Page ${number} — ${cardLabel(card)}`);
+    // Re-inserting every card before the tile, in order, is what puts the
+    // rail in slot order — including after a drag.
+    addTile?.before(card.el);
+  });
+
+  const used = pageCount();
+  const chip = document.getElementById("page-count-chip");
+  if (chip) {
+    chip.textContent = `${used} of ${MAX_PAGES} pages`;
+    chip.classList.toggle("is-full", used >= MAX_PAGES);
+  }
+  const addBtn = document.getElementById("preview-add-btn");
+  if (addBtn) {
+    addBtn.disabled = !canAddPage();
+    addBtn.title = canAddPage()
+      ? "Add another page"
+      : `${MAX_PAGES} pages is the limit — remove one to add another.`;
+  }
+  const hint = document.getElementById("preview-add-hint");
+  if (hint) hint.textContent = canAddPage() ? `${MAX_PAGES - used} left` : "Full";
+
+  syncPageSelectionUI();
+}
+
+function setActivePage(id, { force = false } = {}) {
+  const next = getPage(id);
+  if (!force && next.id === activePageId) return;
+
+  syncActivePageContent();
+
+  activePageId = next.id;
+
+  applyPageFields(basePage.content);
+  if (next !== basePage) applyPageFields(next.content);
+
+  // Only another video page can take the shared player, so selecting a
+  // poster or text page leaves it — and its clip — exactly where it was.
+  if (next.type === "video") adoptPageVideo(next);
+  syncEditorFromState();
+  syncPageSelectionUI();
+  renderPoster();
+}
+
+function syncPageSelectionUI() {
+  document.querySelectorAll(".preview-card[data-page]").forEach((el) => {
+    el.classList.toggle("is-selected", el.dataset.page === activePageId);
+  });
+
+  const page = activePage();
+  const bar = document.getElementById("page-context");
+  const name = document.getElementById("page-context-name");
+  if (bar) bar.hidden = page === basePage;
+  if (name && page !== basePage) {
+    name.textContent = `Page ${cardNumber(page.cards[0])} · ${PAGE_TYPES[page.type]?.label || "Page"}`;
+  }
+
+  applyPageScope(page);
+}
+
+function applyPageScope(page) {
+  const scope = PAGE_SCOPE[page.type] || PAGE_SCOPE.base;
+  const setScope = (el, on) => {
+    if (!el) return;
+    el.classList.toggle("scope-off", !on);
+    if ("disabled" in el) el.disabled = !on;
+  };
+  setScope(headlineEdit, scope.headline);
+  setScope(detailEdit, scope.detail);
+  setScope(tagPresetsContainer, scope.tag);
+  setScope(document.getElementById("video-acc"), scope.video);
+  setScope(imagePanel, scope.image);
+}
+
+/* Push state back into the controls after a page switch — without this the
+   panel would show the previous page's values over the new page's canvas. */
+function syncEditorFromState() {
+  if (headlineEdit) headlineEdit.value = state.headline || "";
+  if (detailEdit) detailEdit.value = state.detailText || "";
+  syncControl(imgOffsetX, state.imageOffset?.x ?? 0);
+  syncControl(imgOffsetY, state.imageOffset?.y ?? 0);
+  syncControl(imgZoom, state.imageZoom);
+  syncControl(fontSizeInput, state.fontSize);
+  syncControl(overlayOpacityInput, state.overlayOpacity);
+  syncFilterUI();
+
+  if (tagPresetsContainer) {
+    tagPresetsContainer.querySelectorAll(".preset-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.tag === state.tag);
+    });
+  }
+
+  const captionInput = document.getElementById("video-caption");
+  if (captionInput) captionInput.value = state.videoCaption || "";
+  syncControl(document.getElementById("video-caption-size"), state.videoCaptionSize);
+  const muteInput = document.getElementById("video-mute");
+  if (muteInput) muteInput.checked = !!state.videoMuted;
+  const videoEditor = document.getElementById("video-editor");
+  if (videoEditor) videoEditor.hidden = !(state.videoSrc || state.videoUrl || state.videoFile);
+  syncTrimUI();
+}
+
+/* ── One player, several video pages ──
+   The editor has a single <video>, and `playerOwner` is the page whose clip
+   is currently in it. Selecting a poster or text page changes nothing: the
+   owner keeps the player, so the common case — one video page — never
+   reloads. Only a second video page taking the player forces the previous
+   owner onto a detached copy, parked at its own trim point, so its card
+   keeps painting its own footage. */
+let playerOwner = null;
+
+function parkPageVideo(page) {
+  if (!page || !videoPreviewEl || page.type !== "video") return;
+
+  const src = videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "";
+  const content = page.content || (page.content = {});
+  content.videoSrc = src;
+  if (!src) { content.videoEl = null; return; }
+
+  let parked = page.parkedVideo;
+  if (!parked) {
+    parked = document.createElement("video");
+    parked.muted = true;
+    parked.playsInline = true;
+    parked.preload = "auto";
+    page.parkedVideo = parked;
+  }
+
+  const at = videoPreviewEl.currentTime || content.trimStart || 0;
+  if (parked.getAttribute("src") !== src) {
+    parked.src = src;
+    parked.addEventListener("loadeddata", () => {
+      try { parked.currentTime = at; } catch { /* seek before metadata */ }
+      renderPoster();
+    }, { once: true });
+    parked.load();
+  } else {
+    try { parked.currentTime = at; } catch { /* nothing loaded yet */ }
+  }
+  content.videoEl = parked;
+}
+
+function adoptPageVideo(page) {
+  if (!page || !videoPreviewEl || page.type !== "video") return;
+
+  const content = page.content || (page.content = {});
+
+  // Already holding this page's clip — nothing to move.
+  if (playerOwner === page) {
+    content.videoEl = videoPreviewEl;
+    state.videoEl = videoPreviewEl;
+    return;
+  }
+
+  if (playerOwner && playerOwner !== page) parkPageVideo(playerOwner);
+
+  const wanted = content.videoSrc || "";
+  const current = videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "";
+
+  if (wanted && wanted !== current) {
+    const at = content.trimStart || 0;
+    videoPreviewEl.addEventListener("loadeddata", () => {
+      try { videoPreviewEl.currentTime = at; } catch { /* seek before metadata */ }
+      renderPoster();
+    }, { once: true });
+    videoPreviewEl.src = wanted;
+    videoPreviewEl.load();
+  } else if (!wanted && current) {
+    videoPreviewEl.removeAttribute("src");
+    videoPreviewEl.load();
+  }
+
+  playerOwner = page;
+  content.videoEl = videoPreviewEl;
+  state.videoEl = videoPreviewEl;
+  state.videoSrc = wanted;
+}
+
+/* The page whose clip save and publish should use. Extra video pages get a
+   preview and their own Export MP4, but a post ships one video. */
+function primaryVideoPage() {
+  const withClip = pages.find((p) => p.type === "video"
+    && (p.content?.videoUrl || p.content?.videoFile || p.content?.storedVideoUrl));
+  return withClip || pages.find((p) => p.type === "video") || null;
+}
+
+function primaryVideoContent() {
+  return primaryVideoPage()?.content || {};
+}
+
+/* Run something that reads and writes the post's video against the primary
+   video page, whatever is selected. Anything it produces — a fresh encode,
+   an uploaded URL — is folded back into that page rather than left on the
+   page the writer happens to be looking at. */
+async function withPrimaryVideo(fn) {
+  syncActivePageContent();
+  const live = capturePageFields(VIDEO_PAGE_FIELDS);
+  const page = primaryVideoPage();
+
+  applyPageFields(page
+    ? Object.fromEntries(VIDEO_PAGE_FIELDS.map((f) => [f, clonePageValue(page.content?.[f])]))
+    : blankPageContent("video"));
+
+  try {
+    return await fn();
+  } finally {
+    if (page) Object.assign(page.content, capturePageFields(VIDEO_PAGE_FIELDS));
+    applyPageFields(live);
+  }
+}
+
+/* Reopening a post saved before video became its own page: its clip has to
+   land somewhere, so give it one. */
+function ensureVideoPage() {
+  return pages.find((p) => p.type === "video") || (canAddPage() ? createPage("video", null) : null);
+}
+
+/* restoreStoredVideo() finishes asynchronously, on loadedmetadata, and
+   writes the trim range into live state — by which time the selection has
+   moved back to page 1. Registering after it (listeners run in order) lets
+   us catch those values and file them under the page they belong to. */
+function bindRestoredVideoToPage(page) {
+  if (!videoPreviewEl || !page) return;
+  videoPreviewEl.addEventListener("loadedmetadata", () => {
+    Object.assign(page.content, capturePageFields(VIDEO_PAGE_FIELDS), {
+      videoEl: videoPreviewEl,
+      videoSrc: videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "",
+    });
+    playerOwner = page;
+    if (activePageId === page.id) syncEditorFromState();
+    renderPoster();
+  }, { once: true });
 }
 
 function paintPoster() {
@@ -3618,21 +4436,38 @@ function makeSvgImage(svg) {
 
 /* ── Helpers ── */
 
+/* The whole paragraph, from whichever field is currently authoritative —
+   the draft box while Write Text is open, the editor box while typing, the
+   saved value otherwise. Slices are cut from this. */
+function getFullDetailText() {
+  if (!state.isDownloading && state.previewMode === "text") {
+    const isWritingText = writeForm && !writeForm.hidden;
+    return isWritingText && writeDetail
+      ? writeDetail.value
+      : (detailEdit?.value ?? state.detailText ?? "");
+  }
+  return state.detailText || "";
+}
+
 function getDetailTextForPreview() {
   // No headline fallback anywhere in here. The headline belongs to slide 1;
   // echoing it onto slide 2 is the bug, not a graceful default. An empty
   // paragraph shows a prompt instead, which is honest about the card being
   // unfinished rather than looking deliberately duplicated.
   const fallback = "Add key points in Text Paragraph, or generate them from a link.";
-  if (!state.isDownloading && state.previewMode === "text") {
-    const isWritingText = writeForm && !writeForm.hidden;
-    const draftText = isWritingText && writeDetail
-      ? writeDetail.value
-      : (detailEdit?.value ?? state.detailText ?? "");
-    return limitDetailTextClient(draftText.trim() ? draftText : fallback, { preserveOpenBullet: true });
+
+  // Painting a text card that owns a slice: show only its share of the
+  // points, and say so plainly when the division left it with none.
+  if (state._detailSlice !== null && state._detailSlice !== undefined) {
+    const slice = state._detailSlice.trim();
+    return limitDetailTextClient(slice || "No points left for this page — add more to the paragraph.");
   }
 
-  return limitDetailTextClient((state.detailText || "").trim() || fallback);
+  const text = getFullDetailText();
+  if (!state.isDownloading && state.previewMode === "text") {
+    return limitDetailTextClient(text.trim() ? text : fallback, { preserveOpenBullet: true });
+  }
+  return limitDetailTextClient(text.trim() || fallback);
 }
 
 function handleDetailBulletEnter(event) {
@@ -3738,6 +4573,18 @@ function setStatus(message, type) {
   scrapeStatus.textContent = message;
   scrapeStatus.className = "status-text";
   if (type) scrapeStatus.classList.add(type);
+}
+
+/* The analytics boards are built with innerHTML, and the names in them come
+   from the database — user_name is written from whatever display name an
+   account was created with (lib/pix-api.js sets it from the session). A name
+   containing markup would otherwise execute in every QA's browser, so it is
+   escaped on the way in. Anything rendered through textContent elsewhere is
+   already safe and does not need this. */
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
 }
 
 function setAnalyticsStatus(message, type) {
@@ -3851,7 +4698,7 @@ function renderAnalyticsBoard(container, rows, { empty, valueLabel, showRate = f
     <div class="analytics-row">
       <span class="analytics-rank">${index + 1}</span>
       <div class="analytics-row-main">
-        <span class="analytics-row-name">${row.user_name || "Unknown"}</span>
+        <span class="analytics-row-name">${escapeHtml(row.user_name || "Unknown")}</span>
         <span class="analytics-row-meta">${approvedField in row && pendingField in row
           ? `${formatCount(row[approvedField] || 0)} approved · ${formatCount(row[pendingField] || 0)} pending`
           : valueLabel}</span>
@@ -4041,39 +4888,24 @@ document.querySelectorAll("[data-roster-sort]").forEach((btn) => {
   });
 });
 
-/* The desk's standing categories, listed in this order whether or not anything
-   has been filed under them yet — an empty category is itself an answer, and a
-   picker whose options come and go is hard to trust. */
-const CATEGORY_PRESETS = [
-  "Entertainment",
-  "Technology",
-  "Lifestyle",
-  "State",
-  "International",
-  "National",
-  "Finance",
-  "Sports",
-];
-
 /* ── Category and date-range filters ──
    These narrow the SQL rollups, so every change is a refetch rather than a
-   re-render. The picker is the standing list above, plus any other category
-   the payload reports — so a post filed under something off-list is still
-   reachable rather than invisible. */
+   re-render.
+
+   The options are the sections DailyMattr actually publishes into, in the
+   editorial order loadSectionOptions() already resolved — the same list, and
+   the same ids, the writer files under. Nothing is hard-coded here: a rename or
+   a renumber on their side flows through without touching this. */
 function categoryOptionEls() {
   return analyticsCategoryMenu ? [...analyticsCategoryMenu.querySelectorAll("[data-value]")] : [];
 }
 
-function fillCategoryOptions(categories = []) {
+function fillCategoryOptions(categories = sectionCategories) {
   if (!analyticsCategoryMenu) return;
-  const known = new Set(CATEGORY_PRESETS.map((name) => name.toLowerCase()));
-  const extras = categories
-    .filter((name) => name && !known.has(String(name).toLowerCase()))
-    .sort((a, b) => String(a).localeCompare(String(b)));
 
   const rows = [
     { value: "all", label: "All categories" },
-    ...[...CATEGORY_PRESETS, ...extras].map((name) => ({ value: name, label: name })),
+    ...(categories || []).map((c) => ({ value: String(c.id), label: String(c.name) })),
     { value: UNCATEGORISED, label: "Uncategorised" },
   ];
 
@@ -4207,8 +5039,75 @@ if (analyticsRangeClear) {
   });
 }
 
+/* Recent posts, each naming its writer and opening on click.
+
+   The leaderboards answer "who is producing"; this answers "who wrote that
+   one". Rows are built with DOM nodes rather than innerHTML so headlines and
+   names cannot inject markup — the boards above needed escapeHtml precisely
+   because they take the string route. */
+let analyticsRecentRows = [];
+
+/* The Refresh button was never wired — it had three references in the file and
+   not one of them was an event listener, so clicking it did nothing at all. */
+if (analyticsRefreshBtn) {
+  analyticsRefreshBtn.addEventListener("click", () => loadAnalytics({ force: true }));
+}
+document.getElementById("analytics-search")?.addEventListener("input", () => renderAnalyticsRecent());
+
+function renderAnalyticsRecent() {
+  const container = document.getElementById("analytics-recent");
+  if (!container) return;
+  const term = (document.getElementById("analytics-search")?.value || "").trim().toLowerCase();
+  const rows = term
+    ? analyticsRecentRows.filter((r) =>
+      `${r.headline || ""} ${r.user_name || ""}`.toLowerCase().includes(term))
+    : analyticsRecentRows;
+
+  container.textContent = "";
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "analytics-empty";
+    empty.textContent = analyticsRecentRows.length ? "No posts match that filter." : "No posts yet.";
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const row of rows) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "analytics-recent-row" + (row.approved ? " is-approved" : "");
+    item.title = "Open this post";
+
+    const main = document.createElement("div");
+    main.className = "analytics-recent-main";
+    const title = document.createElement("span");
+    title.className = "analytics-recent-title";
+    title.textContent = row.headline || "(untitled)";
+    const meta = document.createElement("span");
+    meta.className = "analytics-recent-meta";
+    meta.textContent = [
+      row.user_name || "Unknown writer",
+      formatLibraryDate(row.created_at),
+      row.approved && row.approved_by_name ? `approved by ${row.approved_by_name}` : "",
+    ].filter(Boolean).join(" · ");
+    main.append(title, meta);
+
+    const pill = document.createElement("span");
+    pill.className = "status-pill" + (row.approved ? " is-approved" : "");
+    pill.textContent = row.approved ? "Approved" : "Pending";
+
+    item.append(main, pill);
+    item.addEventListener("click", () => {
+      setView("poster");
+      openSavedPost(row.id);
+    });
+    container.appendChild(item);
+  }
+}
+
 async function loadAnalytics({ force = false } = {}) {
   if (!analyticsView || !state.user) return;
+  if (state.user.role !== "qa") return;
   if (!force && analyticsLoadedForRole === state.user.role) return;
 
   if (analyticsRefreshBtn) analyticsRefreshBtn.disabled = true;
@@ -4235,6 +5134,9 @@ async function loadAnalytics({ force = false } = {}) {
     const analytics = payload.analytics || {};
     analyticsLoadedForRole = role;
 
+    analyticsRecentRows = Array.isArray(analytics.recent) ? analytics.recent : [];
+    renderAnalyticsRecent();
+
     if (analyticsTitle) analyticsTitle.innerHTML = role === "qa" ? "QA pipeline,<br>clearly measured." : "Your writing flow,<br>clearly measured.";
     if (analyticsDesc) {
       analyticsDesc.textContent = role === "qa"
@@ -4242,7 +5144,9 @@ async function loadAnalytics({ force = false } = {}) {
         : "Track how many posts you have sent, how many QA has approved, and how much is still waiting in the queue.";
     }
 
-    fillCategoryOptions(analytics.categories || []);
+    // Sections may not have loaded yet on the first analytics open; refill from
+    // whatever loadSectionOptions() has by now so the picker is never empty.
+    fillCategoryOptions();
     // The server is the authority on what it actually applied — a backwards
     // range comes back swapped, so the pickers have to follow it.
     if (payload.filters) {
@@ -4287,14 +5191,19 @@ const reviewView = document.getElementById("review-view");
 
 function setView(view) {
   // Signed out, there is nothing to list.
-  if ((view === "review" || view === "analytics") && !state.user) view = "poster";
+  if ((view === "review" || view === "analytics" || view === "writers") && !state.user) view = "poster";
+  // Analytics and Writers are QA-only; a writer landing here (stale tab, deep
+  // link) goes home. The server refuses them too — this is only the redirect.
+  if ((view === "analytics" || view === "writers") && state.user?.role !== "qa") view = "poster";
 
   document.body.classList.toggle("view-article", view === "article");
   document.body.classList.toggle("view-review", view === "review");
   document.body.classList.toggle("view-analytics", view === "analytics");
+  document.body.classList.toggle("view-writers", view === "writers");
   if (articleView) articleView.hidden = view !== "article";
   if (reviewView) reviewView.hidden = view !== "review";
   if (analyticsView) analyticsView.hidden = view !== "analytics";
+  if (writersView) writersView.hidden = view !== "writers";
   if (viewTabs) {
     viewTabs.querySelectorAll(".view-tab").forEach(t => {
       const active = t.dataset.view === view;
@@ -4306,6 +5215,7 @@ function setView(view) {
   if (view !== "poster") setSheetOpen(false);
   if (view === "review") loadReviewQueue();
   if (view === "analytics") loadAnalytics({ force: true });
+  if (view === "writers") loadWriters();
 }
 
 if (viewTabs) {
@@ -4973,7 +5883,16 @@ async function renderTrimmedClip({ width, height, onStatus = () => {} } = {}) {
     form.append("video", state.videoFile, state.videoFile.name);
     onStatus(`Uploading and encoding ${duration.toFixed(1)}s… this can take a few minutes.`);
   } else {
-    form.append("url", state.videoUrl);
+    /* Encode from whatever the PREVIEW is playing, not from the original link.
+       trimStart/trimEnd are timestamps into the element on screen, so if that
+       element is showing the already-trimmed copy from our bucket (a reopened
+       post) while this sent the original URL, ffmpeg would cut those seconds
+       out of the wrong footage — and fail outright when the original is a
+       dead YouTube link or an expired signed URL. */
+    const previewSrc = state.storedVideoUrl && videoPreviewEl?.src === state.storedVideoUrl
+      ? state.storedVideoUrl
+      : state.videoUrl;
+    form.append("url", previewSrc);
     onStatus(`Downloading and encoding ${duration.toFixed(1)}s… this can take a few minutes.`);
   }
 
@@ -5044,7 +5963,15 @@ if (videoPreviewEl) {
   // always false and the card never updated on play or seek.
   videoPreviewEl.addEventListener("play", () => startVideoPreviewLoop());
   ["seeked", "loadeddata", "pause", "ended"].forEach((ev) =>
-    videoPreviewEl.addEventListener(ev, () => renderPoster())
+    videoPreviewEl.addEventListener(ev, () => {
+      // Remember what is loaded, so a video page that later gives up the
+      // shared player can reload the same source into its own. Loading a
+      // clip is also how a page claims the player in the first place.
+      state.videoSrc = videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "";
+      const current = activePage();
+      if (current.type === "video") playerOwner = current;
+      renderPoster();
+    })
   );
 }
 
@@ -5100,6 +6027,28 @@ async function downloadSlide(mode) {
 const previewRail = document.getElementById("preview-rail");
 if (previewRail) {
   previewRail.addEventListener("click", async (e) => {
+    // Removing a page must not also select it on the way out.
+    const removeBtn = e.target.closest("[data-remove-page]");
+    if (removeBtn) {
+      const owner = removeBtn.closest("[data-page]");
+      if (owner) removePage(owner.dataset.page);
+      return;
+    }
+
+    /* Selecting first is what makes the per-card exports correct: every
+       export path reads live state, so the page has to be live before the
+       render starts. Clicking Download on page 4 therefore selects page 4,
+       which is also what the writer expects to see happen. */
+    const cardEl = e.target.closest(".preview-card[data-page]");
+    if (cardEl) setActivePage(cardEl.dataset.page);
+
+    // "Edit" is the same selection, said out loud — the controls that write
+    // to this page are in the left column, and on mobile behind the sheet.
+    if (e.target.closest("[data-edit-page]")) {
+      openEditorForPage(cardEl);
+      return;
+    }
+
     const btn = e.target.closest("[data-download]");
     if (!btn) return;
     const mode = btn.dataset.download;
@@ -5114,7 +6063,7 @@ if (previewRail) {
     // The video slide is an MP4 from the server, not a canvas PNG.
     if (mode === "video") {
       if (!state.videoUrl && !state.videoFile) {
-        setStatus("Add a video in Slide 2 Video first.", "error");
+        setStatus("Load a video into this page first — open the Video panel.", "error");
         return;
       }
       exportVideoClip();
@@ -5124,15 +6073,191 @@ if (previewRail) {
     btn.disabled = true;
     const label = btn.textContent;
     btn.textContent = "Rendering…";
+    // Export the slice this card shows, not the whole paragraph — the file
+    // has to match the card it was downloaded from.
+    const card = cardEl ? cardForElement(cardEl) : null;
+    state._detailSlice = card?.detailSlice || null;
     try {
       const r = await downloadSlide(mode);
-      setStatus(r ? `Slide downloaded (${r.width}×${r.height}).` : "Export failed.", r ? "success" : "error");
+      setStatus(r ? `Page downloaded (${r.width}×${r.height}).` : "Export failed.", r ? "success" : "error");
     } finally {
+      state._detailSlice = null;
       btn.disabled = false;
       btn.textContent = label;
     }
   });
 }
+
+/* Put the writer in front of the controls for the page they just picked.
+   On mobile that means opening the sheet; on both, the section that
+   matters for this page type. */
+function openEditorForPage(cardEl) {
+  const page = activePage();
+  const openAccordion = (el) => {
+    const acc = el?.closest(".acc");
+    if (!acc || acc.dataset.open === "true") return;
+    acc.dataset.open = "true";
+    acc.querySelector(":scope > .acc-head")?.setAttribute("aria-expanded", "true");
+  };
+
+  if (isMobile()) setSheetOpen(true);
+
+  const mode = cardEl?.dataset.previewMode;
+  const focusTarget = page.type === "video" || mode === "video"
+    ? document.getElementById("video-url")
+    : (mode === "text" ? detailEdit : headlineEdit);
+
+  openAccordion(focusTarget);
+  requestAnimationFrame(() => {
+    focusTarget?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (focusTarget && !focusTarget.disabled) focusTarget.focus({ preventScroll: true });
+  });
+}
+
+/* ── Reordering ──
+   Dragging the grip moves a page; every number, and the division of the
+   paragraph's points, follows from the new order on the next paint.
+
+   The grip is a button rather than the whole card for two reasons: the
+   video card already claims pointer drags for reframing, and a focusable
+   grip gives the whole feature a keyboard path (← →) that a drag cannot. */
+
+function moveSlot(card, toIndex) {
+  const from = slotOrder.indexOf(card);
+  if (from < 0) return false;
+  let to = Math.max(0, Math.min(toIndex, slotOrder.length));
+  if (from < to) to -= 1;
+  if (to === from) return false;
+  slotOrder.splice(from, 1);
+  slotOrder.splice(to, 0, card);
+  renumberPages();
+  return true;
+}
+
+(() => {
+  const rail = document.getElementById("preview-rail");
+  if (!rail) return;
+
+  let dragging = null;
+
+  // Cards are only draggable while their own grip is held, so a plain drag
+  // across a card never starts a reorder.
+  rail.addEventListener("pointerdown", (e) => {
+    const grip = e.target.closest("[data-grip]");
+    const fig = grip?.closest(".preview-card[data-page]");
+    if (fig) fig.draggable = true;
+  });
+  rail.addEventListener("pointerup", () => {
+    if (!dragging) rail.querySelectorAll(".preview-card[draggable]").forEach((el) => { el.draggable = false; });
+  });
+
+  rail.addEventListener("dragstart", (e) => {
+    const fig = e.target.closest(".preview-card[data-page]");
+    if (!fig || !fig.draggable) { e.preventDefault(); return; }
+    dragging = cardForElement(fig);
+    if (!dragging) { e.preventDefault(); return; }
+    fig.classList.add("is-dragging");
+    e.dataTransfer.effectAllowed = "move";
+    // Firefox refuses to start a drag without payload.
+    e.dataTransfer.setData("text/plain", fig.dataset.page || "page");
+  });
+
+  rail.addEventListener("dragover", (e) => {
+    if (!dragging) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const overEl = e.target.closest?.(".preview-card[data-page]");
+    if (!overEl || overEl === dragging.el) return;
+    const over = cardForElement(overEl);
+    if (!over) return;
+    const rect = overEl.getBoundingClientRect();
+    const after = e.clientX > rect.left + rect.width / 2;
+    moveSlot(dragging, slotOrder.indexOf(over) + (after ? 1 : 0));
+  });
+
+  rail.addEventListener("drop", (e) => { if (dragging) e.preventDefault(); });
+
+  rail.addEventListener("dragend", () => {
+    if (dragging) dragging.el.classList.remove("is-dragging");
+    rail.querySelectorAll(".preview-card[draggable]").forEach((el) => { el.draggable = false; });
+    dragging = null;
+    // The order changed, so the points divide differently.
+    recomputeDetailSlices({ force: true });
+    renderPoster();
+  });
+
+  // Keyboard path: focus a grip, then arrow the page along the rail.
+  rail.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const grip = e.target.closest("[data-grip]");
+    const card = grip && cardForElement(grip.closest(".preview-card[data-page]"));
+    if (!card) return;
+    e.preventDefault();
+    const at = slotOrder.indexOf(card);
+    if (!moveSlot(card, e.key === "ArrowLeft" ? at - 1 : at + 2)) return;
+    recomputeDetailSlices({ force: true });
+    renderPoster();
+    grip.focus();
+    card.el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  });
+})();
+
+/* ── Add page ──
+   A menu rather than three buttons: the tile sits in the rail at card
+   width, and three labels do not fit there without shrinking to the point
+   of being guesswork. */
+(() => {
+  const tile = document.getElementById("preview-add");
+  const btn = document.getElementById("preview-add-btn");
+  const menu = document.getElementById("preview-add-menu");
+  if (!tile || !btn || !menu) return;
+
+  const setMenuOpen = (open) => {
+    menu.hidden = !open;
+    // The tile swaps its face for the choices, so the open state lives on
+    // the tile — it is what hides the button and widens the column.
+    tile.classList.toggle("is-open", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) menu.querySelector("[data-add-page]")?.focus();
+  };
+  const closeMenu = () => setMenuOpen(false);
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!canAddPage()) return;
+    setMenuOpen(menu.hidden);
+  });
+
+  menu.addEventListener("click", (e) => {
+    if (e.target.closest("[data-add-cancel]")) {
+      closeMenu();
+      btn.focus();
+      return;
+    }
+    const item = e.target.closest("[data-add-page]");
+    if (!item) return;
+    closeMenu();
+    addPage(item.dataset.addPage);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!menu.hidden && !tile.contains(e.target)) closeMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMenu();
+  });
+})();
+
+// The way back when an added page is selected. Page 1 is where the post's
+// own fields live, so this is also "stop editing an extra".
+document.getElementById("page-context-back")?.addEventListener("click", () => {
+  setActivePage("base");
+  document.getElementById("post-canvas")
+    ?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+});
+
+// First paint of the counter, the add tile and the selection ring.
+renumberPages();
 
 
 /* ── Rail navigation ──
@@ -5171,12 +6296,75 @@ async function loadDailyMattrMeta({ force = false } = {}) {
 
     fillSelectOptions(dailymattrCategory, payload.categories || [], "Choose a category");
     fillSelectOptions(dailymattrState, payload.states || [], "Optional");
+    // Options exist now, so the saved choice can actually take.
+    syncSectionInputs();
     dailymattrMetaLoaded = true;
     syncDailyMattrDraft();
     setDailyMattrStatus(`DailyMattr ready. ${payload.categories?.length || 0} categories loaded.`, "success");
   } catch (err) {
     setDailyMattrStatus(err.message || "Could not load DailyMattr options.", "error");
   }
+}
+
+/* Get the slide-2 MP4 for publishing, by the cheapest route that is still
+   correct.
+
+   The bug this replaces: publish always called renderTrimmedClip(), which
+   re-encodes from state.videoUrl — the ORIGINAL source. On a reopened post
+   that URL is a YouTube link or an expiring signed URL, while the preview the
+   writer approved is playing the trimmed copy in our own bucket. So the
+   preview and the export were reading from two different places, and the
+   export lost: dead link, expired signature, or yt-dlp needed all over again.
+   The visible symptom is a post that publishes its images and silently drops
+   the video.
+
+   Order of preference:
+     1. the clip already rendered in this session
+     2. the trimmed copy in our bucket, when nothing has been edited since
+     3. a fresh encode — only when there is genuinely nothing to reuse
+
+   videoClipKey() covers trim range, mute, focus, caption and ratio, so any
+   edit invalidates 1 and 2 and correctly forces a re-render. */
+function resolvePublishClip(onStatus = () => {}) {
+  // The clip lives on a video page, so read it from there rather than from
+  // whichever page QA left selected.
+  return withPrimaryVideo(() => resolvePublishClipFromState(onStatus));
+}
+
+async function resolvePublishClipFromState(onStatus = () => {}) {
+  const clipKey = videoClipKey();
+  if (!clipKey) return null;
+
+  if (state.renderedClip?.key === clipKey && state.renderedClip.blob) {
+    return state.renderedClip.blob;
+  }
+
+  if (state.storedVideoUrl && state.storedVideoFor === clipKey) {
+    try {
+      onStatus("Attaching the stored video…");
+      const res = await fetch(state.storedVideoUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.size > 1000) return blob;
+      }
+      // Fall through to a fresh encode rather than failing — the bucket object
+      // could have been pruned.
+      console.warn("stored clip unreadable, re-encoding");
+    } catch (err) {
+      console.warn("stored clip fetch failed, re-encoding:", err.message);
+    }
+  }
+
+  const videoReady = state.videoEl
+    && state.videoEl.readyState >= 2
+    && state.videoEl.videoWidth > 0
+    && state.trimEnd > state.trimStart;
+  if (!videoReady) return null;
+
+  onStatus("Rendering the video — this can take a few minutes…");
+  const blob = await renderTrimmedClip({ onStatus });
+  if (blob) state.renderedClip = { blob, key: clipKey };
+  return blob;
 }
 
 async function publishToDailyMattr() {
@@ -5196,7 +6384,14 @@ async function publishToDailyMattr() {
   const categoryId = dailymattrCategory?.value || "";
   const stateId = dailymattrState?.value || "";
   const content = (dailymattrContent?.value || "").trim() || defaultDailyMattrContent();
-  const keywords = (dailymattrKeywords?.value || "").trim() || inferDailyMattrKeywords();
+  /* Priority: what QA typed here, then what the writer saved with the post,
+     then a guess from the headline. The writer's wording used to be discarded
+     — keywords were only ever inferred at publish time — so a deliberate
+     choice lost to an automatic one. */
+  const keywords = (dailymattrKeywords?.value || "").trim()
+    || (state.keywords || "").trim()
+    || inferDailyMattrKeywords();
+  const mediaError = validateDailyMattrExtraFiles();
   if (!categoryId) {
     setDailyMattrStatus("Choose a DailyMattr category.", "error");
     return;
@@ -5205,6 +6400,48 @@ async function publishToDailyMattr() {
     setDailyMattrStatus("Enter a caption before publishing.", "error");
     return;
   }
+  if (mediaError) {
+    setDailyMattrStatus(mediaError, "error");
+    return;
+  }
+  /* DailyMattr rejects the State category without a state. Caught here so the
+     failure costs a click, not a multi-minute video encode and upload first. */
+  if (stateIsRequired(categoryId) && !stateId) {
+    setDailyMattrStatus("The State category needs a state. Choose one above, then publish.", "error");
+    dailymattrState?.focus();
+    return;
+  }
+
+  /* The one genuinely irreversible action in the app: DailyMattr has no
+     delete route on the integration API, so a mistaken publish has to be
+     removed by hand from their portal. Worth one click to confirm, and worth
+     showing exactly what is about to go. */
+  const catLabel = dailymattrCategory?.selectedOptions?.[0]?.textContent || "none";
+  const stLabel = dailymattrState?.value ? (dailymattrState.selectedOptions?.[0]?.textContent || "") : "";
+  /* Read the clip off the video page, not off live state: the video moved
+     onto its own page, so `state.video*` only holds it while that page is
+     the selected one — and QA confirms this dialog from page 1. */
+  const clip = primaryVideoContent();
+  const hasVideo = Boolean(
+    clip.videoEl && clip.videoEl.readyState >= 2 && clip.videoEl.videoWidth > 0 && clip.trimEnd > clip.trimStart
+  ) || Boolean(clip.storedVideoUrl);
+  const extraCount = dailyMattrExtraFiles().length;
+  // Media items being published, not pages in the rail — publish sends the
+  // poster, the text slide and one clip. Named apart from pageCount() so it
+  // does not shadow it.
+  const mediaCount = 1 + ((state.detailText || "").trim() ? 1 : 0) + (hasVideo ? 1 : 0) + extraCount;
+
+  const go = await confirmAction({
+    title: "Publish to DailyMattr?",
+    body: "This goes live on shortlyindia.com straight away. It cannot be undone from here — a mistake has to be removed from their portal by hand.",
+    facts: [
+      `Category: ${catLabel}${stLabel ? ` \u00b7 ${stLabel}` : ""}`,
+      `${mediaCount} media item${mediaCount === 1 ? "" : "s"}${hasVideo ? ", including the video" : ""}`,
+      state.pixId ? "The post will be marked approved" : "Not saved yet, so it will not be marked approved",
+    ],
+    confirmLabel: "Publish now",
+  });
+  if (!go) return;
 
   dailymattrPublishBtn.disabled = true;
   const previousLabel = dailymattrPublishBtn.textContent;
@@ -5223,46 +6460,65 @@ async function publishToDailyMattr() {
     form.append("category_id", categoryId);
     if (keywords) form.append("keywords", keywords);
     if (stateId) form.append("state_id", stateId);
-    form.append("media_page_1", poster.blob, `${slugify(state.headline || "pix-post")}.png`);
+    // Lets the server mark this post approved once DailyMattr accepts it —
+    // sending a story live IS the approval. Absent when the poster was never
+    // saved, in which case there is no library row to mark.
+    if (state.pixId) form.append("pix_id", state.pixId);
+    const outboundMedia = [{
+      blob: poster.blob,
+      filename: `${slugify(state.headline || "pix-post")}.png`,
+    }];
 
-    /* Slide 2 is EITHER a video or a text card — the preview numbers both "2"
-       because they are alternatives, never two separate pages. So page 2 has
-       to follow whichever one the editor is actually showing.
+    /* Media order is the publishing order — DailyMattr shows item 1 as the
+       cover. Poster first, then the text card, then the video, then anything
+       QA attached by hand. Images and video may be mixed freely.
 
-       This used to branch on `detailText` being non-empty, which was wrong in
-       both directions: a video post published no page 2 at all, and a video
-       post that still carried leftover paragraph text published the TEXT card
-       — silently shipping a slide the writer never chose. */
+       The "For X" card is deliberately NOT published. It is a Twitter/X
+       crop with its own framing and safe areas, produced for manual posting
+       there; on the news app it would appear as a duplicate of the poster in
+       the wrong aspect. Only "pix" and "text" are ever exported here — if a
+       future card is added, it has to be opted in on this list explicitly. */
     const slug = slugify(state.headline || "pix-post");
-    const videoReady = state.videoEl
-      && state.videoEl.readyState >= 2
-      && state.videoEl.videoWidth > 0
-      && state.trimEnd > state.trimStart;
 
-    if (videoReady) {
-      // The same trimmed, branded MP4 the Export button produces — caption and
-      // logo already burned in, cropped to the framing that was approved.
-      setDailyMattrStatus("Rendering slide 2 video — this can take a few minutes…");
-      const clip = await renderTrimmedClip({
-        onStatus: (msg) => setDailyMattrStatus(msg),
-      });
-      if (clip) {
-        if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
-          const mb = (n) => (n / 1048576).toFixed(1);
-          setDailyMattrStatus(
-            `The clip is ${mb(clip.size)} MB, over the ${mb(DAILYMATTR_MAX_MEDIA_BYTES)} MB limit. Shorten the trim range and try again.`,
-            "error",
-          );
-          return;
-        }
-        form.append("media_page_2", clip, `${slug}-slide2.mp4`);
-      }
-    } else if ((state.detailText || "").trim()) {
+    if ((state.detailText || "").trim()) {
       const textSlide = await exportSlidePng("text", DAILYMATTR_EXPORT_LONG_EDGES);
-      if (textSlide?.blob) {
-        form.append("media_page_2", textSlide.blob, `${slug}-text.png`);
+      if (!textSlide?.blob) {
+        setDailyMattrStatus("Could not render the text card.", "error");
+        return;
       }
+      outboundMedia.push({ blob: textSlide.blob, filename: `${slug}-text.png` });
     }
+
+    // Reuses the already-rendered clip or the bucket copy when either is
+    // current, so a reopened post does not re-download its original source.
+    const clip = await resolvePublishClip((msg) => setDailyMattrStatus(msg));
+    if (clip) {
+      if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
+        const mb = (n) => (n / 1048576).toFixed(1);
+        setDailyMattrStatus(
+          `The clip is ${mb(clip.size)} MB, over the ${mb(DAILYMATTR_MAX_MEDIA_BYTES)} MB limit. Shorten the trim range and try again.`,
+          "error",
+        );
+        return;
+      }
+      outboundMedia.push({ blob: clip, filename: `${slug}-video.mp4` });
+    }
+
+    dailyMattrExtraFiles().forEach(({ file }) => {
+      outboundMedia.push({ blob: file, filename: file.name });
+    });
+    if (outboundMedia.length > DAILYMATTR_MAX_MEDIA_ITEMS) {
+      setDailyMattrStatus(
+        `This post has ${outboundMedia.length} media files and DailyMattr accepts ${DAILYMATTR_MAX_MEDIA_ITEMS}. Remove one and try again.`,
+        "error",
+      );
+      return;
+    }
+    // Numbered by position, so the pages are always 1..N with no gaps no
+    // matter which of the optional items are present.
+    outboundMedia.forEach(({ blob, filename }, index) => {
+      form.append(`media_page_${index + 1}`, blob, filename);
+    });
 
     setDailyMattrStatus("Sending to DailyMattr…");
     const response = await fetch(DAILYMATTR_PUBLISH_ENDPOINT, {
@@ -5278,7 +6534,24 @@ async function publishToDailyMattr() {
     }
 
     const publishedId = payload.publishedId ? ` ID ${payload.publishedId}.` : "";
-    setDailyMattrStatus(`Published to DailyMattr.${publishedId}`, "success");
+
+    /* Say what happened to the approval as well as the publish. The two can
+       legitimately disagree — the story is live either way, but if it was not
+       marked approved QA needs to know to do it by hand, and a bare
+       "Published" would hide that. */
+    let approvalNote = "";
+    if (payload.approval?.ok) {
+      approvalNote = payload.approval.alreadyApproved ? " Already approved." : " Marked approved.";
+    } else if (payload.approval?.reason === "post not saved") {
+      approvalNote = " Save the post to mark it approved.";
+    } else if (payload.approval) {
+      approvalNote = ` Published, but could not mark it approved (${payload.approval.reason}) — approve it in Review.`;
+    }
+    setDailyMattrStatus(`Published to DailyMattr.${publishedId}${approvalNote}`, "success");
+
+    // The badge in Review is rebuilt on entry, but refresh now so a QA who is
+    // already looking at the list sees it flip.
+    if (payload.approval?.ok) loadReviewQueue();
   } catch (err) {
     setDailyMattrStatus(err.message || "Could not publish to DailyMattr.", "error");
   } finally {
@@ -5299,6 +6572,44 @@ if (dailymattrContent) {
 if (dailymattrKeywords) {
   dailymattrKeywords.addEventListener("input", () => { dailymattrDraftTouched.keywords = true; });
 }
+/* QA overriding the section is a deliberate act, so it must not be undone by a
+   later sync from the post. Same contract the caption and keywords already
+   use. */
+if (dailymattrCategory) {
+  dailymattrCategory.addEventListener("change", () => {
+    dailymattrDraftTouched.category = true;
+    state.categoryId = dailymattrCategory.value;
+    syncSectionInputs();
+  });
+}
+if (dailymattrState) {
+  dailymattrState.addEventListener("change", () => {
+    dailymattrDraftTouched.state = true;
+    state.stateId = dailymattrState.value;
+    syncSectionInputs();
+  });
+}
+dailymattrMediaInputs.forEach((item) => {
+  item.input?.addEventListener("change", () => {
+    const file = item.input.files?.[0] || null;
+    if (!file) {
+      resetDailyMattrMediaSlot(item);
+      return;
+    }
+    const error = validateDailyMattrExtraFiles();
+    if (error) {
+      resetDailyMattrMediaSlot(item);
+      setDailyMattrStatus(error, "error");
+      return;
+    }
+    if (item.name) item.name.textContent = file.name;
+    if (item.card) item.card.classList.add("has-file");
+    if (item.remove) item.remove.hidden = false;
+    syncDailyMattrMediaCount();
+    setDailyMattrStatus(`Output ${item.slot} ready.`, "success");
+  });
+  item.remove?.addEventListener("click", () => resetDailyMattrMediaSlot(item));
+});
 
 (() => {
   const rail = document.getElementById("preview-rail");
@@ -5341,14 +6652,19 @@ if (dailymattrKeywords) {
 })();
 
 
-/* ── Drag to reframe the video slide ──
+/* ── Drag to reframe a video page ──
    Cropping a landscape clip to 9:16 throws away most of its width, so the
    default centre crop often cuts the subject in half. Dragging the video
    card picks the slice to keep. The value is normalised, so the preview and
-   ffmpeg's crop agree at any resolution. */
-(() => {
-  const card = document.getElementById("video-canvas");
+   ffmpeg's crop agree at any resolution.
+
+   Every video page gets this, so the handler takes the canvas and the page
+   it belongs to: the drag edits live state, which means the page has to be
+   the selected one first. Grabbing an unselected card selects it, so the
+   gesture works on first touch rather than needing a click to arm it. */
+function attachVideoReframe(card, pageId) {
   if (!card) return;
+  card.classList.add("video-reframe");
 
   let dragging = false;
   let startX = 0, startY = 0, startFocus = null;
@@ -5370,6 +6686,7 @@ if (dailymattrKeywords) {
   }
 
   function pointerDown(e) {
+    if (pageId && activePageId !== pageId) setActivePage(pageId);
     if (!hasVideo()) return;
     dragging = true;
     startX = e.clientX;
@@ -5411,12 +6728,161 @@ if (dailymattrKeywords) {
 
   // Double-click recentres — quicker than dragging back by feel.
   card.addEventListener("dblclick", () => {
+    if (pageId && activePageId !== pageId) setActivePage(pageId);
     state.videoFocus = { x: 0.5, y: 0.5 };
     renderPoster();
   });
-})();
+}
+
+// Video pages get this when they are created; there is no video card on the
+// spine any more, so nothing to attach here.
 
 // Timestamp toggle — the stamp is on by default; some posters do not want it.
+/* ── Date on the slide, and keywords ─────────────────────────────────
+   state.createdAt existed but was never assigned, so formatCreatedAt() always
+   fell through to new Date() — the stamp read "today" and no one could change
+   it. That is wrong whenever a story is written up a day after the event.
+
+   Kept as a real Date in state and stored as ISO in the design snapshot, so
+   the value survives a save and does not drift with the reader's timezone.
+   Null still means "today", which is the behaviour everything had before. */
+const postDateInput = document.getElementById("post-date");
+const postKeywordsInput = document.getElementById("post-keywords");
+
+function toDateInputValue(d) {
+  // <input type="date"> wants local YYYY-MM-DD. toISOString() would convert to
+  // UTC first, which in IST (UTC+5:30) shows the previous day before 05:30.
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function syncDateAndKeywordInputs() {
+  if (postDateInput) {
+    const d = state.createdAt instanceof Date && !isNaN(state.createdAt) ? state.createdAt : new Date();
+    const want = toDateInputValue(d);
+    if (postDateInput.value !== want) postDateInput.value = want;
+  }
+  if (postKeywordsInput && postKeywordsInput.value !== (state.keywords || "")) {
+    postKeywordsInput.value = state.keywords || "";
+  }
+}
+
+if (postDateInput) {
+  postDateInput.addEventListener("change", () => {
+    const raw = postDateInput.value;
+    if (!raw) { state.createdAt = null; renderPoster(); return; }
+    // Parse as LOCAL midday, not midnight: midnight in a timezone behind UTC
+    // can roll the date back a day when it is normalised.
+    const [y, m, d] = raw.split("-").map(Number);
+    const parsed = new Date(y, m - 1, d, 12, 0, 0);
+    state.createdAt = isNaN(parsed) ? null : parsed;
+    renderPoster();
+  });
+}
+
+// Start the field on today rather than blank — an empty date box reads as
+// "no date", when the slide has always stamped the current one.
+syncDateAndKeywordInputs();
+
+document.getElementById("post-date-today")?.addEventListener("click", () => {
+  state.createdAt = null;      // null = follow the clock, as before
+  syncDateAndKeywordInputs();
+  renderPoster();
+});
+
+if (postKeywordsInput) {
+  postKeywordsInput.addEventListener("input", () => {
+    state.keywords = postKeywordsInput.value;
+    // Mirror into the publish panel so QA sees what the writer wrote.
+    if (dailymattrKeywords && !dailymattrDraftTouched.keywords) {
+      dailymattrKeywords.value = state.keywords;
+    }
+  });
+}
+
+/* ── Confirmation dialog ─────────────────────────────────────────────
+   Replaces window.confirm for the actions that cannot be taken back.
+
+   window.confirm is fine functionally, but it renders as a browser chrome
+   alert with no room to say WHAT is about to happen — and for publishing that
+   detail is the whole point: which section, how many files, whether a video
+   is going. It also cannot be styled, so it reads as a browser error rather
+   than part of the app.
+
+   Built on native <dialog>: Esc-to-cancel, focus trapping and top-layer
+   stacking come free, and this page has enough stacking contexts (the mobile
+   sheet, the aurora backdrop, the preview rail) that a hand-rolled overlay
+   would land behind something eventually.
+
+   Returns a promise for true/false so callers keep reading top to bottom. */
+const pixDialogEl = document.getElementById("pix-dialog");
+
+function confirmAction({ title, body = "", facts = [], confirmLabel = "Confirm", danger = false } = {}) {
+  // No <dialog> (very old browser, or the element was removed): fall back
+  // rather than silently proceeding with something irreversible.
+  if (!pixDialogEl || typeof pixDialogEl.showModal !== "function") {
+    return Promise.resolve(window.confirm(`${title}\n\n${body}`));
+  }
+
+  document.getElementById("pix-dialog-title").textContent = title;
+  const bodyEl = document.getElementById("pix-dialog-body");
+  bodyEl.textContent = body;
+  bodyEl.hidden = !body;
+
+  const factsEl = document.getElementById("pix-dialog-facts");
+  factsEl.textContent = "";
+  factsEl.hidden = !facts.length;
+  for (const fact of facts) {
+    const li = document.createElement("li");
+    li.textContent = fact;
+    factsEl.appendChild(li);
+  }
+
+  const confirmBtn = document.getElementById("pix-dialog-confirm");
+  confirmBtn.textContent = confirmLabel;
+  confirmBtn.classList.toggle("is-danger", Boolean(danger));
+
+  const cancelBtn = document.getElementById("pix-dialog-cancel");
+
+  return new Promise((resolve) => {
+    /* Resolve from whichever signal arrives first, rather than trusting the
+       "close" event alone.
+
+       That event is the obvious hook and it is what this originally used — but
+       it does not fire in every environment (measured: the dialog opened,
+       closed and set returnValue correctly while "close" never fired at all).
+       When that happens the promise never settles and the caller hangs
+       forever with no error: the Publish button would sit disabled and the
+       user would have no idea why. Button clicks are the signal we actually
+       control, so they decide, and the events are a safety net for Esc and
+       the backdrop. */
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      cancelBtn.removeEventListener("click", onCancel);
+      confirmBtn.removeEventListener("click", onConfirm);
+      pixDialogEl.removeEventListener("cancel", onCancel);
+      pixDialogEl.removeEventListener("close", onClose);
+      if (pixDialogEl.open) pixDialogEl.close();
+      resolve(value);
+    };
+    const onCancel = () => finish(false);
+    const onConfirm = () => finish(true);
+    const onClose = () => finish(pixDialogEl.returnValue === "confirm");
+
+    cancelBtn.addEventListener("click", onCancel);
+    confirmBtn.addEventListener("click", onConfirm);
+    pixDialogEl.addEventListener("cancel", onCancel);   // Esc
+    pixDialogEl.addEventListener("close", onClose);     // backdrop / programmatic
+
+    pixDialogEl.returnValue = "cancel";   // anything but an explicit yes means no
+    pixDialogEl.showModal();
+    // Focus Cancel, not Confirm: a stray Enter must not publish.
+    cancelBtn.focus();
+  });
+}
+
 const showTimestampInput = document.getElementById("show-timestamp");
 if (showTimestampInput) {
   showTimestampInput.addEventListener("change", () => {
@@ -5517,12 +6983,22 @@ function startNewPix() {
   state.headlineTouched = false;
   state.detailTouched = false;
   state.sourceUrl = "";
+  syncSourceUrlInput();
+  state.categoryId = "";
+  state.stateId = "";
+  syncSectionInputs();
+  state.createdAt = null;
+  state.keywords = "";
+  syncDateAndKeywordInputs();
   state.articleText = "";
   state.scrapedTitle = "";
   state.imageQuery = "";
   state.sourceImageUrl = null;
   dailymattrDraftTouched.content = false;
   dailymattrDraftTouched.keywords = false;
+  dailymattrDraftTouched.category = false;
+  dailymattrDraftTouched.state = false;
+  resetDailyMattrExtraMedia();
   syncDailyMattrDraft({ force: true });
 }
 
@@ -5593,6 +7069,8 @@ function collectPixPayload() {
 
     // The scrape
     sourceUrl: state.sourceUrl || null,
+    categoryId: state.categoryId || null,
+    stateId: state.stateId || null,
     scrapedTitle: state.scrapedTitle || null,
     articleText: state.articleText || null,
     detailText: state.detailText || null,
@@ -5613,21 +7091,9 @@ function collectPixPayload() {
     aspectRatio: state.aspectRatio,
     accentColor: state.accent,
     tag: state.tag,
-    // The content category the writer filed this under, by name — the QA
-    // analytics desk groups on it. Null when DailyMattr has not loaded its
-    // category list, which is the same as "not categorised".
-    category: selectedCategoryName(),
 
     design: collectDesignSnapshot(),
   };
-}
-
-/* The label, not the id: the id is DailyMattr's and means nothing to the QA
-   desk, whereas the name is what the category filter lists. */
-function selectedCategoryName() {
-  const option = dailymattrCategory?.selectedOptions?.[0];
-  if (!option || !option.value) return null;
-  return option.textContent.trim() || null;
 }
 
 /* The main image is held as an <img>, not a URL, so the source has to be read
@@ -5685,6 +7151,10 @@ function collectDesignSnapshot() {
     logo: { x: state.logoX, y: state.logoY, size: state.logoSize },
     tag: state.tag,
     showTimestamp: state.showTimestamp,
+    createdAt: state.createdAt instanceof Date && !isNaN(state.createdAt)
+      ? state.createdAt.toISOString()
+      : null,
+    keywords: state.keywords || "",
     previewMode: state.previewMode,
     filters: {
       preset: state.filterPreset,
@@ -5693,22 +7163,32 @@ function collectDesignSnapshot() {
       saturation: state.filterSaturation,
       blur: state.filterBlur,
     },
-    video: {
-      sourceKind: state.videoSourceKind,
-      url: state.videoUrl || null,
-      // The bucket copy: the rendered clip, already cut to the range below
-      // and with the caption burned in. `url` above is the original link,
-      // which for a scraped clip is a signed URL that expires within hours.
-      storedUrl: state.storedVideoUrl || null,
-      storedTrimmed: Boolean(state.storedVideoUrl),
-      title: state.videoMeta?.title || null,
-      trimStart: state.trimStart,
-      trimEnd: state.trimEnd,
-      muted: state.videoMuted,
-      focus: { ...state.videoFocus },
-      caption: state.videoCaption || null,
-      captionSize: state.videoCaptionSize,
-    },
+    /* The post's video. Read off the primary video page rather than live
+       state: the clip belongs to that page now, and saving while page 1 is
+       selected must not write out whatever video fields happen to be left
+       over in state. */
+    video: (() => {
+      const v = primaryVideoContent();
+      return {
+        sourceKind: v.videoSourceKind || "link",
+        url: v.videoUrl || null,
+        // The bucket copy: the rendered clip, already cut to the range below
+        // and with the caption burned in. `url` above is the original link,
+        // which for a scraped clip is a signed URL that expires within hours.
+        storedUrl: v.storedVideoUrl || null,
+        storedTrimmed: Boolean(v.storedVideoUrl),
+        title: v.videoMeta?.title || null,
+        trimStart: v.trimStart ?? 0,
+        trimEnd: v.trimEnd ?? 0,
+        muted: Boolean(v.videoMuted),
+        focus: { x: v.videoFocus?.x ?? 0.5, y: v.videoFocus?.y ?? 0.5 },
+        caption: v.videoCaption || null,
+        captionSize: v.videoCaptionSize ?? state.videoCaptionSize,
+      };
+    })(),
+    // Pages the writer added on top of the spine. The spine itself is the
+    // rest of this snapshot, so only the extras are listed.
+    pages: serializePages(),
     savedAt: new Date().toISOString(),
   };
 }
@@ -5799,11 +7279,17 @@ async function loadPixIntoEditor(post) {
   if (!post) return;
   const design = post.design || {};
 
+  resetDailyMattrExtraMedia();
+
   state.pixId = post.id;
   state.headline = post.headline || post.ai_headline || post.scraped_title || "";
   state.detailText = post.detail_body || post.detail_text || "";
   state.articleText = post.article_text || "";
   state.sourceUrl = post.source_url || "";
+  syncSourceUrlInput();
+  state.categoryId = post.category_id ? String(post.category_id) : "";
+  state.stateId = post.state_id ? String(post.state_id) : "";
+  syncSectionInputs();
   state.scrapedTitle = post.scraped_title || "";
   state.imageQuery = post.image_query || "";
   state.sourceImageUrl = post.source_image_url || null;
@@ -5818,6 +7304,8 @@ async function loadPixIntoEditor(post) {
   state.ready = true;
   dailymattrDraftTouched.content = false;
   dailymattrDraftTouched.keywords = false;
+  dailymattrDraftTouched.category = false;
+  dailymattrDraftTouched.state = false;
 
   applyDesignSnapshot(design, post);
   syncDailyMattrDraft({ force: true });
@@ -5843,7 +7331,20 @@ async function loadPixIntoEditor(post) {
   // A stored image is a URL; it goes back through the proxy exactly as it did
   // the first time. An upload has no URL, so the poster opens without it.
   // A stored video plays straight from the bucket.
-  if (design.video?.storedUrl) restoreStoredVideo(design.video);
+  /* A stored clip belongs to a Video page. Posts saved before video became
+     its own page carry no page list, so give them a page to land in. */
+  if (design.video?.storedUrl) {
+    const videoPage = ensureVideoPage();
+    if (videoPage) {
+      renumberPages();
+      setActivePage(videoPage.id);
+      restoreStoredVideo(design.video);
+      bindRestoredVideoToPage(videoPage);
+      setActivePage("base");
+    } else {
+      setStatus("Opened, but this post is full — its video has no page to open into.", "error");
+    }
+  }
 
   state.mainImage = null;
   if (post.main_image_url) {
@@ -5878,6 +7379,10 @@ function applyDesignSnapshot(design, post) {
   state.logoY = numberOr(design.logo?.y, state.logoY);
   state.logoSize = numberOr(design.logo?.size, state.logoSize);
   state.showTimestamp = design.showTimestamp !== false;
+  const restoredDate = design.createdAt ? new Date(design.createdAt) : null;
+  state.createdAt = restoredDate && !isNaN(restoredDate) ? restoredDate : null;
+  state.keywords = typeof design.keywords === "string" ? design.keywords : "";
+  syncDateAndKeywordInputs();
 
   const filters = design.filters || {};
   state.filterPreset = filters.preset || "none";
@@ -5899,6 +7404,11 @@ function applyDesignSnapshot(design, post) {
   syncControl(filterSaturationInput, state.filterSaturation);
   syncControl(filterBlurInput, state.filterBlur);
   if (accentHexLabel) accentHexLabel.textContent = String(state.accent).toUpperCase();
+
+  // Rebuild the added pages, then hand the editor back to page 1 — which is
+  // what the writer is looking at when a post opens.
+  restorePages(design.pages);
+  setActivePage("base", { force: true });
 }
 
 function numberOr(value, fallback) {
@@ -5976,13 +7486,440 @@ if (reviewFilters) {
 
 if (reviewRefreshBtn) reviewRefreshBtn.addEventListener("click", () => loadReviewQueue());
 
+/* ═══════════════════════ Writer accounts (QA only) ═══════════════════════
+
+   Accounts previously existed only if someone ran `npm run users:seed`, which
+   creates a fixed roster of six — adding a seventh writer meant shell access
+   to the server. QA runs the team, so QA gets the screen.
+
+   Everything here is rendered with DOM nodes, never innerHTML: usernames and
+   display names are operator-supplied text and would otherwise be a script
+   injection into the one screen only QA can see. */
+const writersView = document.getElementById("writers-view");
+const writersList = document.getElementById("writers-list");
+const writersStatusEl = document.getElementById("writers-status");
+const writerCreateForm = document.getElementById("writer-create-form");
+
+function setWritersStatus(message, kind) {
+  if (!writersStatusEl) return;
+  writersStatusEl.className = "status-text" + (kind ? ` ${kind}` : "");
+  writersStatusEl.textContent = message || "";
+}
+
+async function usersRequest(path, options = {}) {
+  const res = await fetch(path, { credentials: "same-origin", ...options });
+  const payload = await res.json().catch(() => ({}));
+  if (res.status === 401) { handleSignedOut(); throw new Error("Signed out."); }
+  if (!res.ok) throw new Error(payload.error || `Request failed (${res.status}).`);
+  return payload;
+}
+
+let writerStats = new Map();     // user id -> { sent, approved, pending }
+let selectedWriterId = null;
+
+/* The roster and the output figures come from two places and are merged here:
+   /api/users knows who exists (including anyone who has never written a word,
+   who is absent from the post table entirely), while the analytics writers
+   board knows how much each has produced. Neither alone is the answer. */
+async function loadWriters() {
+  if (!writersList || state.user?.role !== "qa") return;
+  setWritersStatus("Loading writers...");
+  try {
+    const [{ users }, analytics] = await Promise.all([
+      usersRequest("/api/users"),
+      // Counts are a nicety - a failure here must not empty the roster.
+      usersRequest("/api/pix-analytics").catch(() => null),
+    ]);
+
+    writerStats = new Map();
+    for (const row of analytics?.analytics?.writers || []) {
+      if (row.user_login_id) {
+        writerStats.set(row.user_login_id, {
+          sent: row.sent_count || 0,
+          approved: row.approved_count || 0,
+          pending: row.pending_count || 0,
+        });
+      }
+    }
+
+    writersList.textContent = "";
+    for (const u of users) writersList.appendChild(renderWriterRow(u));
+
+    const active = users.filter((u) => u.active).length;
+    setWritersStatus(`${users.length} account${users.length === 1 ? "" : "s"} \u00b7 ${active} active`);
+
+    // Keep the open writer open across a refresh (e.g. after a disable).
+    if (selectedWriterId) {
+      const still = users.find((u) => u.id === selectedWriterId);
+      if (still) openWriter(still);
+    }
+  } catch (err) {
+    setWritersStatus(err.message, "error");
+  }
+}
+
+function renderWriterRow(u) {
+  const li = document.createElement("li");
+  li.className = "writers-item"
+    + (u.active ? "" : " is-disabled")
+    + (u.id === selectedWriterId ? " is-selected" : "");
+  li.dataset.userId = u.id;
+
+  // The row itself opens the writer; the admin buttons sit outside it so a
+  // click on "Disable" does not also select the row.
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "writers-item-open";
+  open.addEventListener("click", () => openWriter(u));
+
+  const avatar = document.createElement("span");
+  avatar.className = "writers-avatar";
+  avatar.textContent = initialsOf(u.displayName || u.username);
+
+  const main = document.createElement("span");
+  main.className = "writers-item-main";
+  const name = document.createElement("span");
+  name.className = "writers-item-name";
+  name.textContent = u.displayName || u.username;
+  const meta = document.createElement("span");
+  meta.className = "writers-item-meta";
+  const stats = writerStats.get(u.id);
+  meta.textContent = [
+    u.role === "qa" ? "QA" : "Writer",
+    stats ? `${stats.sent} post${stats.sent === 1 ? "" : "s"}` : "no posts yet",
+    u.active ? null : "disabled",
+  ].filter(Boolean).join(" \u00b7 ");
+  main.append(name, meta);
+  open.append(avatar, main);
+
+  const actions = document.createElement("div");
+  actions.className = "writers-item-actions";
+
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "btn-ghost";
+  resetBtn.textContent = "Reset password";
+  resetBtn.addEventListener("click", async () => {
+    const next = window.prompt(`New password for ${u.username} (at least 6 characters):`);
+    if (next === null) return;
+    if (next.length < 6) { setWritersStatus("Passwords must be at least 6 characters.", "error"); return; }
+    try {
+      await usersRequest("/api/users/password", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u.username, password: next }),
+      });
+      setWritersStatus(`Password updated for ${u.username}.`, "success");
+    } catch (err) { setWritersStatus(err.message, "error"); }
+  });
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.className = "btn-ghost";
+  toggleBtn.textContent = u.active ? "Disable" : "Enable";
+  const isSelf = state.user && u.username === state.user.username;
+  if (isSelf && u.active) {
+    // The server refuses this too; disabling it here explains why rather than
+    // waiting for an error after the click.
+    toggleBtn.disabled = true;
+    toggleBtn.title = "You cannot disable your own account.";
+  }
+  toggleBtn.addEventListener("click", async () => {
+    /* Disabling has no visible consequence on this screen beyond a greyed row,
+       but it locks the person out completely — and a disabled account fails
+       login with "Incorrect username or password", so from their side it looks
+       like a broken password, not a switched-off account. That already
+       happened once in production. Confirm before doing it; enabling needs no
+       confirmation because it cannot lock anyone out. */
+    if (u.active) {
+      const ok = await confirmAction({
+        title: `Disable ${u.displayName || u.username}?`,
+        body: "They will be signed out immediately and will not be able to log in. Sign-in will tell them the password is wrong, so let them know.",
+        facts: ["Their posts stay exactly as they are", "You can re-enable them at any time"],
+        confirmLabel: "Disable",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    try {
+      await usersRequest("/api/users/active", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u.username, active: !u.active }),
+      });
+      setWritersStatus(`${u.username} ${u.active ? "disabled" : "enabled"}.`, "success");
+      loadWriters();
+    } catch (err) { setWritersStatus(err.message, "error"); }
+  });
+
+  actions.append(resetBtn, toggleBtn);
+  li.append(open, actions);
+  return li;
+}
+
+function initialsOf(name) {
+  const parts = String(name || "?").split(/\s+/).filter(Boolean).slice(0, 2);
+  return parts.map((w) => w[0].toUpperCase()).join("") || "?";
+}
+
+/* Everything one writer has produced. Reuses the list endpoint's existing
+   ?user= filter - QA may narrow to any author, a writer is pinned to their
+   own - so this needed no new server route. */
+async function openWriter(u) {
+  selectedWriterId = u.id;
+  document.querySelectorAll(".writers-item").forEach((el) => {
+    el.classList.toggle("is-selected", el.dataset.userId === u.id);
+  });
+
+  const emptyEl = document.getElementById("writer-detail-empty");
+  const bodyEl = document.getElementById("writer-detail-body");
+  const listEl = document.getElementById("writer-posts");
+  if (!bodyEl || !listEl) return;
+  if (emptyEl) emptyEl.hidden = true;
+  bodyEl.hidden = false;
+
+  document.getElementById("writer-detail-name").textContent = u.displayName || u.username;
+  const stats = writerStats.get(u.id);
+  document.getElementById("writer-detail-meta").textContent = [
+    u.username,
+    u.role === "qa" ? "QA" : "Writer",
+    stats ? `${stats.approved} approved \u00b7 ${stats.pending} pending` : "no posts yet",
+  ].join(" \u00b7 ");
+
+  listEl.textContent = "";
+  const loading = document.createElement("li");
+  loading.className = "writer-posts-empty";
+  loading.textContent = "Loading...";
+  listEl.appendChild(loading);
+
+  try {
+    const res = await fetch(`/api/pix?limit=100&user=${encodeURIComponent(u.id)}`, { credentials: "same-origin" });
+    if (res.status === 401) return handleSignedOut();
+    const payload = await res.json().catch(() => ({}));
+    listEl.textContent = "";
+    const posts = payload.posts || [];
+    if (!posts.length) {
+      const none = document.createElement("li");
+      none.className = "writer-posts-empty";
+      none.textContent = `${u.displayName || u.username} has not written anything yet.`;
+      listEl.appendChild(none);
+      return;
+    }
+    // renderReviewItem already draws a post row with its thumbnail, status and
+    // Open/Approve/Delete actions - no reason to grow a second one.
+    for (const post of posts) listEl.appendChild(renderReviewItem(post));
+  } catch (err) {
+    listEl.textContent = "";
+    const failed = document.createElement("li");
+    failed.className = "writer-posts-empty";
+    failed.textContent = `Could not load posts: ${err.message}`;
+    listEl.appendChild(failed);
+  }
+}
+
+/* Create the account. This handler was lost when the writers block was
+   rewritten — the form still opened, so the page looked complete, but
+   submitting it did nothing at all. */
+if (writerCreateForm) {
+  writerCreateForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const usernameEl = document.getElementById("writer-username");
+    const passwordEl = document.getElementById("writer-password");
+    const username = (usernameEl?.value || "").trim();
+    const displayName = (document.getElementById("writer-display")?.value || "").trim();
+    const password = passwordEl?.value || "";
+    const role = document.getElementById("writer-role")?.value || "writer";
+
+    if (!username) { setWritersStatus("Give the account a username.", "error"); usernameEl?.focus(); return; }
+    if (password.length < 6) { setWritersStatus("Passwords must be at least 6 characters.", "error"); passwordEl?.focus(); return; }
+
+    const btn = document.getElementById("writer-create-btn");
+    if (btn) btn.disabled = true;
+    setWritersStatus("Creating…");
+    try {
+      const { user } = await usersRequest("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password, role, displayName }),
+      });
+      writerCreateForm.reset();
+      writerCreateForm.hidden = true;
+      setWritersStatus(
+        `Created ${user.username}. Pass on the password you just set — it is stored hashed and cannot be read back.`,
+        "success",
+      );
+      await loadWriters();
+    } catch (err) {
+      setWritersStatus(err.message, "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+}
+
+document.getElementById("writers-add-toggle")?.addEventListener("click", () => {
+  const form = document.getElementById("writer-create-form");
+  if (!form) return;
+  form.hidden = !form.hidden;
+  if (!form.hidden) document.getElementById("writer-username")?.focus();
+});
+
+document.getElementById("writers-refresh")?.addEventListener("click", () => loadWriters());
+
+/* ── Section (category + state) ──────────────────────────────────────
+   The writer files the story while they build it: they have the context, and
+   QA would otherwise be guessing at review time. QA can still change it at
+   publish — this is the starting point, not a lock.
+
+   The one hard rule comes from DailyMattr: the "State" category REQUIRES a
+   state. Matched by NAME against their live list rather than by a hard-coded
+   id, so it survives them renumbering. Enforced on the server too — this is
+   the early, friendly half. */
+const postCategorySelect = document.getElementById("post-category");
+const postStateSelect = document.getElementById("post-state");
+const postSectionHint = document.getElementById("post-section-hint");
+
+let stateCategoryId = null;   // the id of the category literally named "State"
+/* Shared with the analytics category filter, which lists the same sections. */
+let sectionCategories = [];
+
+function stateIsRequired(categoryId) {
+  return Boolean(stateCategoryId) && String(categoryId || "") === String(stateCategoryId);
+}
+
+/* Show the rule before it bites, rather than letting a publish fail on it. */
+function syncSectionHint() {
+  if (!postSectionHint) return;
+  const needsState = stateIsRequired(state.categoryId);
+  const field = document.getElementById("post-state-field");
+  if (field) field.classList.toggle("is-required", needsState);
+  if (needsState && !state.stateId) {
+    postSectionHint.textContent = "The State category needs a state — pick one.";
+    postSectionHint.className = "helper-text is-warning";
+  } else {
+    postSectionHint.textContent = "Where this story is filed on the web app.";
+    postSectionHint.className = "helper-text";
+  }
+}
+
+function syncSectionInputs() {
+  if (postCategorySelect && postCategorySelect.value !== (state.categoryId || "")) {
+    postCategorySelect.value = state.categoryId || "";
+  }
+  if (postStateSelect && postStateSelect.value !== (state.stateId || "")) {
+    postStateSelect.value = state.stateId || "";
+  }
+
+  /* Mirror into the publish panel, so what the writer filed under is what QA
+     sees rather than "Choose a category". Skipped once QA has picked
+     something themselves — their override wins.
+
+     Setting .value on a <select> whose options have not loaded yet is a silent
+     no-op, which is why loadDailyMattrMeta() and loadSectionOptions() both
+     call back here after populating their lists. */
+  if (dailymattrCategory && !dailymattrDraftTouched.category
+      && dailymattrCategory.value !== (state.categoryId || "")) {
+    dailymattrCategory.value = state.categoryId || "";
+  }
+  if (dailymattrState && !dailymattrDraftTouched.state
+      && dailymattrState.value !== (state.stateId || "")) {
+    dailymattrState.value = state.stateId || "";
+  }
+  syncSectionHint();
+}
+
+/* Editing the section here is the same act as editing it in the publish panel
+   — one value, two places to change it. Both go through syncSectionInputs()
+   so the mirroring and the override guard live in exactly one function; the
+   direct assignment that used to sit here bypassed the guard and could
+   overwrite a choice QA had already made. */
+postCategorySelect?.addEventListener("change", () => {
+  state.categoryId = postCategorySelect.value;
+  // A hand edit here outranks an earlier hand edit in the publish panel: the
+  // guard exists to stop AUTOMATIC syncs clobbering a choice, not to make the
+  // two controls disagree. Clearing it lets this one through.
+  dailymattrDraftTouched.category = false;
+  syncSectionInputs();
+});
+postStateSelect?.addEventListener("change", () => {
+  state.stateId = postStateSelect.value;
+  dailymattrDraftTouched.state = false;
+  syncSectionInputs();
+});
+
+/* Everyone signed in can read the lists — a writer needs them to file a story.
+   Publishing remains QA-only on the server. */
+async function loadSectionOptions() {
+  if (!postCategorySelect || !state.user) return;
+  try {
+    const res = await fetch(DAILYMATTR_META_ENDPOINT, { credentials: "same-origin" });
+    if (!res.ok) return;
+    const payload = await res.json();
+    const categories = payload.categories || [];
+    const states = payload.states || [];
+    const stateCat = categories.find((c) => /^state$/i.test(String(c.name).trim()));
+    stateCategoryId = stateCat ? String(stateCat.id) : null;
+    fillSelectOptions(postCategorySelect, categories, "Choose a category");
+    fillSelectOptions(postStateSelect, states, "Optional");
+    syncSectionInputs();
+    // The analytics category filter lists these same sections, by the same ids.
+    sectionCategories = categories;
+    fillCategoryOptions(categories);
+  } catch { /* the picker is a convenience; the publish panel still works */ }
+}
+
+/* Source link — the writer can type it, not only inherit it from a scrape.
+
+   state.sourceUrl had exactly one writer before this: runScrape(). A
+   hand-written post could never record where it came from, and reopening a
+   saved post showed no trace of the stored link.
+
+   Two ordering traps, both of which cost the value silently:
+     - startNewPix() clears state.sourceUrl, and it runs INSIDE the "Build
+       Poster" handler, so this listener must own the field afterwards rather
+       than the handler reading it before.
+     - loadPixIntoEditor() restores state but refills only the headline and
+       paragraph inputs, so the box has to be refilled explicitly or it looks
+       empty over a post that has one. */
+const sourceUrlEdit = document.getElementById("source-url-edit");
+if (sourceUrlEdit) {
+  sourceUrlEdit.addEventListener("input", () => {
+    state.sourceUrl = sourceUrlEdit.value.trim();
+  });
+}
+
+/* Keep the box and the state in step wherever either changes. */
+function syncSourceUrlInput() {
+  if (sourceUrlEdit && sourceUrlEdit.value.trim() !== (state.sourceUrl || "")) {
+    sourceUrlEdit.value = state.sourceUrl || "";
+  }
+}
+
+/* Search is a server round-trip, so it is debounced — every keystroke firing a
+   query would put the list into a race where an early, slower response lands
+   after a later one and overwrites it with stale rows. */
+const reviewSearchInput = document.getElementById("review-search");
+if (reviewSearchInput) {
+  let searchTimer = null;
+  reviewSearchInput.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadReviewQueue(), 300);
+  });
+  // Enter searches immediately rather than waiting out the debounce.
+  reviewSearchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); clearTimeout(searchTimer); loadReviewQueue(); }
+  });
+}
+
 async function loadReviewQueue() {
   if (!reviewList || !state.user) return;
   setReviewStatus("Loading…");
   reviewList.innerHTML = "";
 
   const params = new URLSearchParams({ limit: "100" });
+  // `status` rather than `approved`: the queue has three states now, and a
+  // boolean cannot say "rejected".
   if (reviewFilter !== "all") params.set("status", reviewFilter);
+  const term = (reviewSearchInput?.value || "").trim();
+  if (term) params.set("q", term);
 
   try {
     const response = await fetch(`/api/pix?${params}`, { credentials: "same-origin" });
@@ -6143,7 +8080,17 @@ async function setPostVerdict(post, verdict, button) {
 }
 
 async function deleteReviewPost(post, itemEl) {
-  if (!window.confirm(`Delete "${post.headline || "this post"}" permanently?`)) return;
+  const ok = await confirmAction({
+    title: "Delete this post?",
+    body: `"${post.headline || "Untitled post"}" will be removed from the library for everyone. This cannot be undone.`,
+    facts: [
+      `Written by ${post.user_name || "unknown"}`,
+      post.approved ? "It is currently approved" : "It is still pending",
+    ],
+    confirmLabel: "Delete",
+    danger: true,
+  });
+  if (!ok) return;
   try {
     const response = await fetch(`/api/pix?id=${encodeURIComponent(post.id)}`, {
       method: "DELETE",
@@ -6199,6 +8146,9 @@ function pixFingerprint() {
     state.showTimestamp,
     article.headline, (article.bullets || []).join("|"), article.tweet,
     state.videoUrl, state.trimStart, state.trimEnd, state.videoCaption,
+    // Added pages are part of the post, so editing one has to light the
+    // unsaved dot the same way editing page 1 does.
+    JSON.stringify(serializePages()),
   ]);
 }
 
@@ -6230,6 +8180,7 @@ function refreshSaveIndicator() {
 setInterval(() => {
   refreshSaveIndicator();
   syncDailyMattrDraft();
+  syncDailyMattrMediaCount();
 }, 800);
 
 /* ── Uploaded media ─────────────────────────────────────────────────────────
@@ -6296,8 +8247,9 @@ async function ensureMediaUploaded(onProgress = () => {}) {
   // Video: store the trim range, not the source. A 17-minute upload is far
   // over Supabase's per-file limit and nobody wants those minutes back — the
   // clip between start and end is the thing that gets published.
-  const clipKey = videoClipKey();
-  if (clipKey && state.storedVideoFor !== clipKey) {
+  await withPrimaryVideo(async () => {
+    const clipKey = videoClipKey();
+    if (!clipKey || state.storedVideoFor === clipKey) return;
     try {
       let blob = state.renderedClip?.key === clipKey ? state.renderedClip.blob : null;
       if (!blob) {
@@ -6312,7 +8264,7 @@ async function ensureMediaUploaded(onProgress = () => {}) {
     } catch (err) {
       problems.push(`video not stored (${err.message})`);
     }
-  }
+  });
 
   return problems;
 }
@@ -6321,9 +8273,19 @@ async function ensureMediaUploaded(onProgress = () => {}) {
    that changes the pixels. Same key means the stored clip is still correct,
    so Save neither re-encodes nor re-uploads. Null when there is no video. */
 function videoClipKey() {
+  /* storedVideoUrl is the third source and it used to be missing, which is
+     why reopened posts published their images and no video.
+
+     A video added by UPLOAD has no source URL — sourceKind "file", and the
+     File object itself does not survive a reload. So on reopening such a post
+     videoFile is null and videoUrl is "", both earlier branches fell through,
+     and this returned null. resolvePublishClip() bails immediately on a null
+     key, so the clip was skipped silently — even though the trimmed copy was
+     sitting in our bucket, playing in the preview the whole time. */
   const source = state.videoFile
     ? `file:${state.videoFile.name}:${state.videoFile.size}:${state.videoFile.lastModified}`
-    : (state.videoUrl ? `url:${state.videoUrl}` : "");
+    : (state.videoUrl ? `url:${state.videoUrl}`
+      : (state.storedVideoUrl ? `stored:${state.storedVideoUrl}` : ""));
   if (!source) return null;
   if (!(state.trimEnd > state.trimStart)) return null;
   return [
@@ -6377,6 +8339,12 @@ function restoreStoredVideo(video) {
         state.trimEnd = end;
       }
     }
+    // The bucket copy IS the current clip until somebody edits the trim,
+    // caption or framing. Stamping its key here lets the publish path reuse
+    // those bytes instead of re-encoding from state.videoUrl — which points at
+    // the ORIGINAL source (a YouTube link or an expiring signed URL) and is
+    // frequently gone, or needs yt-dlp all over again, by the time QA publishes.
+    state.storedVideoFor = videoClipKey();
     if (typeof syncTrimUI === "function") syncTrimUI();
     if (videoEditor) videoEditor.hidden = false;
     renderPoster();

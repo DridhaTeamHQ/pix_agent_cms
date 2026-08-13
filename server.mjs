@@ -12,11 +12,15 @@ import Busboy from "busboy";
 import {
   suggestRegister, registerRules, assessTone, rectifyInstruction,
 } from "./lib/editorial-tone.js";
-import { configureDb, isConfigured as dbConfigured, ping as dbPing } from "./lib/db.js";
+import {
+  configureDb, isConfigured as dbConfigured, ping as dbPing,
+  getPix, setApproval,
+} from "./lib/db.js";
 import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
   login, logout, sessionUser, purgeExpiredSessions,
   throttleCheck, throttleRecordFailure, throttleClear,
+  ROLES, createUser, listUsers, setPassword, setUserActive, normaliseUsername,
 } from "./lib/auth.js";
 import { handlePixRequest } from "./lib/pix-api.js";
 import { handlePixAnalyticsRequest } from "./lib/pix-analytics.js";
@@ -26,6 +30,9 @@ import {
 import {
   fetchDailyMattrMeta, getDailyMattrConfig, publishDailyMattrBuzzContent,
 } from "./lib/dailymattr.js";
+import {
+  ScrapeValidationError, fetchPublicHtml, fetchPublicImage, parseScrapeArticleResult, parseScrapeRequest,
+} from "./lib/scrape-security.js";
 
 const root = join(process.cwd(), "public");
 const port = Number(process.env.PORT || 3000);
@@ -335,6 +342,11 @@ const server = http.createServer(async (req, res) => {
   // Matched on the path alone — the analytics filters ride in the query string.
   if (req.method === "GET" && req.url?.split("?")[0] === "/api/pix-analytics") {
     await handlePixAnalytics(req, res);
+    return;
+  }
+
+  if (req.url?.startsWith("/api/users")) {
+    await handleUsers(req, res);
     return;
   }
 
@@ -1258,20 +1270,62 @@ async function handlePix(req, res) {
    The browser sends exported slide PNGs here; this server adds the external
    credentials and forwards the publish request so the API key never reaches
    the client. */
+/* Which categories QA may publish into, and in what order.
+
+   DailyMattr offers 12; Shortly uses a subset, and the dropdown reads better
+   in editorial priority than in whatever order their API returns. The names
+   here are matched case-insensitively against their list and the IDs always
+   come from them — we never hard-code an ID, so if they renumber anything
+   this keeps working.
+
+   A name we ask for that they do not offer is skipped with a warning rather
+   than guessed at: sending an invented category_id would file the story under
+   the wrong section, which is worse than not offering it.
+
+   Override with DAILYMATTR_CATEGORIES="Entertainment,Technology,…", or set it
+   empty to show everything they offer. */
+const DAILYMATTR_CATEGORY_ORDER = (
+  env("DAILYMATTR_CATEGORIES") ||
+  "Entertainment,Technology,Lifestyle,State,International,National,Finance,Sports"
+).split(",").map((s) => s.trim()).filter(Boolean);
+
+let warnedMissingCategories = false;
+
+function applyCategoryPolicy(categories) {
+  if (!DAILYMATTR_CATEGORY_ORDER.length) return categories;
+
+  const byName = new Map(categories.map((c) => [String(c.name).trim().toLowerCase(), c]));
+  const kept = [];
+  const missing = [];
+  for (const name of DAILYMATTR_CATEGORY_ORDER) {
+    const hit = byName.get(name.toLowerCase());
+    if (hit) kept.push(hit);
+    else missing.push(name);
+  }
+
+  if (missing.length && !warnedMissingCategories) {
+    warnedMissingCategories = true;
+    console.warn(`⚠ DailyMattr does not offer: ${missing.join(", ")} — not shown to QA. Ask them to add it, or drop it from DAILYMATTR_CATEGORIES.`);
+  }
+  // Never hand QA an empty dropdown; if nothing matched, their names have
+  // changed and showing all of them beats showing none.
+  return kept.length ? kept : categories;
+}
+
 async function handleDailyMattrMeta(req, res) {
   const user = await currentUser(req);
   if (!user) {
     sendJson(res, 401, { error: "Sign in to use the DailyMattr integration." });
     return;
   }
-  if (user.role !== "qa") {
-    sendJson(res, 403, { error: "Only QA can publish to DailyMattr." });
-    return;
-  }
+  /* Readable by writers as well as QA. Writers now choose the section their
+     story belongs in while they build it — they have the context, QA would be
+     guessing at review time — and to offer that choice they need the list.
+     Publishing stays QA-only; this is reference data, not an action. */
 
   try {
     const meta = await fetchDailyMattrMeta(dailyMattrConfig());
-    sendJson(res, 200, meta);
+    sendJson(res, 200, { ...meta, categories: applyCategoryPolicy(meta.categories) });
   } catch (err) {
     console.warn("⚠ DailyMattr meta failed:", err.message);
     sendJson(res, 502, { error: err.message || "Could not load DailyMattr options." });
@@ -1283,6 +1337,100 @@ async function handleDailyMattrMeta(req, res) {
 // us their own per-file limit yet — if they reject a large clip, lower this
 // rather than assuming the encode failed.
 const MAX_DAILYMATTR_MEDIA_BYTES = Number(env("MAX_DAILYMATTR_MEDIA_BYTES") || 0) || 64 * 1024 * 1024;
+
+/* Shrink a clip so DailyMattr will take it, without a visible quality drop.
+
+   We publish H.264 at CRF 20 with preset veryfast, which for a 31s 1080x1996
+   clip came to 12.58 MB — accepted by their API with success:true and then
+   not stored. Their per-file limit is undocumented; 10 MB is the usual one.
+
+   The technique is capped CRF: -crf drives quality as normal while
+   -maxrate/-bufsize impose a ceiling the encoder cannot cross. Easy footage
+   stays governed by CRF and comes out well under the cap; difficult footage
+   hits the cap instead of ballooning. One pass, so no doubling of encode time.
+
+   Measured on that exact 12.58 MB clip, targeting 9 MB:
+     7.54 MB, SSIM 0.9935, PSNR 43.84 dB  (>40 dB is the usual
+     visually-lossless threshold, and this is a second-generation encode, so
+     the real figure from source is better)
+   A 90s clip — the longest we allow — came out at 7.67 MB against the same
+   ceiling, so the bound holds at the worst case, not just the average.
+
+   Set DAILYMATTR_TARGET_VIDEO_MB=0 to disable. */
+// Mirrors the one in lib/pix-api.js; validating here keeps a malformed id
+// from ever reaching a query.
+const PIX_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const DAILYMATTR_TARGET_VIDEO_BYTES =
+  Math.round(Number(env("DAILYMATTR_TARGET_VIDEO_MB") || 9) * 1024 * 1024);
+const COMPRESS_CRF = String(env("DAILYMATTR_VIDEO_CRF") || 23);
+const COMPRESS_TIMEOUT_MS = 600_000;
+const COMPRESS_AUDIO_BPS = 128_000;
+
+async function compressForDailyMattr(file) {
+  if (DAILYMATTR_TARGET_VIDEO_BYTES <= 0) return file;
+  if (!/^video\//i.test(file.contentType || "")) return file;
+  if (file.buffer.length <= DAILYMATTR_TARGET_VIDEO_BYTES) return file;
+
+  const job = randomUUID().replace(/-/g, "");
+  const dir = join(tmpdir(), `pix-compress-${job}`);
+  mkdirSync(dir, { recursive: true });
+  const inPath = join(dir, "in.mp4");
+  const outPath = join(dir, "out.mp4");
+
+  try {
+    writeFileSync(inPath, file.buffer);
+
+    const probe = await run("ffprobe", [
+      "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", inPath,
+    ], 30_000);
+    const duration = Number(probe.stdout.toString("utf-8").trim());
+    if (!Number.isFinite(duration) || duration <= 0) {
+      console.warn("⚠ could not read clip duration — sending it uncompressed");
+      return file;
+    }
+
+    // 0.92 leaves headroom for container overhead and rate-control overshoot;
+    // without it the result lands slightly OVER the number we promised.
+    const budgetBps = (DAILYMATTR_TARGET_VIDEO_BYTES * 8 * 0.92) / duration;
+    const maxrate = Math.max(200_000, Math.round(budgetBps - COMPRESS_AUDIO_BPS));
+
+    const t0 = Date.now();
+    const enc = await run("ffmpeg", [
+      "-hide_banner", "-loglevel", "error", "-y", "-i", inPath,
+      "-c:v", "libx264", "-preset", "slow", "-crf", COMPRESS_CRF,
+      "-maxrate", String(maxrate), "-bufsize", String(maxrate * 2),
+      "-c:a", "aac", "-b:a", "128k",
+      "-pix_fmt", "yuv420p",      // required for Safari / iOS playback
+      "-movflags", "+faststart",  // metadata up front so it streams
+      outPath,
+    ], COMPRESS_TIMEOUT_MS);
+
+    if (enc.code !== 0 || !existsSync(outPath)) {
+      console.warn(`⚠ compression failed, sending the original: ${enc.stderr.toString("utf-8").slice(-200)}`);
+      return file;
+    }
+
+    const shrunk = readFileSync(outPath);
+    // A "smaller" file that grew is not smaller. Never ship the worse one.
+    if (!shrunk.length || shrunk.length >= file.buffer.length) {
+      console.warn("⚠ compression did not reduce the file — sending the original");
+      return file;
+    }
+
+    const mb = (n) => (n / 1048576).toFixed(2);
+    console.log(
+      `✓ compressed ${file.fieldName}: ${mb(file.buffer.length)} MB → ${mb(shrunk.length)} MB ` +
+      `(${duration.toFixed(1)}s, crf ${COMPRESS_CRF}, maxrate ${Math.round(maxrate / 1000)}k, ${Date.now() - t0}ms)`,
+    );
+    return { ...file, buffer: shrunk };
+  } catch (err) {
+    console.warn(`⚠ compression error, sending the original: ${err.message}`);
+    return file;
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* temp dir */ }
+  }
+}
 
 async function handleDailyMattrPublish(req, res) {
   const user = await currentUser(req);
@@ -1316,14 +1464,100 @@ async function handleDailyMattrPublish(req, res) {
     return;
   }
   if (!payload.files.length) {
-    sendJson(res, 400, { error: "At least one slide image is required." });
+    sendJson(res, 400, { error: "At least one media file is required." });
+    return;
+  }
+
+  /* DailyMattr requires a state whenever the category is "State" — a regional
+     story filed against no region is rejected at their end. Checked here so it
+     fails before the video encode and the upload rather than after several
+     megabytes have gone over the wire, and matched by NAME against their live
+     list so it survives them renumbering the category. */
+  try {
+    const meta = await fetchDailyMattrMeta(dailyMattrConfig());
+    const stateCategory = (meta.categories || []).find((c) => /^state$/i.test(String(c.name).trim()));
+    if (stateCategory && String(payload.categoryId) === String(stateCategory.id) && !payload.stateId) {
+      sendJson(res, 400, { error: "The State category needs a state. Choose one before publishing." });
+      return;
+    }
+  } catch (err) {
+    // Their lookup being unreachable must not block a publish that would
+    // otherwise succeed — DailyMattr will still enforce its own rule.
+    console.warn("⚠ could not check the State rule, continuing:", err.message);
+  }
+  const mediaValidationError = validateDailyMattrMedia(payload.files);
+  if (mediaValidationError) {
+    sendJson(res, 400, { error: mediaValidationError });
     return;
   }
 
   try {
+    // Applies to every video part whatever its origin — a freshly rendered
+    // clip, the stored copy from our bucket, or a file QA attached by hand.
+    payload.files = await Promise.all(payload.files.map(compressForDailyMattr));
+
+    /* Log what actually goes out, per file. "3 files" alone cannot answer the
+       only question that matters when something is missing at the other end —
+       WHICH file, and was it a video? Without the type and size here there is
+       no way to tell "we never attached the clip" from "we sent it and
+       DailyMattr dropped it". */
+    const manifest = payload.files
+      .map((f) => `${f.fieldName}=${f.contentType} ${(f.buffer.length / 1048576).toFixed(2)}MB "${f.filename}"`)
+      .join(", ");
+    const videoCount = payload.files.filter((f) => /^video\//i.test(f.contentType || "")).length;
+    console.log(
+      `→ DailyMattr publish by ${user.username}: ${payload.files.length} file(s), ${videoCount} video — ${manifest}`,
+    );
+
     const result = await publishDailyMattrBuzzContent(payload, dailyMattrConfig());
-    console.log(`✓ DailyMattr publish by ${user.username} (${payload.files.length} file${payload.files.length === 1 ? "" : "s"})`);
-    sendJson(res, 200, result);
+
+    // Their response is the only record of what they accepted. Log it whole:
+    // a 200 that quietly stored fewer items than we sent is exactly the
+    // failure we are chasing, and it is invisible without this.
+    // 600 chars cut off before the interesting part — their content_en echo
+    // alone eats most of it, and any media list they return comes after.
+    console.log(`✓ DailyMattr accepted (id=${result.publishedId ?? "none"}): ${JSON.stringify(result.response).slice(0, 4000)}`);
+
+    /* Publishing IS approval — QA would otherwise have to remember a second
+       click for a decision they have already made by sending the story live.
+
+       Deliberately outside the try/catch above, in its own guard. The
+       DailyMattr publish has already happened and cannot be undone; if an
+       approval write threw and bubbled into that catch, QA would see a 502,
+       assume nothing was sent, and publish again — posting the story to the
+       live site twice. A failed approval must cost a checkbox, never a
+       duplicate.
+
+       Only approves a post that is not already approved, so re-publishing
+       does not rewrite the original approver's name or reset approved_at
+       (which would skew the approval-time figures on the analytics screen). */
+    let approval = null;
+    if (payload.pixId) {
+      try {
+        const current = await getPix(payload.pixId);
+        if (!current) {
+          approval = { ok: false, reason: "post not found" };
+        } else if (current.approved) {
+          approval = { ok: true, alreadyApproved: true };
+        } else {
+          const row = await setApproval(payload.pixId, {
+            approved: true,
+            byId: user.id,
+            byName: user.displayName || user.username,
+          });
+          approval = row ? { ok: true, approvedAt: row.approved_at } : { ok: false, reason: "post not found" };
+          if (row) console.log(`✓ auto-approved ${payload.pixId} on publish by ${user.username}`);
+        }
+      } catch (err) {
+        console.warn(`⚠ published but could not auto-approve ${payload.pixId}: ${err.message}`);
+        approval = { ok: false, reason: err.message };
+      }
+    } else {
+      // Unsaved poster: nothing in the library to mark.
+      approval = { ok: false, reason: "post not saved" };
+    }
+
+    sendJson(res, 200, { ...result, approval });
   } catch (err) {
     console.warn("⚠ DailyMattr publish failed:", err.message);
     sendJson(res, 502, { error: err.message || "Could not publish to DailyMattr." });
@@ -1336,7 +1570,7 @@ function readDailyMattrPublish(req) {
     try {
       bb = Busboy({
         headers: req.headers,
-        limits: { files: 4, fileSize: MAX_DAILYMATTR_MEDIA_BYTES, fields: 12 },
+        limits: { files: 5, fileSize: MAX_DAILYMATTR_MEDIA_BYTES, fields: 12 },
       });
     } catch (err) {
       reject(new Error("Malformed upload: " + err.message));
@@ -1346,13 +1580,17 @@ function readDailyMattrPublish(req) {
     const fields = {};
     const files = [];
     let tooBig = false;
+    let tooMany = false;
+    let invalidMediaField = false;
 
     bb.on("field", (name, value) => {
       fields[name] = String(value || "").trim();
     });
 
     bb.on("file", (name, stream, info) => {
-      if (!/^media_page_\d+$/i.test(name)) {
+      const pageMatch = /^media_page_([1-5])$/i.exec(name);
+      if (!pageMatch) {
+        if (/^media_page_/i.test(name)) invalidMediaField = true;
         stream.resume();
         return;
       }
@@ -1365,6 +1603,7 @@ function readDailyMattrPublish(req) {
         if (!buffer.length) return;
         files.push({
           fieldName: name,
+          page: Number(pageMatch[1]),
           filename: info.filename || `${name}${extensionFor(info.mimeType, info.filename)}`,
           contentType: info.mimeType || "application/octet-stream",
           buffer,
@@ -1372,10 +1611,19 @@ function readDailyMattrPublish(req) {
       });
     });
 
+    bb.on("filesLimit", () => { tooMany = true; });
     bb.on("error", reject);
     bb.on("close", () => {
       if (tooBig) {
         reject(new Error(`A DailyMattr media file exceeds the ${Math.round(MAX_DAILYMATTR_MEDIA_BYTES / 1048576)} MB limit.`));
+        return;
+      }
+      if (tooMany) {
+        reject(new Error("A maximum of five media files can be published."));
+        return;
+      }
+      if (invalidMediaField) {
+        reject(new Error("Media fields must be media_page_1 through media_page_5."));
         return;
       }
       resolve({
@@ -1383,12 +1631,147 @@ function readDailyMattrPublish(req) {
         categoryId: fields.category_id || "",
         keywords: fields.keywords || "",
         stateId: fields.state_id || "",
-        files,
+        // Which library row this poster came from, so publishing can approve
+        // it. Empty when QA built the poster without ever saving it.
+        pixId: PIX_UUID_RE.test(String(fields.pix_id || "")) ? String(fields.pix_id) : "",
+        files: files.sort((a, b) => a.page - b.page),
       });
     });
 
     req.pipe(bb);
   });
+}
+
+function validateDailyMattrMedia(files) {
+  if (files.length > 5) return "A maximum of five media files can be published.";
+
+  const pages = files.map((file) => file.page);
+  if (new Set(pages).size !== pages.length) return "Each media output can only be supplied once.";
+
+  const kindOf = (file) => {
+    const type = String(file.contentType || "").toLowerCase();
+    if (/^image\/(jpeg|png|webp)$/.test(type)) return "image";
+    if (/^video\/(mp4|quicktime)$/.test(type)) return "video";
+    return "unsupported";
+  };
+  const kinds = files.map(kindOf);
+  if (kinds.includes("unsupported")) return "Media must be JPG, PNG, WEBP, MP4 or MOV.";
+  return "";
+}
+
+/* ═══════════════════════ Writer accounts (QA only) ═══════════════════════
+
+   Accounts could previously only be made by running `npm run users:seed`,
+   which creates a fixed roster of six and nothing else — there was no way to
+   add a seventh writer without shell access to the server. QA manages the
+   team, so QA gets the screen.
+
+   Deliberately narrow: create, reset a password, enable/disable. No delete —
+   user_login_id on pix_posts is a bare text column with no foreign key, so
+   removing a row would leave every post that writer produced pointing at an
+   id that resolves to nobody. Disabling keeps the audit trail. */
+async function handleUsers(req, res) {
+  const user = await currentUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Sign in to manage accounts." });
+    return;
+  }
+  if (user.role !== "qa") {
+    sendJson(res, 403, { error: "Only QA can manage accounts." });
+    return;
+  }
+  if (!dbConfigured()) {
+    sendJson(res, 503, { error: "The database is not configured." });
+    return;
+  }
+
+  const parsed = new URL(req.url, `http://localhost:${port}`);
+  const path = parsed.pathname.replace(/\/+$/, "");
+
+  try {
+    if (req.method === "GET" && path === "/api/users") {
+      const rows = await listUsers();
+      sendJson(res, 200, {
+        users: rows.map((r) => ({
+          id: r.id,
+          username: r.username,
+          role: r.role,
+          displayName: r.display_name,
+          active: r.active,
+          createdAt: r.created_at,
+          lastLoginAt: r.last_login_at,
+        })),
+      });
+      return;
+    }
+
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed." });
+      return;
+    }
+
+    const body = await readJson(req, { limit: 10_000 });
+
+    if (path === "/api/users") {
+      const username = normaliseUsername(body?.username);
+      const password = String(body?.password || "");
+      const role = String(body?.role || "writer");
+      const displayName = String(body?.displayName || "").trim() || null;
+
+      if (!username) { sendJson(res, 400, { error: "A username is required." }); return; }
+      if (!ROLES.includes(role)) { sendJson(res, 400, { error: `Role must be one of: ${ROLES.join(", ")}` }); return; }
+      if (password.length < 6) { sendJson(res, 400, { error: "Passwords must be at least 6 characters." }); return; }
+
+      try {
+        const created = await createUser({ username, password, role, displayName });
+        console.log(`✓ ${user.username} created ${role} account "${created.username}"`);
+        sendJson(res, 201, {
+          user: {
+            id: created.id, username: created.username, role: created.role,
+            displayName: created.display_name, active: true, createdAt: created.created_at,
+          },
+        });
+      } catch (err) {
+        // The unique constraint is the only thing stopping duplicates, and it
+        // surfaces as a raw Postgres 23505 — translate it before QA sees it.
+        if (err?.code === "23505") sendJson(res, 409, { error: `"${username}" already exists.` });
+        else throw err;
+      }
+      return;
+    }
+
+    if (path === "/api/users/password") {
+      const username = normaliseUsername(body?.username);
+      const password = String(body?.password || "");
+      if (password.length < 6) { sendJson(res, 400, { error: "Passwords must be at least 6 characters." }); return; }
+      const changed = await setPassword(username, password);
+      if (!changed) { sendJson(res, 404, { error: `No account named "${username}".` }); return; }
+      console.log(`✓ ${user.username} reset the password for "${username}"`);
+      sendJson(res, 200, { ok: true, username });
+      return;
+    }
+
+    if (path === "/api/users/active") {
+      const username = normaliseUsername(body?.username);
+      const active = Boolean(body?.active);
+      // Locking yourself out mid-session is the one mistake this screen can
+      // make irreversible from the UI — there would be no QA left to undo it.
+      if (username === normaliseUsername(user.username) && !active) {
+        sendJson(res, 400, { error: "You cannot disable your own account." });
+        return;
+      }
+      const row = await setUserActive(username, active);
+      if (!row) { sendJson(res, 404, { error: `No account named "${username}".` }); return; }
+      console.log(`✓ ${user.username} ${active ? "enabled" : "disabled"} "${username}"`);
+      sendJson(res, 200, { user: { username: row.username, role: row.role, active: row.active } });
+      return;
+    }
+
+    sendJson(res, 404, { error: "Unknown users route." });
+  } catch (err) {
+    console.warn("⚠ user management failed:", err.message);
+    sendJson(res, 500, { error: err.message || "Could not complete that." });
+  }
 }
 
 async function handlePixAnalytics(req, res) {
@@ -1403,7 +1786,9 @@ async function currentUser(req) {
     const cookies = parseCookies(req.headers.cookie);
     return await sessionUser(cookies[SESSION_COOKIE]);
   } catch (err) {
-    console.warn("⚠ session lookup failed:", err.message);
+    // The caller cannot tell this apart from "not signed in", so the user just
+    // gets bounced to the login screen. Name it in the log as what it is.
+    console.warn(`⚠ session lookup failed (user will appear signed out): ${err.code || "no-code"} ${err.message}`);
     return null;
   }
 }
@@ -1469,7 +1854,9 @@ async function handleLogin(req, res) {
     }));
     sendJson(res, 200, { user: session.user });
   } catch (err) {
-    console.warn("⚠ login failed:", err.message);
+    // Log the code too. "Login is unavailable right now" is all the user gets,
+    // so without this an intermittent failure leaves nothing to diagnose from.
+    console.warn(`⚠ login failed for "${username}": ${err.code || "no-code"} ${err.message}`);
     sendJson(res, 503, { error: "Login is unavailable right now." });
   }
 }
@@ -1815,58 +2202,20 @@ async function tryDuckDuckGoImages(query, max) {
 
 async function handleScrape(req, res) {
   try {
-    const body = await readJson(req);
-    const targetUrl = body?.url;
-
-    if (!targetUrl) {
-      sendJson(res, 400, { error: "A URL is required." });
-      return;
-    }
-
-    const parsedUrl = new URL(targetUrl);
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      sendJson(res, 400, { error: "Only http and https URLs are supported." });
-      return;
-    }
-
-    const response = await fetch(parsedUrl, { headers: { "user-agent": USER_AGENT } });
-    if (!response.ok) {
-      sendJson(res, 502, { error: `Source returned ${response.status}.` });
-      return;
-    }
-
-    const html = await response.text();
-    const candidates = extractItems(html, parsedUrl);
+    const { url: targetUrl } = parseScrapeRequest(await readJson(req, { limit: 10_000 }));
+    const { html, finalUrl } = await fetchPublicHtml(targetUrl, { userAgent: USER_AGENT });
+    const candidates = extractItems(html, new URL(finalUrl));
     const items = await enrichItems(candidates);
     sendJson(res, 200, { items });
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "Scrape failed." });
+    sendScrapeError(res, error, "Scrape failed.");
   }
 }
 
 async function handleScrapeArticle(req, res) {
   try {
-    const body = await readJson(req);
-    const targetUrl = body?.url;
-
-    if (!targetUrl) {
-      sendJson(res, 400, { error: "A URL is required." });
-      return;
-    }
-
-    const parsedUrl = new URL(targetUrl);
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      sendJson(res, 400, { error: "Only http and https URLs are supported." });
-      return;
-    }
-
-    const response = await fetch(parsedUrl, { headers: { "user-agent": USER_AGENT } });
-    if (!response.ok) {
-      sendJson(res, 502, { error: `Source returned ${response.status}.` });
-      return;
-    }
-
-    const html = await response.text();
+    const { url: targetUrl } = parseScrapeRequest(await readJson(req, { limit: 10_000 }));
+    const { html, finalUrl } = await fetchPublicHtml(targetUrl, { userAgent: USER_AGENT });
 
     // Extract title: og:title > twitter:title > <title> tag
     let title = extractMetaContent(html, ["og:title", "twitter:title"]);
@@ -1882,7 +2231,7 @@ async function handleScrapeArticle(req, res) {
     // Extract image: try secure_url first, then og:image, twitter:image
     let image = extractMetaContent(html, ["og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"]);
     if (image) {
-      image = resolveMaybeRelative(image, targetUrl);
+      image = resolveMaybeRelative(image, finalUrl);
       image = upgradeImageToHighestQuality(image);
     }
 
@@ -1899,18 +2248,24 @@ async function handleScrapeArticle(req, res) {
     // DHARMA PRODUCTIONS SEALS" → sports photos for a Bollywood story.
     const imageQuery = await buildImageSearchQuery(title, articleText);
 
-    sendJson(res, 200, {
+    const result = parseScrapeArticleResult({
       title: cleanupText(title),
       image: image || null,
       imageProxy: image ? `/api/image?url=${encodeURIComponent(image)}` : null,
-      sourceUrl: targetUrl,
+      sourceUrl: finalUrl,
       articleText,
       detailText: limitCharacters(articleText || metaDescription || title, TEXT_DETAIL_CHAR_LIMIT),
       imageQuery,
     });
+    sendJson(res, 200, result);
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "Article scrape failed." });
+    sendScrapeError(res, error, "Article scrape failed.");
   }
+}
+
+function sendScrapeError(res, error, fallback) {
+  const status = error instanceof ScrapeValidationError ? error.status : 500;
+  sendJson(res, status, { error: error?.message || fallback });
 }
 
 /* Ask gpt-4o-mini for a 3-6 word image-search query: the names/entities a
@@ -2007,20 +2362,7 @@ async function handleImageProxy(req, res) {
       return;
     }
 
-    const parsed = new URL(target);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      sendJson(res, 400, { error: "Only http and https image URLs are supported." });
-      return;
-    }
-
-    const response = await fetch(parsed, { headers: { "user-agent": USER_AGENT } });
-    if (!response.ok) {
-      sendJson(res, 502, { error: `Image source returned ${response.status}.` });
-      return;
-    }
-
-    const contentType = response.headers.get("content-type") || "application/octet-stream";
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const { buffer, contentType } = await fetchPublicImage(target, { userAgent: USER_AGENT });
     res.writeHead(200, {
       "Content-Type": contentType,
       "Cache-Control": "no-store",
@@ -2028,7 +2370,8 @@ async function handleImageProxy(req, res) {
     });
     res.end(buffer);
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "Image proxy failed." });
+    const status = error instanceof ScrapeValidationError ? error.status : 500;
+    sendJson(res, status, { error: error.message || "Image proxy failed." });
   }
 }
 
@@ -2082,17 +2425,14 @@ async function enrichItems(items) {
   for (const item of items) {
     const next = { ...item };
     try {
-      const response = await fetch(item.url, { headers: { "user-agent": USER_AGENT } });
-      if (response.ok) {
-        const html = await response.text();
-        const metaTitle = extractMetaContent(html, ["og:title", "twitter:title"]);
-        const metaImage = extractMetaContent(html, ["og:image", "twitter:image", "twitter:image:src"]);
-        if (metaTitle && looksLikeHeadline(metaTitle)) {
-          next.title = trimTitle(cleanupText(metaTitle));
-        }
-        if (metaImage) {
-          next.image = resolveMaybeRelative(metaImage, item.url);
-        }
+      const { html, finalUrl } = await fetchPublicHtml(item.url, { userAgent: USER_AGENT });
+      const metaTitle = extractMetaContent(html, ["og:title", "twitter:title"]);
+      const metaImage = extractMetaContent(html, ["og:image", "twitter:image", "twitter:image:src"]);
+      if (metaTitle && looksLikeHeadline(metaTitle)) {
+        next.title = trimTitle(cleanupText(metaTitle));
+      }
+      if (metaImage) {
+        next.image = resolveMaybeRelative(metaImage, finalUrl);
       }
     } catch {
     }
@@ -2295,16 +2635,24 @@ function normalizeUrl(value) {
 function readJson(req, options = {}) {
   const limit = options.limit || 1_000_000;
   return new Promise((resolve, reject) => {
-    let body = "";
+    // Collect Buffers and decode once at the end. Concatenating chunks as
+    // strings decodes each one on its own, so a multi-byte character split
+    // across a chunk boundary comes out as replacement characters — which for
+    // a password with an accent means a correct one is rejected at random.
+    const chunks = [];
+    let size = 0;
     req.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > limit) {
+      size += chunk.length;
+      if (size > limit) {
         reject(new Error("Request body too large."));
         req.destroy();
+        return;
       }
+      chunks.push(chunk);
     });
     req.on("end", () => {
       try {
+        const body = Buffer.concat(chunks).toString("utf8");
         resolve(body ? JSON.parse(body) : {});
       } catch {
         reject(new Error("Invalid JSON body."));
@@ -2920,18 +3268,15 @@ async function handleGenerateArticle(req, res) {
 
     if (!articleText && sourceUrl) {
       try {
-        const r = await fetch(sourceUrl, { headers: { "user-agent": USER_AGENT } });
-        if (r.ok) {
-          const html = await r.text();
-          const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
-          const scope = articleMatch?.[1] || html;
-          articleText = [...scope.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
-            .map((m) => cleanupText(stripTags(m[1] || "")))
-            .filter((t) => t.length >= 50 && t.length <= 500)
-            .filter((t) => !/^(sign up|read more|copyright|follow live|watch:|also read)/i.test(t))
-            .slice(0, 10)
-            .join("\n");
-        }
+        const { html } = await fetchPublicHtml(sourceUrl, { userAgent: USER_AGENT });
+        const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
+        const scope = articleMatch?.[1] || html;
+        articleText = [...scope.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
+          .map((m) => cleanupText(stripTags(m[1] || "")))
+          .filter((t) => t.length >= 50 && t.length <= 500)
+          .filter((t) => !/^(sign up|read more|copyright|follow live|watch:|also read)/i.test(t))
+          .slice(0, 10)
+          .join("\n");
         if (articleText) grounding = "refetch";
       } catch { /* grounding is best-effort */ }
     }

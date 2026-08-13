@@ -3551,9 +3551,12 @@ const STORY = {
 };
 
 function storyHeadingText() {
-  // Falls back to the post's headline so a fresh page is never blank on the
-  // canvas — the writer sees the shape immediately and edits from there.
-  return (state.storyHeading || "").trim() || (state.headline || "").trim();
+  /* No fallback to the post headline. A story page carries whatever is typed
+     on it and nothing else — inheriting the headline put the poster's words
+     on every story slide, which then had to be cleared by hand on each one,
+     and an untouched page looked finished when it was not. Empty means empty:
+     the heading is simply not drawn, and the body moves up to fill the space. */
+  return (state.storyHeading || "").trim();
 }
 
 function storyBodyText() {

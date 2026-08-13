@@ -574,7 +574,7 @@ const DAILYMATTR_EXPORT_LONG_EDGES = [3840, 2560];
 const DAILYMATTR_MAX_MEDIA_BYTES = 64 * 1024 * 1024;
 // DailyMattr accepts five media items per Buzz post, images and video mixed.
 const DAILYMATTR_MAX_MEDIA_ITEMS = 5;
-const dailymattrDraftTouched = { content: false, keywords: false };
+const dailymattrDraftTouched = { content: false, keywords: false, category: false, state: false };
 let dailymattrMetaLoaded = false;
 let analyticsLoadedForRole = "";
 
@@ -5057,6 +5057,8 @@ async function loadDailyMattrMeta({ force = false } = {}) {
 
     fillSelectOptions(dailymattrCategory, payload.categories || [], "Choose a category");
     fillSelectOptions(dailymattrState, payload.states || [], "Optional");
+    // Options exist now, so the saved choice can actually take.
+    syncSectionInputs();
     dailymattrMetaLoaded = true;
     syncDailyMattrDraft();
     setDailyMattrStatus(`DailyMattr ready. ${payload.categories?.length || 0} categories loaded.`, "success");
@@ -5293,6 +5295,23 @@ if (dailymattrContent) {
 }
 if (dailymattrKeywords) {
   dailymattrKeywords.addEventListener("input", () => { dailymattrDraftTouched.keywords = true; });
+}
+/* QA overriding the section is a deliberate act, so it must not be undone by a
+   later sync from the post. Same contract the caption and keywords already
+   use. */
+if (dailymattrCategory) {
+  dailymattrCategory.addEventListener("change", () => {
+    dailymattrDraftTouched.category = true;
+    state.categoryId = dailymattrCategory.value;
+    syncSectionInputs();
+  });
+}
+if (dailymattrState) {
+  dailymattrState.addEventListener("change", () => {
+    dailymattrDraftTouched.state = true;
+    state.stateId = dailymattrState.value;
+    syncSectionInputs();
+  });
 }
 dailymattrMediaInputs.forEach((item) => {
   item.input?.addEventListener("change", () => {
@@ -5608,6 +5627,8 @@ function startNewPix() {
   state.sourceImageUrl = null;
   dailymattrDraftTouched.content = false;
   dailymattrDraftTouched.keywords = false;
+  dailymattrDraftTouched.category = false;
+  dailymattrDraftTouched.state = false;
   resetDailyMattrExtraMedia();
   syncDailyMattrDraft({ force: true });
 }
@@ -5904,6 +5925,8 @@ async function loadPixIntoEditor(post) {
   state.ready = true;
   dailymattrDraftTouched.content = false;
   dailymattrDraftTouched.keywords = false;
+  dailymattrDraftTouched.category = false;
+  dailymattrDraftTouched.state = false;
 
   applyDesignSnapshot(design, post);
   syncDailyMattrDraft({ force: true });
@@ -6380,23 +6403,42 @@ function syncSectionInputs() {
   if (postStateSelect && postStateSelect.value !== (state.stateId || "")) {
     postStateSelect.value = state.stateId || "";
   }
+
+  /* Mirror into the publish panel, so what the writer filed under is what QA
+     sees rather than "Choose a category". Skipped once QA has picked
+     something themselves — their override wins.
+
+     Setting .value on a <select> whose options have not loaded yet is a silent
+     no-op, which is why loadDailyMattrMeta() and loadSectionOptions() both
+     call back here after populating their lists. */
+  if (dailymattrCategory && !dailymattrDraftTouched.category
+      && dailymattrCategory.value !== (state.categoryId || "")) {
+    dailymattrCategory.value = state.categoryId || "";
+  }
+  if (dailymattrState && !dailymattrDraftTouched.state
+      && dailymattrState.value !== (state.stateId || "")) {
+    dailymattrState.value = state.stateId || "";
+  }
   syncSectionHint();
 }
 
+/* Editing the section here is the same act as editing it in the publish panel
+   — one value, two places to change it. Both go through syncSectionInputs()
+   so the mirroring and the override guard live in exactly one function; the
+   direct assignment that used to sit here bypassed the guard and could
+   overwrite a choice QA had already made. */
 postCategorySelect?.addEventListener("change", () => {
   state.categoryId = postCategorySelect.value;
-  syncSectionHint();
-  // Mirror into the publish panel so QA sees what the writer chose.
-  if (dailymattrCategory && dailymattrCategory.value !== state.categoryId) {
-    dailymattrCategory.value = state.categoryId;
-  }
+  // A hand edit here outranks an earlier hand edit in the publish panel: the
+  // guard exists to stop AUTOMATIC syncs clobbering a choice, not to make the
+  // two controls disagree. Clearing it lets this one through.
+  dailymattrDraftTouched.category = false;
+  syncSectionInputs();
 });
 postStateSelect?.addEventListener("change", () => {
   state.stateId = postStateSelect.value;
-  syncSectionHint();
-  if (dailymattrState && dailymattrState.value !== state.stateId) {
-    dailymattrState.value = state.stateId;
-  }
+  dailymattrDraftTouched.state = false;
+  syncSectionInputs();
 });
 
 /* Everyone signed in can read the lists — a writer needs them to file a story.

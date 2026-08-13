@@ -6148,18 +6148,25 @@ async function publishToDailyMattr() {
      showing exactly what is about to go. */
   const catLabel = dailymattrCategory?.selectedOptions?.[0]?.textContent || "none";
   const stLabel = dailymattrState?.value ? (dailymattrState.selectedOptions?.[0]?.textContent || "") : "";
+  /* Read the clip off the video page, not off live state: the video moved
+     onto its own page, so `state.video*` only holds it while that page is
+     the selected one — and QA confirms this dialog from page 1. */
+  const clip = primaryVideoContent();
   const hasVideo = Boolean(
-    state.videoEl && state.videoEl.readyState >= 2 && state.videoEl.videoWidth > 0 && state.trimEnd > state.trimStart
-  ) || Boolean(state.storedVideoUrl);
+    clip.videoEl && clip.videoEl.readyState >= 2 && clip.videoEl.videoWidth > 0 && clip.trimEnd > clip.trimStart
+  ) || Boolean(clip.storedVideoUrl);
   const extraCount = dailyMattrExtraFiles().length;
-  const pageCount = 1 + ((state.detailText || "").trim() ? 1 : 0) + (hasVideo ? 1 : 0) + extraCount;
+  // Media items being published, not pages in the rail — publish sends the
+  // poster, the text slide and one clip. Named apart from pageCount() so it
+  // does not shadow it.
+  const mediaCount = 1 + ((state.detailText || "").trim() ? 1 : 0) + (hasVideo ? 1 : 0) + extraCount;
 
   const go = await confirmAction({
     title: "Publish to DailyMattr?",
     body: "This goes live on shortlyindia.com straight away. It cannot be undone from here — a mistake has to be removed from their portal by hand.",
     facts: [
       `Category: ${catLabel}${stLabel ? ` \u00b7 ${stLabel}` : ""}`,
-      `${pageCount} media item${pageCount === 1 ? "" : "s"}${hasVideo ? ", including the video" : ""}`,
+      `${mediaCount} media item${mediaCount === 1 ? "" : "s"}${hasVideo ? ", including the video" : ""}`,
       state.pixId ? "The post will be marked approved" : "Not saved yet, so it will not be marked approved",
     ],
     confirmLabel: "Publish now",

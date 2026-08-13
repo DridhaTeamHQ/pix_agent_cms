@@ -332,7 +332,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && req.url === "/api/pix-analytics") {
+  // Matched on the path alone — the analytics filters ride in the query string.
+  if (req.method === "GET" && req.url?.split("?")[0] === "/api/pix-analytics") {
     await handlePixAnalytics(req, res);
     return;
   }
@@ -1392,7 +1393,8 @@ function readDailyMattrPublish(req) {
 
 async function handlePixAnalytics(req, res) {
   const user = await currentUser(req);
-  const result = await handlePixAnalyticsRequest({ user });
+  const query = new URL(req.url, "http://localhost").searchParams;
+  const result = await handlePixAnalyticsRequest({ user, query });
   sendJson(res, result.status, result.body);
 }
 

@@ -124,14 +124,21 @@ const analyticsRefreshBtn = document.getElementById("analytics-refresh");
 const analyticsStatus = document.getElementById("analytics-status");
 const analyticsTitle = document.getElementById("analytics-title");
 const analyticsDesc = document.getElementById("analytics-desc");
-const analyticsTrend = document.getElementById("analytics-trend");
-const analyticsTrendNote = document.getElementById("analytics-trend-note");
 const analyticsMetaTitle = document.getElementById("analytics-meta-title");
 const analyticsMetaList = document.getElementById("analytics-meta-list");
-const analyticsWriters = document.getElementById("analytics-writers");
-const analyticsQas = document.getElementById("analytics-qas");
-const analyticsWriterTitle = document.getElementById("analytics-writer-title");
-const analyticsQaTitle = document.getElementById("analytics-qa-title");
+const analyticsRosterToggle = document.getElementById("analytics-roster-toggle");
+const analyticsRosterBody = document.getElementById("analytics-roster-body");
+const analyticsRosterList = document.getElementById("analytics-roster-list");
+const analyticsRosterCount = document.getElementById("analytics-roster-count");
+const analyticsRosterTitle = document.getElementById("analytics-roster-title");
+const analyticsRosterDesc = document.getElementById("analytics-roster-desc");
+const analyticsCategoryTrigger = document.getElementById("analytics-category-trigger");
+const analyticsCategoryMenu = document.getElementById("analytics-category-menu");
+const analyticsCategoryLabel = document.getElementById("analytics-category-label");
+const analyticsFrom = document.getElementById("analytics-from");
+const analyticsTo = document.getElementById("analytics-to");
+const analyticsRangeApply = document.getElementById("analytics-range-apply");
+const analyticsRangeClear = document.getElementById("analytics-range-clear");
 
 const editPanel = document.getElementById("edit-panel");
 const imagePanel = document.getElementById("image-panel");
@@ -3809,32 +3816,6 @@ function renderAnalyticsSummary(summary = {}, role = "writer") {
   }
 }
 
-function renderAnalyticsTrend(days = []) {
-  if (!analyticsTrend) return;
-  analyticsTrend.innerHTML = "";
-  if (!days.length) {
-    analyticsTrend.innerHTML = `<div class="analytics-empty">No post activity yet.</div>`;
-    return;
-  }
-
-  const maxValue = Math.max(1, ...days.flatMap((day) => [Number(day.sent_count) || 0, Number(day.approved_count) || 0]));
-  days.forEach((day, index) => {
-    const sentHeight = Math.max(6, Math.round(((Number(day.sent_count) || 0) / maxValue) * 128));
-    const approvedHeight = Math.max(6, Math.round(((Number(day.approved_count) || 0) / maxValue) * 128));
-    const row = document.createElement("div");
-    row.className = "analytics-day";
-    row.innerHTML = `
-      <div class="analytics-bars">
-        <span class="analytics-bar sent" style="height:${sentHeight}px; animation-delay:${index * 0.05}s"></span>
-        <span class="analytics-bar approved" style="height:${approvedHeight}px; animation-delay:${0.08 + index * 0.05}s"></span>
-      </div>
-      <span class="analytics-day-label">${day.label || ""}</span>
-      <span class="analytics-day-meta">${formatCount(day.sent_count)} sent<br>${formatCount(day.approved_count)} approved</span>
-    `;
-    analyticsTrend.appendChild(row);
-  });
-}
-
 function renderAnalyticsMeta(summary = {}, role = "writer") {
   if (!analyticsMetaList || !analyticsMetaTitle) return;
   analyticsMetaTitle.textContent = role === "qa" ? "Approval health" : "Your pipeline health";
@@ -3883,33 +3864,347 @@ function renderAnalyticsBoard(container, rows, { empty, valueLabel, showRate = f
   `).join("");
 }
 
-function renderAnalyticsBoardRich(container, rows, {
-  empty,
-  valueLabel,
-  showRate = false,
-  rateField = "approval_rate",
-  valueField = "sent_count",
-  metaFormatter = null,
-  totalFormatter = null,
-}) {
-  if (!container) return;
-  if (!rows?.length) {
-    container.innerHTML = `<div class="analytics-empty">${empty}</div>`;
+/* ─── Content writer roster ────────────────────────────────
+   A collapsed strip that opens into a table: total sent, then approvals in
+   green, rejections in red and pending in yellow. Sorting is client-side so
+   reordering never refetches; the category and date filters are server-side,
+   because the counts are SQL rollups and cannot be narrowed in the browser. */
+let writerRoster = [];
+let qaRoster = [];
+let rosterMode = "writers";     // "writers" | "qa"
+let writerRosterSort = "approvals";
+
+/* Sentinel matching the server's, for posts with no category on them. */
+const UNCATEGORISED = "__none__";
+
+const analyticsFilters = { category: "all", from: "", to: "" };
+
+/* Copy for each side of the toggle. The writer view counts verdicts on what a
+   writer sent; the QA view counts verdicts a reviewer recorded. */
+const ROSTER_MODES = {
+  writers: {
+    title: "Content writers",
+    desc: "Verdicts on each writer's posts.",
+    noun: "writer",
+    empty: "No writer activity yet.",
+  },
+  qa: {
+    title: "QA approvers",
+    desc: "Verdicts each reviewer has recorded.",
+    noun: "approver",
+    empty: "No QA verdicts yet.",
+  },
+};
+
+/* Team-wide posts nobody has ruled on. Per-reviewer it would be meaningless —
+   the same number repeated down every row — so it belongs in the QA-mode
+   subtitle instead. */
+let rosterAwaitingTotal = 0;
+
+function escapeRosterText(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch]));
+}
+
+function rosterInitials(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "??";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function sortWriterRoster(rows) {
+  const sorted = [...rows];
+  if (writerRosterSort === "rejections") {
+    sorted.sort((a, b) => (Number(b.rejected_count) || 0) - (Number(a.rejected_count) || 0)
+      || (Number(b.approved_count) || 0) - (Number(a.approved_count) || 0));
+  } else {
+    sorted.sort((a, b) => (Number(b.approved_count) || 0) - (Number(a.approved_count) || 0)
+      || (Number(b.sent_count) || 0) - (Number(a.sent_count) || 0));
+  }
+  return sorted;
+}
+
+function renderWriterRoster() {
+  if (!analyticsRosterList) return;
+
+  const mode = ROSTER_MODES[rosterMode] || ROSTER_MODES.writers;
+  const rows = rosterMode === "qa" ? qaRoster : writerRoster;
+
+  if (analyticsRosterTitle) analyticsRosterTitle.textContent = mode.title;
+  if (analyticsRosterDesc) {
+    analyticsRosterDesc.textContent = rosterMode === "qa" && rosterAwaitingTotal
+      ? `${mode.desc} ${formatCount(rosterAwaitingTotal)} post${rosterAwaitingTotal === 1 ? "" : "s"} still awaiting approval.`
+      : mode.desc;
+  }
+  if (analyticsRosterCount) {
+    analyticsRosterCount.textContent = `${formatCount(rows.length)} ${mode.noun}${rows.length === 1 ? "" : "s"}`;
+  }
+
+  if (!rows.length) {
+    analyticsRosterList.innerHTML = `<div class="analytics-empty">${mode.empty}</div>`;
     return;
   }
-  container.innerHTML = rows.map((row, index) => `
-    <div class="analytics-row">
-      <span class="analytics-rank">${index + 1}</span>
-      <div class="analytics-row-main">
-        <span class="analytics-row-name">${row.user_name || "Unknown"}</span>
-        <span class="analytics-row-meta">${metaFormatter ? metaFormatter(row) : valueLabel}</span>
+
+  const isQa = rosterMode === "qa";
+
+  // A header row plus one row per person, all on the same grid track list, so
+  // the counts line up into columns.
+  const body = sortWriterRoster(rows).map((row) => {
+    const approved = Number(row.approved_count) || 0;
+    const rejected = Number(row.rejected_count) || 0;
+    // Total sent and awaiting both belong to a writer's own output. A QA row
+    // counts verdicts recorded — it never sent anything and "not yet decided"
+    // belongs to nobody in particular — hence the dashes.
+    const sent = Number(row.sent_count) || 0;
+    const awaiting = Number(row.pending_count) || 0;
+    // Share of what they uploaded that QA cleared. Derived from the two numbers
+    // in the row rather than the server's approval_rate so it can never
+    // disagree with the columns either side of it. A writer with nothing sent
+    // has no rate — 0% would read as a verdict nobody made.
+    const rate = sent ? Math.round((approved / sent) * 100) : null;
+    const name = escapeRosterText(row.user_name || (isQa ? "Unknown QA" : "Unknown writer"));
+    return `
+      <div class="roster-row">
+        <span class="roster-avatar">${escapeRosterText(rosterInitials(row.user_name))}</span>
+        <span class="roster-name" title="${name}">${name}</span>
+        <span class="roster-cell roster-sent">${isQa ? "—" : formatCount(sent)}</span>
+        <span class="roster-cell roster-approved">${formatCount(approved)}</span>
+        <span class="roster-cell roster-rejected">${formatCount(rejected)}</span>
+        <span class="roster-cell roster-awaiting">${isQa ? "—" : formatCount(awaiting)}</span>
+        <span class="roster-cell roster-rate">${isQa || rate === null ? "—" : `${rate}%`}</span>
       </div>
-      <div class="analytics-row-value">
-        <span class="analytics-row-total">${totalFormatter ? totalFormatter(row) : `${formatCount(row[valueField] || 0)} ${valueLabel}`}</span>
-        <span class="analytics-row-rate">${showRate ? `${formatCount(row[rateField] || 0)}% approval` : ""}</span>
-      </div>
+    `;
+  }).join("");
+
+  analyticsRosterList.innerHTML = `
+    <div class="roster-row roster-head-row">
+      <span></span>
+      <span>${isQa ? "Reviewer" : "Writer"}</span>
+      <span class="roster-cell">Total sent</span>
+      <span class="roster-cell">Approved</span>
+      <span class="roster-cell">Rejected</span>
+      <span class="roster-cell">Pending</span>
+      <span class="roster-cell">Approved %</span>
     </div>
-  `).join("");
+    ${body}
+  `;
+}
+
+function setWriterRoster(rows, qaRows, awaitingTotal = 0) {
+  writerRoster = Array.isArray(rows) ? rows : [];
+  qaRoster = Array.isArray(qaRows) ? qaRows : [];
+  rosterAwaitingTotal = Number(awaitingTotal) || 0;
+  renderWriterRoster();
+}
+
+function toggleWriterRoster(force = null) {
+  if (!analyticsRosterToggle || !analyticsRosterBody) return;
+  const open = force === null ? analyticsRosterBody.hidden : force;
+  analyticsRosterBody.hidden = !open;
+  analyticsRosterToggle.setAttribute("aria-expanded", String(open));
+}
+
+if (analyticsRosterToggle) {
+  analyticsRosterToggle.addEventListener("click", () => toggleWriterRoster());
+  analyticsRosterToggle.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggleWriterRoster();
+  });
+}
+
+document.querySelectorAll("[data-roster-mode]").forEach((btn) => {
+  btn.addEventListener("click", (event) => {
+    // The card head is itself the expand target — a click on the toggle must
+    // not also collapse the list out from under the switch.
+    event.stopPropagation();
+    rosterMode = btn.dataset.rosterMode === "qa" ? "qa" : "writers";
+    document.querySelectorAll("[data-roster-mode]").forEach((other) => {
+      const active = other === btn;
+      other.classList.toggle("is-active", active);
+      other.setAttribute("aria-pressed", String(active));
+    });
+    renderWriterRoster();
+    toggleWriterRoster(true);
+  });
+});
+
+document.querySelectorAll("[data-roster-sort]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    writerRosterSort = btn.dataset.rosterSort || "approvals";
+    document.querySelectorAll("[data-roster-sort]").forEach((other) => {
+      other.classList.toggle("is-active", other === btn);
+    });
+    renderWriterRoster();
+  });
+});
+
+/* The desk's standing categories, listed in this order whether or not anything
+   has been filed under them yet — an empty category is itself an answer, and a
+   picker whose options come and go is hard to trust. */
+const CATEGORY_PRESETS = [
+  "Entertainment",
+  "Technology",
+  "Lifestyle",
+  "State",
+  "International",
+  "National",
+  "Finance",
+  "Sports",
+];
+
+/* ── Category and date-range filters ──
+   These narrow the SQL rollups, so every change is a refetch rather than a
+   re-render. The picker is the standing list above, plus any other category
+   the payload reports — so a post filed under something off-list is still
+   reachable rather than invisible. */
+function categoryOptionEls() {
+  return analyticsCategoryMenu ? [...analyticsCategoryMenu.querySelectorAll("[data-value]")] : [];
+}
+
+function fillCategoryOptions(categories = []) {
+  if (!analyticsCategoryMenu) return;
+  const known = new Set(CATEGORY_PRESETS.map((name) => name.toLowerCase()));
+  const extras = categories
+    .filter((name) => name && !known.has(String(name).toLowerCase()))
+    .sort((a, b) => String(a).localeCompare(String(b)));
+
+  const rows = [
+    { value: "all", label: "All categories" },
+    ...[...CATEGORY_PRESETS, ...extras].map((name) => ({ value: name, label: name })),
+    { value: UNCATEGORISED, label: "Uncategorised" },
+  ];
+
+  analyticsCategoryMenu.innerHTML = rows.map(({ value, label }) => {
+    const safeValue = escapeRosterText(value);
+    return `<li class="analytics-select-option" role="option" tabindex="-1"
+                data-value="${safeValue}" aria-selected="false">${escapeRosterText(label)}</li>`;
+  }).join("");
+
+  // A category can disappear between loads (the last post under it was
+  // recategorised); falling back to "all" beats leaving the filter on a value
+  // that is no longer selectable.
+  const current = analyticsFilters.category;
+  setCategoryValue(rows.some((row) => row.value === current) ? current : "all", { refetch: false });
+}
+
+function setCategoryValue(value, { refetch = true } = {}) {
+  const options = categoryOptionEls();
+  const chosen = options.find((el) => el.dataset.value === value) || options[0];
+  if (!chosen) return;
+
+  options.forEach((el) => el.setAttribute("aria-selected", String(el === chosen)));
+  if (analyticsCategoryLabel) analyticsCategoryLabel.textContent = chosen.textContent;
+
+  const next = chosen.dataset.value;
+  const changed = analyticsFilters.category !== next;
+  analyticsFilters.category = next;
+  if (refetch && changed) loadAnalytics({ force: true });
+}
+
+/* The menu opens downward and is never allowed to cover its own trigger: it is
+   capped to the room actually left below, and scrolls internally past that. */
+function openCategoryMenu() {
+  if (!analyticsCategoryMenu || !analyticsCategoryTrigger) return;
+  const below = window.innerHeight - analyticsCategoryTrigger.getBoundingClientRect().bottom - 24;
+  analyticsCategoryMenu.style.maxHeight = `${Math.max(140, Math.min(280, below))}px`;
+  analyticsCategoryMenu.classList.add("is-open");
+  analyticsCategoryTrigger.setAttribute("aria-expanded", "true");
+  const selected = categoryOptionEls().find((el) => el.getAttribute("aria-selected") === "true");
+  selected?.scrollIntoView({ block: "nearest" });
+}
+
+function closeCategoryMenu({ focusTrigger = false } = {}) {
+  if (!analyticsCategoryMenu || !analyticsCategoryTrigger) return;
+  analyticsCategoryMenu.classList.remove("is-open");
+  analyticsCategoryTrigger.setAttribute("aria-expanded", "false");
+  if (focusTrigger) analyticsCategoryTrigger.focus();
+}
+
+function categoryMenuIsOpen() {
+  return analyticsCategoryMenu?.classList.contains("is-open") === true;
+}
+
+/* Roving focus through the options, so the list is usable without a mouse. */
+function moveCategoryFocus(step) {
+  const options = categoryOptionEls();
+  if (!options.length) return;
+  const active = document.activeElement;
+  const from = options.indexOf(active);
+  const next = from === -1
+    ? options.findIndex((el) => el.getAttribute("aria-selected") === "true")
+    : from + step;
+  const index = Math.max(0, Math.min(options.length - 1, next === -1 ? 0 : next));
+  options[index].focus();
+  options[index].scrollIntoView({ block: "nearest" });
+}
+
+if (analyticsCategoryTrigger) {
+  analyticsCategoryTrigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (categoryMenuIsOpen()) closeCategoryMenu();
+    else { openCategoryMenu(); moveCategoryFocus(0); }
+  });
+
+  analyticsCategoryTrigger.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    openCategoryMenu();
+    moveCategoryFocus(0);
+  });
+}
+
+if (analyticsCategoryMenu) {
+  analyticsCategoryMenu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-value]");
+    if (!option) return;
+    event.stopPropagation();
+    setCategoryValue(option.dataset.value);
+    closeCategoryMenu({ focusTrigger: true });
+  });
+
+  analyticsCategoryMenu.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") { event.preventDefault(); moveCategoryFocus(1); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); moveCategoryFocus(-1); }
+    else if (event.key === "Home") { event.preventDefault(); categoryOptionEls()[0]?.focus(); }
+    else if (event.key === "End") { event.preventDefault(); categoryOptionEls().pop()?.focus(); }
+    else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const option = event.target.closest("[data-value]");
+      if (!option) return;
+      setCategoryValue(option.dataset.value);
+      closeCategoryMenu({ focusTrigger: true });
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      closeCategoryMenu({ focusTrigger: event.key === "Escape" });
+    }
+  });
+}
+
+// Clicking anywhere else dismisses it — including the card head, which would
+// otherwise collapse the whole roster with the menu still hanging open.
+document.addEventListener("click", () => { if (categoryMenuIsOpen()) closeCategoryMenu(); });
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && categoryMenuIsOpen()) closeCategoryMenu({ focusTrigger: true });
+});
+
+if (analyticsRangeApply) {
+  analyticsRangeApply.addEventListener("click", () => {
+    analyticsFilters.from = analyticsFrom?.value || "";
+    analyticsFilters.to = analyticsTo?.value || "";
+    loadAnalytics({ force: true });
+  });
+}
+
+if (analyticsRangeClear) {
+  analyticsRangeClear.addEventListener("click", () => {
+    if (analyticsFrom) analyticsFrom.value = "";
+    if (analyticsTo) analyticsTo.value = "";
+    analyticsFilters.from = "";
+    analyticsFilters.to = "";
+    loadAnalytics({ force: true });
+  });
 }
 
 async function loadAnalytics({ force = false } = {}) {
@@ -3919,8 +4214,16 @@ async function loadAnalytics({ force = false } = {}) {
   if (analyticsRefreshBtn) analyticsRefreshBtn.disabled = true;
   setAnalyticsStatus("Loading analytics…");
 
+  const query = new URLSearchParams();
+  if (analyticsFilters.category && analyticsFilters.category !== "all") {
+    query.set("category", analyticsFilters.category);
+  }
+  if (analyticsFilters.from) query.set("from", analyticsFilters.from);
+  if (analyticsFilters.to) query.set("to", analyticsFilters.to);
+  const url = query.toString() ? `${PIX_ANALYTICS_ENDPOINT}?${query}` : PIX_ANALYTICS_ENDPOINT;
+
   try {
-    const response = await fetch(PIX_ANALYTICS_ENDPOINT, { credentials: "same-origin" });
+    const response = await fetch(url, { credentials: "same-origin" });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (response.status === 401) return handleSignedOut();
@@ -3938,54 +4241,34 @@ async function loadAnalytics({ force = false } = {}) {
         ? "Track what the writers are sending, what is still waiting, and how quickly the QA desk is clearing approvals."
         : "Track how many posts you have sent, how many QA has approved, and how much is still waiting in the queue.";
     }
-    if (analyticsTrendNote) analyticsTrendNote.textContent = role === "qa" ? "Team-wide daily flow" : "Your daily flow";
-    if (analyticsWriterTitle) analyticsWriterTitle.textContent = role === "qa" ? "Top content writers" : "Your output snapshot";
-    if (analyticsQaTitle) analyticsQaTitle.textContent = role === "qa" ? "Top QA approvers" : "QA activity on your posts";
+
+    fillCategoryOptions(analytics.categories || []);
+    // The server is the authority on what it actually applied — a backwards
+    // range comes back swapped, so the pickers have to follow it.
+    if (payload.filters) {
+      analyticsFilters.from = payload.filters.from || "";
+      analyticsFilters.to = payload.filters.to || "";
+      if (analyticsFrom) analyticsFrom.value = analyticsFilters.from;
+      if (analyticsTo) analyticsTo.value = analyticsFilters.to;
+    }
 
     renderAnalyticsSummary(analytics.summary, role);
-    renderAnalyticsTrend(analytics.trend || []);
     renderAnalyticsMeta(analytics.summary, role);
 
     if (role === "qa") {
-      renderAnalyticsBoardRich(analyticsWriters, analytics.writers || [], {
-        empty: "No writer activity yet.",
-        valueLabel: "sent",
-        showRate: true,
-        valueField: "sent_count",
-        metaFormatter: (row) => `${formatCount(row.approved_count || 0)} approved · ${formatCount(row.pending_count || 0)} pending`,
-      });
-      renderAnalyticsBoardRich(analyticsQas, analytics.qas || [], {
-        empty: "No QA approvals yet.",
-        valueLabel: "approved",
-        showRate: false,
-        valueField: "approved_count",
-        metaFormatter: (row) => `Latest sign-off ${formatLibraryDate(row.latest_approval_at) || "recently"}`,
-      });
+      setWriterRoster(analytics.writers || [], analytics.qas || [], analytics.summary?.pending_count || 0);
     } else {
-      renderAnalyticsBoardRich(analyticsWriters, [{
+      setWriterRoster([{
         user_name: state.user.displayName || state.user.username || "You",
         sent_count: analytics.summary?.sent_count || 0,
         approved_count: analytics.summary?.approved_count || 0,
+        rejected_count: analytics.summary?.rejected_count || 0,
         pending_count: analytics.summary?.pending_count || 0,
-        approval_rate: analytics.summary?.approval_rate || 0,
-      }], {
-        empty: "No posts sent yet.",
-        valueLabel: "sent",
-        showRate: true,
-        valueField: "sent_count",
-        metaFormatter: (row) => `${formatCount(row.approved_count || 0)} approved · ${formatCount(row.pending_count || 0)} pending`,
-      });
-      renderAnalyticsBoardRich(analyticsQas, [{
+      }], [{
         user_name: "QA desk",
         approved_count: analytics.summary?.approved_count || 0,
-        avg_approval_hours: analytics.summary?.avg_approval_hours || 0,
-      }], {
-        empty: "No QA action yet.",
-        valueLabel: "approved",
-        showRate: false,
-        valueField: "approved_count",
-        metaFormatter: (row) => `${Number(row.avg_approval_hours || 0).toFixed(1)} hrs average approval time`,
-      });
+        rejected_count: analytics.summary?.rejected_count || 0,
+      }], analytics.summary?.pending_count || 0);
     }
 
     setAnalyticsStatus("");
@@ -5330,9 +5613,21 @@ function collectPixPayload() {
     aspectRatio: state.aspectRatio,
     accentColor: state.accent,
     tag: state.tag,
+    // The content category the writer filed this under, by name — the QA
+    // analytics desk groups on it. Null when DailyMattr has not loaded its
+    // category list, which is the same as "not categorised".
+    category: selectedCategoryName(),
 
     design: collectDesignSnapshot(),
   };
+}
+
+/* The label, not the id: the id is DailyMattr's and means nothing to the QA
+   desk, whereas the name is what the category filter lists. */
+function selectedCategoryName() {
+  const option = dailymattrCategory?.selectedOptions?.[0];
+  if (!option || !option.value) return null;
+  return option.textContent.trim() || null;
 }
 
 /* The main image is held as an <img>, not a URL, so the source has to be read
@@ -5687,8 +5982,7 @@ async function loadReviewQueue() {
   reviewList.innerHTML = "";
 
   const params = new URLSearchParams({ limit: "100" });
-  if (reviewFilter === "pending") params.set("approved", "false");
-  if (reviewFilter === "approved") params.set("approved", "true");
+  if (reviewFilter !== "all") params.set("status", reviewFilter);
 
   try {
     const response = await fetch(`/api/pix?${params}`, { credentials: "same-origin" });
@@ -5705,19 +5999,23 @@ async function loadReviewQueue() {
       empty.className = "review-empty";
       empty.textContent = reviewFilter === "approved"
         ? "Nothing approved yet."
-        : reviewFilter === "pending"
-          ? "Nothing waiting — every saved post has been approved."
-          : state.user?.role === "qa"
-            ? "No posts saved yet."
-            : "You have not saved a post yet. Build one, then press Save.";
+        : reviewFilter === "rejected"
+          ? "Nothing rejected."
+          : reviewFilter === "awaiting"
+            ? "Nothing waiting — every saved post has a verdict."
+            : state.user?.role === "qa"
+              ? "No posts saved yet."
+              : "You have not saved a post yet. Build one, then press Save.";
       reviewList.appendChild(empty);
       setReviewStatus("");
       return;
     }
 
     const approvedCount = posts.filter((p) => p.approved).length;
+    const rejectedCount = posts.filter((p) => p.rejected).length;
+    const awaitingCount = posts.length - approvedCount - rejectedCount;
     setReviewStatus(reviewFilter === "all"
-      ? `${posts.length} post${posts.length === 1 ? "" : "s"} · ${approvedCount} approved · ${posts.length - approvedCount} pending`
+      ? `${posts.length} post${posts.length === 1 ? "" : "s"} · ${approvedCount} approved · ${rejectedCount} rejected · ${awaitingCount} awaiting approval`
       : `${posts.length} post${posts.length === 1 ? "" : "s"}.`);
 
     posts.forEach((post) => reviewList.appendChild(renderReviewItem(post)));
@@ -5728,7 +6026,8 @@ async function loadReviewQueue() {
 
 function renderReviewItem(post) {
   const li = document.createElement("li");
-  li.className = "review-item" + (post.approved ? " is-approved" : "");
+  li.className = "review-item"
+    + (post.approved ? " is-approved" : post.rejected ? " is-rejected" : "");
 
   // The stored image is a URL, so the thumbnail is the real poster image
   // rather than a re-render — cheap, and enough to recognise a post by.
@@ -5756,11 +6055,13 @@ function renderReviewItem(post) {
     formatLibraryDate(post.updated_at || post.created_at),
     hostOf(post.source_url),
     post.approved && post.approved_by_name ? `approved by ${post.approved_by_name}` : "",
+    post.rejected && post.rejected_by_name ? `rejected by ${post.rejected_by_name}` : "",
   ].filter(Boolean).join(" · ");
 
   const pill = document.createElement("span");
-  pill.className = "status-pill" + (post.approved ? " is-approved" : "");
-  pill.textContent = post.approved ? "Approved" : "Pending";
+  pill.className = "status-pill"
+    + (post.approved ? " is-approved" : post.rejected ? " is-rejected" : "");
+  pill.textContent = post.approved ? "Approved" : post.rejected ? "Rejected" : "Awaiting approval";
 
   main.append(title, meta, document.createElement("br"), pill);
 
@@ -5784,7 +6085,15 @@ function renderReviewItem(post) {
     approve.type = "button";
     approve.className = "btn-ghost" + (post.approved ? "" : " btn-approve");
     approve.textContent = post.approved ? "Unapprove" : "Approve";
-    approve.addEventListener("click", () => setPostApproval(post, !post.approved, approve));
+    approve.addEventListener("click", () => setPostVerdict(post, post.approved ? "awaiting" : "approved", approve));
+
+    // Rejecting is the counterpart to approving, not a kind of delete: the post
+    // stays, and the verdict is reversible straight back to awaiting.
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.className = "btn-ghost" + (post.rejected ? "" : " btn-reject");
+    reject.textContent = post.rejected ? "Undo reject" : "Reject";
+    reject.addEventListener("click", () => setPostVerdict(post, post.rejected ? "awaiting" : "rejected", reject));
 
     const del = document.createElement("button");
     del.type = "button";
@@ -5792,36 +6101,41 @@ function renderReviewItem(post) {
     del.textContent = "Delete";
     del.addEventListener("click", () => deleteReviewPost(post, li));
 
-    actions.append(approve, del);
+    actions.append(approve, reject, del);
   }
   li.append(main, actions);
   return li;
 }
 
-async function setPostApproval(post, approved, button) {
+/* verdict: "approved" | "rejected" | "awaiting" */
+async function setPostVerdict(post, verdict, button) {
   button.disabled = true;
   const previous = button.textContent;
-  button.textContent = approved ? "Approving…" : "Withdrawing…";
+  button.textContent = { approved: "Approving…", rejected: "Rejecting…", awaiting: "Withdrawing…" }[verdict];
   try {
     const response = await fetch(`/api/pix/approve?id=${encodeURIComponent(post.id)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ approved }),
+      body: JSON.stringify({ approved: verdict === "approved", rejected: verdict === "rejected" }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (response.status === 401) return handleSignedOut();
-      setReviewStatus(payload.error || `Could not update approval (${response.status}).`, "error");
+      setReviewStatus(payload.error || `Could not update the verdict (${response.status}).`, "error");
       button.textContent = previous;
       return;
     }
-    setReviewStatus(approved ? "Approved." : "Approval withdrawn.", "success");
+    setReviewStatus({
+      approved: "Approved.",
+      rejected: "Rejected.",
+      awaiting: "Verdict withdrawn — back to awaiting approval.",
+    }[verdict], "success");
     // Re-fetch rather than patch the row in place: under the Pending or
     // Approved filter the post has just left the list it is sitting in.
     loadReviewQueue();
   } catch (err) {
-    setReviewStatus(err.message || "Could not update approval.", "error");
+    setReviewStatus(err.message || "Could not update the verdict.", "error");
     button.textContent = previous;
   } finally {
     button.disabled = false;

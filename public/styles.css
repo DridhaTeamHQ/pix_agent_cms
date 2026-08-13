@@ -27,6 +27,20 @@
   --text-primary:   #1c1936;    /* near-ink */
   --text-secondary: #5c5878;
   --text-muted:     #9a97ae;
+  /* Eyebrow labels, chips and secondary copy across the analytics cards. Plain
+     --text-muted washed out against the card fill; a violet keeps them clearly
+     secondary while giving them enough presence to read. Declared on :root (not
+     the shell) so the dark-theme override below actually wins the cascade. */
+  --analytics-faint: #6b53a8;
+
+  /* Frosted-glass surfaces. Tinted with the accent violet rather than neutral
+     white so anything built from them picks up the page's own colour. */
+  --glass-fill:        rgba(255, 255, 255, 0.55);
+  --glass-inner:       rgba(255, 255, 255, 0.72);
+  --glass-edge:        rgba(124, 58, 237, 0.16);
+  --glass-edge-strong: rgba(124, 58, 237, 0.30);
+  --glass-menu:        rgba(247, 245, 255, 0.86);
+  --glass-shadow:      0 4px 18px rgba(28, 25, 64, 0.08);
 
   --accent: #7c3aed;            /* vivid violet, great on white */
   --accent-dim: #6d28d9;
@@ -1546,6 +1560,11 @@ body.view-analytics .edit-sheet { display: none !important; }
   background: rgba(16, 152, 110, 0.07);
 }
 
+.review-item.is-rejected {
+  border-color: rgba(220, 38, 38, 0.32);
+  background: rgba(220, 38, 38, 0.06);
+}
+
 .review-thumb {
   width: 46px;
   height: 62px;
@@ -1588,6 +1607,12 @@ body.view-analytics .edit-sheet { display: none !important; }
   background: rgba(16, 152, 110, 0.1) !important;
 }
 
+.btn-reject {
+  border-color: rgba(220, 38, 38, 0.4) !important;
+  color: #dc2626 !important;
+  background: rgba(220, 38, 38, 0.1) !important;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -1609,6 +1634,12 @@ body.view-analytics .edit-sheet { display: none !important; }
   border-color: rgba(16, 152, 110, 0.32);
 }
 
+.status-pill.is-rejected {
+  background: rgba(220, 38, 38, 0.14);
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.32);
+}
+
 .review-empty {
   padding: 30px 4px;
   color: var(--text-muted);
@@ -1620,8 +1651,7 @@ body.view-analytics .edit-sheet { display: none !important; }
   .review-item { flex-wrap: wrap; }
   .review-item-actions { width: 100%; justify-content: flex-end; }
   .analytics-hero,
-  .analytics-grid,
-  .analytics-board-grid {
+  .analytics-grid {
     grid-template-columns: 1fr;
   }
   .analytics-card-note { display: none; }
@@ -1711,7 +1741,7 @@ body.view-analytics .edit-sheet { display: none !important; }
   font-weight: 800;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--analytics-faint);
 }
 
 .analytics-stat-value {
@@ -1738,8 +1768,10 @@ body.view-analytics .edit-sheet { display: none !important; }
   margin-top: 14px;
 }
 
-.analytics-board-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+/* The health card is on its own now that the trend chart is gone — the default
+   two-track grid would strand it in the narrow right-hand column. */
+.analytics-meta-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .analytics-card {
@@ -1767,7 +1799,7 @@ body.view-analytics .edit-sheet { display: none !important; }
   font-weight: 800;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--analytics-faint);
 }
 
 .analytics-card h3 {
@@ -1778,71 +1810,11 @@ body.view-analytics .edit-sheet { display: none !important; }
 
 .analytics-card-note {
   font-size: 0.76rem;
-  color: var(--text-muted);
+  color: var(--analytics-faint);
   background: var(--surface-input);
   border: 1px solid var(--border-color);
   border-radius: 999px;
   padding: 5px 10px;
-}
-
-.analytics-trend {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 10px;
-  min-height: 230px;
-  align-items: end;
-}
-
-.analytics-day {
-  display: grid;
-  justify-items: center;
-  gap: 9px;
-}
-
-.analytics-bars {
-  width: 100%;
-  min-height: 170px;
-  display: flex;
-  align-items: end;
-  justify-content: center;
-  gap: 6px;
-  padding: 12px 4px 0;
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(105, 109, 184, 0.08), rgba(105, 109, 184, 0.02)),
-    var(--surface-input);
-}
-
-.analytics-bar {
-  width: min(22px, 100%);
-  border-radius: 999px 999px 10px 10px;
-  min-height: 6px;
-  transform-origin: bottom;
-  transform: scaleY(0.05);
-  animation: analytics-grow 0.7s var(--spring) forwards;
-}
-
-.analytics-bar.sent {
-  background: linear-gradient(180deg, #7fb0ff 0%, #3979ff 100%);
-  box-shadow: 0 8px 24px rgba(57, 121, 255, 0.22);
-}
-
-.analytics-bar.approved {
-  background: linear-gradient(180deg, #76ddb9 0%, #10986e 100%);
-  box-shadow: 0 8px 24px rgba(16, 152, 110, 0.2);
-}
-
-.analytics-day-label {
-  font-size: 0.76rem;
-  font-weight: 700;
-  color: var(--text-secondary);
-}
-
-.analytics-day-meta {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  text-align: center;
-  line-height: 1.4;
 }
 
 .analytics-metric-list {
@@ -1942,6 +1914,439 @@ body.view-analytics .edit-sheet { display: none !important; }
   margin-top: 3px;
   font-size: 0.72rem;
   color: var(--text-muted);
+}
+
+/* ─── Content writer roster (expandable) ──────────────────── */
+.analytics-roster-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.analytics-roster-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* The card clips to keep its rounded corners, which would also slice the open
+   menu off at the card edge. Released only while the menu is up. */
+.analytics-roster-card:has(.analytics-select-menu.is-open) {
+  overflow: visible;
+}
+
+.analytics-roster-head {
+  margin: 0;
+  padding: 18px;
+  cursor: pointer;
+  user-select: none;
+  align-items: center;
+  transition: background 0.2s ease;
+}
+
+.analytics-roster-head:hover,
+.analytics-roster-head:focus-visible {
+  background: var(--hover-tint);
+  outline: none;
+}
+
+.analytics-roster-desc {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  color: var(--analytics-faint);
+}
+
+.analytics-roster-cue {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  font-size: 0.76rem;
+  color: var(--analytics-faint);
+}
+
+.analytics-roster-modes {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-input);
+}
+
+.analytics-roster-mode {
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--analytics-faint);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.analytics-roster-mode.is-active {
+  color: #fff;
+  background: rgba(155, 114, 239, 0.55);
+}
+
+.analytics-roster-chevron {
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translate(-2px, -2px);
+  transition: transform 0.25s var(--spring);
+}
+
+.analytics-roster-head[aria-expanded="true"] .analytics-roster-chevron {
+  transform: rotate(225deg) translate(-2px, -2px);
+}
+
+.analytics-roster-body {
+  padding: 0 18px 18px;
+  animation: analytics-card-in 0.35s var(--spring) forwards;
+}
+
+.analytics-roster-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+/* Frosted-glass shells, matching the blur/saturate pairing the nav and panels
+   already use. The tint is the page's own violet rather than plain white, so
+   the controls read as part of the card instead of sitting on top of it. */
+.analytics-roster-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background-color: var(--glass-fill);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: var(--glass-shadow);
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--analytics-faint);
+}
+
+.analytics-roster-filter input[type="date"] {
+  font: inherit;
+  font-weight: 700;
+  color: var(--text-primary);
+  /* Longhand, and transitioned as a longhand: a `background` shorthand holding
+     a var() becomes a pending-substitution value, and a theme flip mid-
+     transition then leaves the control stuck on the outgoing colour. */
+  background-color: var(--glass-inner);
+  border: 1px solid var(--glass-edge-strong);
+  border-radius: 999px;
+  padding: 5px 12px;
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.analytics-roster-filter input[type="date"]:hover {
+  border-color: var(--accent);
+}
+
+.analytics-roster-filter input[type="date"]:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+:root[data-theme="dark"] .analytics-roster-filter input[type="date"] {
+  color-scheme: dark;
+}
+
+/* ── Category listbox ──
+   A custom control because the three things asked of it — a translucent violet
+   fill, an unhurried open, and its own scrollbar — are all off-limits on a
+   native <select> popup. */
+.analytics-select {
+  position: relative;
+}
+
+.analytics-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 160px;
+  font: inherit;
+  font-weight: 700;
+  color: var(--text-primary);
+  background-color: var(--glass-inner);
+  border: 1px solid var(--glass-edge-strong);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  transition: border-color 0.35s ease, background-color 0.35s ease, box-shadow 0.35s ease;
+}
+
+.analytics-select-trigger:hover {
+  border-color: var(--accent);
+}
+
+.analytics-select-trigger:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.analytics-select-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translate(-2px, -2px);
+  transition: transform 0.35s var(--spring);
+}
+
+.analytics-select-trigger[aria-expanded="true"] .analytics-select-chevron {
+  transform: rotate(225deg) translate(-2px, -2px);
+}
+
+.analytics-select-menu {
+  position: absolute;
+  /* Below the trigger, never over it — the gap is what keeps the current
+     selection readable while the list is open. */
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  min-width: 100%;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 18px;
+  border: 1px solid var(--glass-edge-strong);
+  background-color: var(--glass-menu);
+  backdrop-filter: blur(26px) saturate(160%);
+  -webkit-backdrop-filter: blur(26px) saturate(160%);
+  box-shadow: var(--glass-shadow);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px) scale(0.97);
+  transform-origin: top center;
+  /* Deliberately unhurried. Visibility is held until the fade finishes so the
+     menu cannot be clicked on its way out. */
+  transition: opacity 0.42s ease, transform 0.42s var(--spring), visibility 0s linear 0.42s;
+}
+
+.analytics-select-menu.is-open {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+  transition: opacity 0.42s ease, transform 0.42s var(--spring), visibility 0s;
+}
+
+.analytics-select-option {
+  padding: 9px 14px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+.analytics-select-option:hover,
+.analytics-select-option:focus-visible {
+  outline: none;
+  color: var(--text-primary);
+  background-color: var(--glass-inner);
+}
+
+.analytics-select-option[aria-selected="true"] {
+  color: var(--text-primary);
+  background-color: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--glass-edge-strong);
+}
+
+/* The scrollbar is part of the glass rather than a system artefact sitting on
+   top of it. */
+.analytics-select-menu {
+  scrollbar-width: thin;
+  scrollbar-color: var(--glass-edge-strong) transparent;
+}
+
+.analytics-select-menu::-webkit-scrollbar {
+  width: 8px;
+}
+
+.analytics-select-menu::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 6px 0;
+}
+
+.analytics-select-menu::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background-color: var(--glass-edge-strong);
+}
+
+.analytics-select-menu::-webkit-scrollbar-thumb:hover {
+  background-color: var(--accent);
+}
+
+/* The native picker indicator is near-black by default, which vanishes on the
+   dark card. */
+:root[data-theme="dark"] .analytics-roster-filter input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) opacity(0.7);
+}
+
+.analytics-roster-sorts {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-input);
+}
+
+.analytics-roster-sort {
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--analytics-faint);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.analytics-roster-sort.is-active {
+  color: var(--text-primary, #fff);
+  background: var(--hover-tint);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+/* avatar · name · sent · approved · rejected · pending · rate.
+   The tracks live on the list, not on the rows, so the heading row and every
+   data row are measured together: a track is as wide as the widest thing in
+   that column, whether that is a heading or a figure. The numeric tracks floor
+   at max-content so a two-word heading like "Total sent" keeps its column wide
+   enough to stay on one line. */
+.analytics-roster-list {
+  display: grid;
+  grid-template-columns: 34px minmax(90px, 1fr) repeat(5, minmax(max-content, 104px));
+  /* The column gap belongs to the list too — a subgrid that declares its own
+     would resolve different track positions and undo the alignment. */
+  row-gap: 8px;
+  column-gap: 14px;
+}
+
+.roster-row {
+  display: grid;
+  /* Rows sized independently would each resolve max-content against their own
+     contents, so a heading and the figure beneath it would land on different
+     centres. Subgrid makes every row adopt the list's tracks instead. */
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding: 12px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--hairline);
+  background: var(--hover-tint);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+/* Without subgrid the rows would have no tracks at all, so they fall back to
+   the fixed list — alignment is then approximate but the table still reads. */
+@supports not (grid-template-columns: subgrid) {
+  .analytics-roster-list { display: block; }
+  .roster-row {
+    grid-template-columns: 34px minmax(90px, 1fr) repeat(5, minmax(0, 118px));
+    gap: 14px;
+    margin-bottom: 8px;
+  }
+}
+
+.roster-row:hover {
+  transform: translateY(-1px);
+  border-color: rgba(155, 114, 239, 0.28);
+}
+
+/* Column headings: the one row that is labels rather than data, so it drops the
+   card styling and the hover lift. */
+.roster-head-row,
+.roster-head-row:hover {
+  padding: 0 16px 2px;
+  white-space: nowrap;
+  border-color: transparent;
+  background: none;
+  transform: none;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--analytics-faint);
+}
+
+.roster-avatar {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(155, 114, 239, 0.16);
+  color: var(--accent-dim);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.roster-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Tabular figures so the columns stay aligned digit-for-digit. Centred rather
+   than right-aligned so each value sits under the middle of its own heading. */
+.roster-cell {
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.roster-row .roster-sent { color: var(--text-primary); }
+.roster-row .roster-approved { color: #34d399; }
+.roster-row .roster-rejected { color: #f87171; }
+.roster-row .roster-awaiting { color: #fbbf24; }
+/* Neutral on purpose: it restates the green column as a ratio, and colouring it
+   green too would double-count the same signal. */
+.roster-row .roster-rate { color: var(--text-primary); }
+
+@media (max-width: 720px) {
+  /* The mode switch is the one control that has to survive — the row count is
+     restated by the list itself. */
+  #analytics-roster-count { display: none; }
+
+  /* Headings stay on one line at every width, so past a certain narrowness the
+     table scrolls sideways rather than folding its own column names in half.
+     Tracks stay on the list so the rows' subgrid still matches them. */
+  .analytics-roster-list {
+    overflow-x: auto;
+    grid-template-columns: 34px minmax(80px, 1fr) repeat(5, minmax(max-content, auto));
+    column-gap: 8px;
+  }
+  .analytics-roster-dates { flex-wrap: wrap; }
+  .roster-cell { font-size: 0.85rem; }
 }
 
 .analytics-empty {
@@ -2648,11 +3053,6 @@ body.view-poster-return .app-shell { animation: view-in 0.4s var(--spring) both;
   to   { opacity: 1; transform: none; }
 }
 
-@keyframes analytics-grow {
-  from { transform: scaleY(0.05); }
-  to   { transform: scaleY(1); }
-}
-
 /* ─── FAB attention pulse (mobile) — three soft rings then rest ── */
 @keyframes fab-pulse {
   0%   { box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.45); }
@@ -2721,6 +3121,20 @@ textarea:focus {
   --text-primary:   #f1effa;
   --text-secondary: #a3a0c0;
   --text-muted:     #625f80;
+  /* Deep enough to still read as violet rather than lavender, light enough to
+     clear the card fill — the muted token alone disappears on dark. */
+  --analytics-faint: #8b72cf;
+
+  /* On ink the glass is lit by the accent itself — a white tint would grey the
+     card out rather than sit in front of it. */
+  --glass-fill:        rgba(167, 139, 250, 0.07);
+  --glass-inner:       rgba(167, 139, 250, 0.13);
+  --glass-edge:        rgba(167, 139, 250, 0.20);
+  --glass-edge-strong: rgba(167, 139, 250, 0.38);
+  /* The open menu sits over the card, so it needs enough violet body to read as
+     glass rather than as a hole punched in the page. */
+  --glass-menu:        rgba(52, 40, 88, 0.82);
+  --glass-shadow:      0 6px 20px rgba(0, 0, 0, 0.35);
 
   --accent: #a78bfa;
   --accent-dim: #c9b4ff;        /* "readable accent" — light on dark */

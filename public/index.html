@@ -305,6 +305,17 @@
             <textarea id="detail-edit" rows="12" placeholder="Edit the paragraph shown in Text preview..."></textarea>
             <small class="helper-text">This copy appears in the Text preview.</small>
 
+            <!-- Only reachable while a Story page is selected. Its copy belongs
+                 to that page, not to the post, so editing it here writes to
+                 whichever story page is open. -->
+            <div id="story-fields" hidden>
+              <h3 class="acc-subtitle">Story Page</h3>
+              <textarea id="story-heading-edit" rows="2" placeholder="Short heading for this slide..."></textarea>
+              <small class="helper-text">Wrap words in [brackets] to highlight them. Left plain, the whole heading is highlighted.</small>
+              <textarea id="story-body-edit" rows="6" placeholder="The paragraph for this slide..."></textarea>
+              <small class="helper-text">Belongs to this page only — each story slide carries its own copy.</small>
+            </div>
+
           <!-- Lives in the shared editor rather than the Write Text panel so it
                serves both flows: a scrape fills it in, a hand-written post can
                have it typed. Shown in Review and searchable. -->
@@ -695,6 +706,9 @@
           <div class="preview-add-menu" id="preview-add-menu" role="menu" hidden>
             <button type="button" role="menuitem" data-add-page="poster">
               <span class="add-menu-icon" aria-hidden="true">▦</span> Poster page
+            </button>
+            <button type="button" role="menuitem" data-add-page="story">
+              <span class="add-menu-icon" aria-hidden="true">▤</span> Story page
             </button>
             <button type="button" role="menuitem" data-add-page="text">
               <span class="add-menu-icon" aria-hidden="true">≡</span> Text page

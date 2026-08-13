@@ -280,6 +280,10 @@ const state = {
   // open tab honest across midnight.
   // The date printed on the slide. Null means "use today", which is what it
   // did before this was editable.
+  /* Live values for the selected story page. Like every other page field
+     these are swapped in and out by setActivePage; the page keeps the copy. */
+  storyHeading: "",
+  storyBody: "",
   createdAt: null,
   // Sent to DailyMattr with the post. Chosen here rather than inferred at
   // publish so the writer's wording survives.
@@ -773,6 +777,10 @@ function isXRenderMode() {
 
 function isTextPreviewMode() {
   return state.previewMode === "text" && (!state.isDownloading || state.forceTextExport);
+}
+
+function isStoryPreviewMode() {
+  return state.previewMode === "story";
 }
 
 // True while painting the video slide. `videoOverlayExport` is set only by
@@ -1272,6 +1280,18 @@ if (detailEdit) {
   });
   detailEdit.addEventListener("keydown", handleDetailBulletEnter);
 }
+
+/* Story copy writes to live state; syncActivePageContent folds it back onto
+   the page on the next read, which is the same route every page-scoped field
+   takes. */
+document.getElementById("story-heading-edit")?.addEventListener("input", (e) => {
+  state.storyHeading = e.target.value;
+  renderPoster();
+});
+document.getElementById("story-body-edit")?.addEventListener("input", (e) => {
+  state.storyBody = e.target.value;
+  renderPoster();
+});
 
 // Image offset sliders
 imgOffsetX.addEventListener("input", () => {
@@ -2300,6 +2320,12 @@ const POSTER_PAGE_FIELDS = [...IMAGE_PAGE_FIELDS, "headline", "tag", "fontSize",
    body of text on the post, divided across the text pages at paint time.
    See recomputeDetailSlices(). */
 const TEXT_PAGE_FIELDS   = [...IMAGE_PAGE_FIELDS];
+/* A story page owns everything it shows: its own image, its own heading and
+   its own body copy. That last one is what separates it from a text page —
+   a text page takes a SLICE of the post's single paragraph, so its words are
+   decided by how many text pages there are. A story page is written directly,
+   which is what you want when each slide makes its own point. */
+const STORY_PAGE_FIELDS  = [...IMAGE_PAGE_FIELDS, "storyHeading", "storyBody"];
 /* A video page owns its upload and its last encode as well as its clip:
    two video pages that shared `storedVideoUrl` would publish each other's
    footage. */
@@ -2312,11 +2338,12 @@ const VIDEO_PAGE_FIELDS  = [
 // The spine is poster + text. Video is not part of it, so the base page
 // never owns a clip — only an added Video page does.
 const BASE_PAGE_FIELDS = [...new Set([...POSTER_PAGE_FIELDS, ...TEXT_PAGE_FIELDS, "detailText"])];
-const ALL_PAGE_FIELDS = [...new Set([...BASE_PAGE_FIELDS, ...VIDEO_PAGE_FIELDS])];
+const ALL_PAGE_FIELDS = [...new Set([...BASE_PAGE_FIELDS, ...STORY_PAGE_FIELDS, ...VIDEO_PAGE_FIELDS])];
 
 const PAGE_TYPES = {
   poster: { label: "Poster", mode: "pix",   download: "Download",  fields: POSTER_PAGE_FIELDS },
   text:   { label: "Text",   mode: "text",  download: "Download",  fields: TEXT_PAGE_FIELDS },
+  story:  { label: "Story",  mode: "story", download: "Download",  fields: STORY_PAGE_FIELDS },
   video:  { label: "Video",  mode: "video", download: "Export MP4", fields: VIDEO_PAGE_FIELDS },
 };
 
@@ -2327,6 +2354,7 @@ const PAGE_SCOPE = {
   base:   { headline: true,  detail: true,  tag: true,  image: true,  video: false },
   poster: { headline: true,  detail: false, tag: true,  image: true,  video: false },
   text:   { headline: false, detail: true,  tag: false, image: true,  video: false },
+  story:  { headline: true,  detail: true,  tag: false, image: true,  video: false },
   video:  { headline: false, detail: false, tag: false, image: false, video: true  },
 };
 
@@ -2360,7 +2388,7 @@ function fieldsForPage(page) {
   return PAGE_TYPES[page.type]?.fields || [];
 }
 
-const CARD_LABELS = { pix: "Poster", text: "Text", video: "Video" };
+const CARD_LABELS = { pix: "Poster", text: "Text", story: "Story", video: "Video" };
 function cardLabel(card) { return CARD_LABELS[card.mode] || "Page"; }
 
 // Where a card sits in the rail, 1-based — what the writer sees on it.
@@ -2569,6 +2597,8 @@ function blankPageContent(type) {
     // post's current one is the least surprising starting point.
     headlineStyle: state.headlineStyle,
     detailText: "",
+    storyHeading: "",
+    storyBody: "",
     videoEl: null,
     videoSrc: "",
     videoUrl: "",
@@ -2674,6 +2704,12 @@ function serializePages() {
   return extraPages().map((page) => {
     const c = page.content || {};
     const entry = { type: page.type };
+    if (page.type === "story") {
+      // A story page carries its own words, so they travel with the page
+      // rather than being derived from the post's paragraph on open.
+      entry.storyHeading = c.storyHeading || "";
+      entry.storyBody = c.storyBody || "";
+    }
     if (page.type === "poster") {
       entry.headline = c.headline || "";
       entry.tag = c.tag || "none";
@@ -2731,6 +2767,10 @@ function restorePages(list) {
   for (const entry of Array.isArray(list) ? list : []) {
     if (!PAGE_TYPES[entry?.type] || !canAddPage()) break;
     const content = {};
+    if (entry.type === "story") {
+      content.storyHeading = entry.storyHeading || "";
+      content.storyBody = entry.storyBody || "";
+    }
     if (entry.type === "poster") {
       content.headline = entry.headline || "";
       content.tag = entry.tag || "none";
@@ -2961,6 +3001,16 @@ function applyPageScope(page) {
 function syncEditorFromState() {
   if (headlineEdit) headlineEdit.value = state.headline || "";
   if (detailEdit) detailEdit.value = state.detailText || "";
+
+  /* The story fields address the SELECTED page, so they follow the selection
+     like every other page-scoped control — and they are hidden entirely off a
+     story page, because there would be nothing for them to write to. */
+  const storyBox = document.getElementById("story-fields");
+  const headingEl = document.getElementById("story-heading-edit");
+  const bodyEl = document.getElementById("story-body-edit");
+  if (storyBox) storyBox.hidden = activePage()?.type !== "story";
+  if (headingEl && headingEl.value !== (state.storyHeading || "")) headingEl.value = state.storyHeading || "";
+  if (bodyEl && bodyEl.value !== (state.storyBody || "")) bodyEl.value = state.storyBody || "";
   syncControl(imgOffsetX, state.imageOffset?.x ?? 0);
   syncControl(imgOffsetY, state.imageOffset?.y ?? 0);
   syncControl(imgZoom, state.imageZoom);
@@ -3128,6 +3178,11 @@ function paintPoster() {
 
   if (isTextPreviewMode()) {
     drawPixTextScreen();
+    return;
+  }
+
+  if (isStoryPreviewMode()) {
+    drawStoryScreen();
     return;
   }
 
@@ -3470,6 +3525,205 @@ function drawPixTextScreen() {
   }
 
   ctx.restore();
+}
+
+/* ── Story page ───────────────────────────────────────────────────────
+   Its own image, its own heading, its own body copy — one slide making one
+   point, which is what a swipeable story is made of.
+
+   Distinct from the text page on purpose. A text page takes a SLICE of the
+   post's single paragraph, so its words depend on how many text pages exist;
+   add a page and every other page's words move. A story page is written
+   directly, so a slide keeps what you wrote on it.
+
+   The image is drawn full-bleed under a gradient that goes almost solid
+   towards the bottom, rather than as a fixed top band. A hard split has to
+   pick a height, and the reference slides do not agree on one — some are
+   nearly full-photo, some are half. The gradient reads as either, and it
+   never leaves a bare strip when a portrait image cannot fill a band. */
+const STORY = {
+  headingSize: 44,       // against the 920x1700 reference frame
+  bodySize: 46,
+  bodyLineHeight: 62,
+  maxBodyLines: 7,
+  gapAfterHeading: 34,
+  bottomPadding: 300,
+};
+
+function storyHeadingText() {
+  // Falls back to the post's headline so a fresh page is never blank on the
+  // canvas — the writer sees the shape immediately and edits from there.
+  return (state.storyHeading || "").trim() || (state.headline || "").trim();
+}
+
+function storyBodyText() {
+  return (state.storyBody || "").trim();
+}
+
+/* One line of heading with the accent boxes behind its [bracketed] runs.
+   The poster headline does this too, but inline inside drawHeadline over a
+   wrapped multi-line block; a story heading is one short line, so this is the
+   same idea without the line-fitting. */
+function drawStoryHeading(text, left, baselineTop, fontSize, s) {
+  if (!text) return baselineTop;
+  ctx.save();
+  ctx.font = `600 ${Math.round(fontSize)}px 'Roboto Serif', 'Poppins', serif`;
+  ctx.textBaseline = "top";
+
+  const parts = text.split(" ");
+  let cursor = left;
+  let open = false;
+  let segStart = null;
+  let segWidth = 0;
+  const segments = [];
+
+  parts.forEach((rawWord, idx) => {
+    const opening = HIGHLIGHT_OPEN_CHAR.test(rawWord);
+    const closing = HIGHLIGHT_CLOSE_CHAR.test(rawWord);
+    const clean = rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, "");
+    if (opening) open = true;
+
+    const wordWidth = ctx.measureText(clean).width;
+    const advance = wordWidth + ctx.measureText(" ").width;
+    if (open && clean.length) {
+      if (segStart === null) segStart = cursor;
+      segWidth += (closing || idx === parts.length - 1) ? wordWidth : advance;
+    }
+    if ((closing || idx === parts.length - 1) && segStart !== null) {
+      segments.push({ x: segStart, w: segWidth });
+      segStart = null;
+      segWidth = 0;
+    }
+    if (closing) open = false;
+    cursor += advance;
+  });
+
+  /* No brackets anywhere means the writer wants the whole heading marked —
+     on this layout the highlight IS the heading treatment, and an unhighlighted
+     line reads as a stray sentence rather than a kicker. */
+  if (!segments.length) {
+    const w = ctx.measureText(text.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, "")).width;
+    segments.push({ x: left, w });
+  }
+
+  ctx.fillStyle = state.accent;
+  const padX = fontSize * 0.16;
+  const padY = fontSize * 0.14;
+  segments.forEach((seg) => {
+    const bx = seg.x - padX;
+    const by = baselineTop - padY;
+    const bw = seg.w + padX * 2;
+    const bh = fontSize + padY * 2;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, fontSize * 0.18);
+    else ctx.rect(bx, by, bw, bh);
+    ctx.fill();
+  });
+
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
+  ctx.shadowBlur = 14 * s;
+  ctx.shadowOffsetY = 4 * s;
+  ctx.fillText(text.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, ""), left, baselineTop);
+  ctx.restore();
+
+  return baselineTop + fontSize;
+}
+
+function drawStoryScreen() {
+  const image = state.mainImage || defaultMain;
+  const W = canvas.width;
+  const H = canvas.height;
+  const L = getLayout();
+  const s = Math.min(W / 920, H / 1700);
+
+  ctx.save();
+  ctx.fillStyle = "#070707";
+  ctx.fillRect(0, 0, W, H);
+
+  drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s);
+
+  // Clear at the top so the picture is the picture; solid at the bottom so
+  // the copy sits on ink rather than on whatever the photo happens to be.
+  const dim = ctx.createLinearGradient(0, 0, 0, H);
+  dim.addColorStop(0, "rgba(0, 0, 0, 0.12)");
+  dim.addColorStop(0.42, "rgba(0, 0, 0, 0.30)");
+  dim.addColorStop(0.58, "rgba(0, 0, 0, 0.86)");
+  dim.addColorStop(0.72, "rgba(0, 0, 0, 0.96)");
+  dim.addColorStop(1, "rgba(0, 0, 0, 0.99)");
+  ctx.fillStyle = dim;
+  ctx.fillRect(0, 0, W, H);
+
+  drawFixedLogos();
+
+  const left = L.headline.x;
+  const maxWidth = L.headline.maxWidth;
+  const body = storyBodyText();
+
+  /* Laid out from the bottom up, like the poster headline: the block is
+     anchored to a fixed distance from the foot of the frame so slides with
+     different amounts of copy still line up as a set when swiped. */
+  ctx.textBaseline = "top";
+  const headingSize = STORY.headingSize * s;
+  const bodySize = STORY.bodySize * s;
+  const bodyLine = STORY.bodyLineHeight * s;
+
+  ctx.font = `600 ${Math.round(bodySize)}px 'Roboto Serif', 'Poppins', serif`;
+  const bodyLines = body ? wrapPlainLines(body, maxWidth, STORY.maxBodyLines) : [];
+
+  const headingHeight = storyHeadingText() ? headingSize + STORY.gapAfterHeading * s : 0;
+  const bodyHeight = bodyLines.length * bodyLine;
+  const stampHeight = state.showTimestamp ? bodyLine * 0.9 : 0;
+  const blockHeight = headingHeight + bodyHeight + stampHeight;
+  const top = H - STORY.bottomPadding * (H / 1700) - blockHeight;
+
+  let y = top;
+  if (storyHeadingText()) {
+    y = drawStoryHeading(storyHeadingText(), left, y, headingSize, s) + STORY.gapAfterHeading * s;
+  }
+
+  ctx.save();
+  ctx.font = `600 ${Math.round(bodySize)}px 'Roboto Serif', 'Poppins', serif`;
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+  ctx.shadowBlur = 12 * s;
+  ctx.shadowOffsetY = 3 * s;
+  bodyLines.forEach((line, i) => ctx.fillText(line, left, y + i * bodyLine));
+  ctx.restore();
+
+  if (state.showTimestamp) drawTimestamp(left, y + bodyHeight + bodyLine * 0.16, s);
+
+  if (!state.isDownloading) {
+    drawEngagementBar();
+    drawNavBar();
+  }
+
+  ctx.restore();
+}
+
+/* Plain greedy wrap against the CURRENT ctx.font. Deliberately not
+   drawWrappedPreviewText: that one auto-shrinks to fit a box and understands
+   bullets, neither of which a story body wants — the copy is short and the
+   size should be the same on every slide of a set. */
+function wrapPlainLines(text, maxWidth, maxLines) {
+  const words = String(text).replace(/\s+/g, " ").trim().split(" ");
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (ctx.measureText(next).width <= maxWidth || !line) {
+      line = next;
+    } else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length > maxLines) {
+    lines.length = maxLines;
+    lines[maxLines - 1] = `${lines[maxLines - 1].replace(/[\s.,;:]+$/, "")}…`;
+  }
+  return lines;
 }
 
 /**

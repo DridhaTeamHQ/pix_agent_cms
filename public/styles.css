@@ -3011,9 +3011,11 @@ body.view-writers .edit-sheet {
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
     gap: 8px;
+    overflow: hidden;
   }
 
   .nav-logo {
+    flex: 0 0 auto;
     font-size: 0.85rem;
     gap: 8px;
   }
@@ -3039,18 +3041,35 @@ body.view-writers .edit-sheet {
     font-size: 0.75rem;
   }
 
+  .view-tabs {
+    min-width: 0;
+    flex: 1 1 auto;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .view-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-actions {
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
   .nav-link {
     display: none;
   }
 
   .nav-session {
-    max-width: 148px;
-    gap: 7px;
-    padding: 3px 4px 3px 9px;
+    max-width: none;
+    padding: 3px 4px;
   }
 
   .nav-account {
-    max-width: 96px;
+    display: none;
   }
 
   .nav-account-label {

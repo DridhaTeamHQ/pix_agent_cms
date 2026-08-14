@@ -20,7 +20,7 @@ import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
   login, logout, sessionUser, purgeExpiredSessions,
   throttleCheck, throttleRecordFailure, throttleClear,
-  ROLES, createUser, listUsers, setPassword, setUserActive, normaliseUsername, isAdmin,
+  ROLES, canReview, createUser, listUsers, setPassword, setUserActive, normaliseUsername, isAdmin,
 } from "./lib/auth.js";
 import { handlePixRequest } from "./lib/pix-api.js";
 import { handlePixAnalyticsRequest } from "./lib/pix-analytics.js";
@@ -1142,7 +1142,15 @@ async function handleVideoClip(req, res) {
     res.on("close", () => rmSync(dir, { recursive: true, force: true }));
     return;   // cleanup happens on stream close, not in finally
   } catch (error) {
-    if (!res.headersSent) sendJson(res, 500, { error: error.message || "Clip failed." });
+    if (!res.headersSent) {
+      const message = error.message || "Clip failed.";
+      const status = /exceeds the .* limit/i.test(message)
+        ? 413
+        : /^(Malformed upload:|Unexpected end of form)/i.test(message)
+          ? 400
+          : 500;
+      sendJson(res, status, { error: message });
+    }
   }
   rmSync(dir, { recursive: true, force: true });
 }
@@ -1318,10 +1326,10 @@ async function handleDailyMattrMeta(req, res) {
     sendJson(res, 401, { error: "Sign in to use the DailyMattr integration." });
     return;
   }
-  /* Readable by writers as well as QA. Writers now choose the section their
-     story belongs in while they build it — they have the context, QA would be
+  /* Readable by writers as well as reviewers. Writers choose the section their
+     story belongs in while they build it — they have the context, reviewers would be
      guessing at review time — and to offer that choice they need the list.
-     Publishing stays QA-only; this is reference data, not an action. */
+     Publishing stays reviewer-only; this is reference data, not an action. */
 
   try {
     const meta = await fetchDailyMattrMeta(dailyMattrConfig());
@@ -1439,11 +1447,10 @@ async function handleDailyMattrPublish(req, res) {
     return;
   }
   // Publishing is the last editorial gate before content is live on
-  // shortlyindia.com, so it belongs to QA alone — the same rule already
-  // applied to approve and delete. Enforced here rather than only by hiding
-  // the panel: the endpoint is reachable by any signed-in writer otherwise.
-  if (user.role !== "qa") {
-    sendJson(res, 403, { error: "Only QA can publish to DailyMattr." });
+  // shortlyindia.com, so it belongs to review roles alone. Use the shared
+  // capability check so a new review role cannot see the panel and get a 403.
+  if (!canReview(user.role)) {
+    sendJson(res, 403, { error: "Only QA or admin can publish to DailyMattr." });
     return;
   }
 
@@ -1466,6 +1473,15 @@ async function handleDailyMattrPublish(req, res) {
   if (!payload.files.length) {
     sendJson(res, 400, { error: "At least one media file is required." });
     return;
+  }
+  if (payload.sourceUrl) {
+    try {
+      const source = new URL(payload.sourceUrl);
+      if (!/^https?:$/.test(source.protocol)) throw new Error("unsupported protocol");
+    } catch {
+      sendJson(res, 400, { error: "Source URL must be a valid HTTP or HTTPS URL." });
+      return;
+    }
   }
 
   /* DailyMattr requires a state whenever the category is "State" — a regional
@@ -1631,6 +1647,7 @@ function readDailyMattrPublish(req) {
         categoryId: fields.category_id || "",
         keywords: fields.keywords || "",
         stateId: fields.state_id || "",
+        sourceUrl: fields.source_url || "",
         // Which library row this poster came from, so publishing can approve
         // it. Empty when QA built the poster without ever saving it.
         pixId: PIX_UUID_RE.test(String(fields.pix_id || "")) ? String(fields.pix_id) : "",
@@ -2318,7 +2335,7 @@ async function buildImageSearchQuery(title, articleText = "") {
 async function handleStockImages(req, res) {
   try {
     if (!pexelsApiKey) {
-      sendJson(res, 500, { error: "Pexels API key is missing." });
+      sendJson(res, 503, { error: "Pexels API key is missing." });
       return;
     }
 

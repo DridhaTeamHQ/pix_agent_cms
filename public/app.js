@@ -956,8 +956,8 @@ function setPostStatus(msg, kind) {
   if (msg) xDownloadStatus.append(msg);
 }
 
-/* Show the publish panel to QA only. This is presentation, not the control —
-   /api/dailymattr/publish returns 403 for writers regardless, because a hidden
+/* Show the publish panel to review roles only. This is presentation, not the
+   control: the server applies the same capability check because a hidden
    button is not a permission. */
 function syncDailyMattrAccess() {
   const panel = document.getElementById("dailymattr-panel");
@@ -6853,6 +6853,7 @@ async function publishToDailyMattr() {
     form.append("category_id", categoryId);
     if (keywords) form.append("keywords", keywords);
     if (stateId) form.append("state_id", stateId);
+    if (state.sourceUrl) form.append("source_url", state.sourceUrl);
     // Lets the server mark this post approved once DailyMattr accepts it —
     // sending a story live IS the approval. Absent when the poster was never
     // saved, in which case there is no library row to mark.

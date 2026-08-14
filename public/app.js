@@ -3774,7 +3774,7 @@ function wrapPlainLines(text, maxWidth, maxLines) {
  * reference at every aspect ratio. TIMESTAMP_SIZE is the one number to
  * change if it should read larger or smaller.
  */
-const TIMESTAMP_SIZE = 17;      // design px, against a 39px paragraph
+const TIMESTAMP_SIZE = 21;      // design px, against a 39px paragraph
 const TIMESTAMP_OPACITY = 0.7;
 
 /**
@@ -3884,7 +3884,7 @@ function drawTextPreviewLogo(x, y, size) {
   const scale = size / Math.max(rawW, rawH);
   const drawW = rawW * scale;
   const drawH = rawH * scale;
-  drawLogoAt(logo, x, y, drawW, drawH, { glow: logo === state.logoImage });
+  drawLogoAt(logo, x, y, drawW, drawH);
 }
 
 function drawPixStatusBar(scaleX, scaleY, s) {
@@ -4168,7 +4168,7 @@ function drawFixedLogos() {
 
   // Position + size come from the active aspect-ratio preset. The Shortly
   // logo already has its own gradient halo, so we use the slot size that's
-  // tuned for it (slightly larger), and skip the white glow.
+  // tuned for it (slightly larger).
   const L = getLayout();
   const slotSize = useAlt ? L.logo.slotShortly : L.logo.slotPix;
   const centerX = L.logo.centerX;
@@ -4186,22 +4186,19 @@ function drawFixedLogos() {
   const px = centerX - drawW / 2;
   const py = centerY - drawH / 2;
 
-  drawLogoAt(logo, px, py, drawW, drawH, { glow: !useAlt });
+  drawLogoAt(logo, px, py, drawW, drawH);
 }
 
-function drawLogoAt(img, x, y, w, h, { glow = true } = {}) {
+/* The logo used to carry a white halo and a hairline ring, which over a blue
+   mark read as a pale blue outline rather than as glow. Both are gone: the
+   mark is its own solid circle and needs nothing behind it to separate from
+   the photo. */
+function drawLogoAt(img, x, y, w, h) {
   const cx = x + w / 2;
   const cy = y + h / 2;
   const radius = Math.min(w, h) / 2;
 
   ctx.save();
-  if (glow) {
-    // Soft white halo to make the Pix logo pop against dark backgrounds.
-    // Skipped for the Shortly logo, which carries its own gradient circle.
-    ctx.shadowColor = "rgba(255, 255, 255, 0.5)";
-    ctx.shadowBlur = 18;
-  }
-
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.closePath();
@@ -4209,18 +4206,6 @@ function drawLogoAt(img, x, y, w, h, { glow = true } = {}) {
 
   ctx.drawImage(img, x, y, w, h);
   ctx.restore();
-
-  if (glow) {
-    ctx.save();
-    ctx.shadowColor = "rgba(255, 255, 255, 0.5)";
-    ctx.shadowBlur = 18;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
 }
 
 function drawTag() {

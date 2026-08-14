@@ -2,7 +2,7 @@
 
 :root {
   /* ── Light "studio" theme ──────────────────────────────────
-     Warm off-white canvas, clean white panels, one violet→indigo
+     Warm off-white canvas, clean white panels, one single-blue
      accent family. All the incidental "overlay" effects route
      through semantic tokens (--hairline, --hover-tint, --sunken…)
      so the whole system stays consistent on a light base. */
@@ -51,18 +51,18 @@
      anything built from them picks up the page's own colour. */
   --glass-fill:        rgba(255, 255, 255, 0.55);
   --glass-inner:       rgba(255, 255, 255, 0.72);
-  --glass-edge:        rgba(47, 107, 255, 0.16);
-  --glass-edge-strong: rgba(47, 107, 255, 0.30);
+  --glass-edge:        rgba(57, 121, 255, 0.16);
+  --glass-edge-strong: rgba(57, 121, 255, 0.30);
   --glass-menu:        rgba(244, 247, 255, 0.88);
   --glass-shadow:      0 4px 18px rgba(17, 26, 46, 0.08);
 
-  --accent: #2f6bff;
-  /* vivid violet, great on white */
-  --accent-dim: #1d4fd8;
-  --accent-deep: #0f3bbf;
-  --accent-soft: rgba(47, 107, 255, 0.10);
+  --accent: #3979ff;
+  /* the brand blue, darkened just enough to stay readable as text on white */
+  --accent-dim: #2560e0;
+  --accent-deep: #1443ad;
+  --accent-soft: rgba(57, 121, 255, 0.10);
   /* tinted chip fills */
-  --accent-glow: rgba(47, 107, 255, 0.26);
+  --accent-glow: rgba(57, 121, 255, 0.26);
   --iris: #00b8d4;
   /* magenta — AI features only */
 
@@ -75,10 +75,10 @@
   --radius-md: 11px;
   --radius-sm: 9px;
 
-  /* Soft, slightly violet-tinted elevation for a light UI */
-  --shadow-sm: 0 1px 2px rgba(28, 25, 64, 0.06), 0 2px 6px rgba(76, 29, 149, 0.05);
-  --shadow-md: 0 6px 16px rgba(76, 29, 149, 0.08), 0 2px 6px rgba(28, 25, 64, 0.05);
-  --shadow-lg: 0 22px 48px rgba(76, 29, 149, 0.12), 0 6px 16px rgba(28, 25, 64, 0.06);
+  /* Soft, slightly blue-tinted elevation for a light UI */
+  --shadow-sm: 0 1px 2px rgba(28, 25, 64, 0.06), 0 2px 6px rgba(20, 67, 173, 0.05);
+  --shadow-md: 0 6px 16px rgba(20, 67, 173, 0.08), 0 2px 6px rgba(28, 25, 64, 0.05);
+  --shadow-lg: 0 22px 48px rgba(20, 67, 173, 0.12), 0 6px 16px rgba(28, 25, 64, 0.06);
 
   --font-display: 'Poppins', 'Inter', sans-serif;
 
@@ -144,7 +144,7 @@ body {
   height: 46vw;
   left: -12vw;
   top: -18vw;
-  background: radial-gradient(circle, rgba(91, 141, 255, 0.55), transparent 66%);
+  background: radial-gradient(circle, rgba(57, 121, 255, 0.55), transparent 66%);
   animation: aurora-a 46s ease-in-out infinite alternate;
 }
 
@@ -321,9 +321,9 @@ body.auth-ready .agent-auth-gate {
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  background: rgba(47, 107, 255, 0.14);
-  color: var(--accent-dim, #2f6bff);
-  border: 1px solid rgba(47, 107, 255, 0.3);
+  background: rgba(57, 121, 255, 0.14);
+  color: var(--accent-dim, #3979ff);
+  border: 1px solid rgba(57, 121, 255, 0.3);
 }
 
 /* QA is the role that can change other people's work — worth telling apart at
@@ -440,7 +440,7 @@ button:focus-visible,
   justify-content: center;
   width: 28px;
   height: 28px;
-  background: linear-gradient(135deg, var(--accent) 0%, #5d5df0 100%);
+  background: linear-gradient(135deg, var(--accent) 0%, #1443ad 100%);
   border-radius: 8px;
   font-size: 0.72rem;
   font-weight: 800;
@@ -454,7 +454,7 @@ button:focus-visible,
   font-weight: 700;
   color: var(--accent);
   background: var(--accent-soft);
-  border: 1px solid rgba(47, 107, 255, 0.2);
+  border: 1px solid rgba(57, 121, 255, 0.2);
   padding: 3px 9px;
   border-radius: 100px;
   letter-spacing: 0.08em;
@@ -569,7 +569,7 @@ h1 {
      sit inside it — see the note on .agent-auth-card h1. */
   line-height: 1.22;
   padding-bottom: 0.12em;
-  background: linear-gradient(150deg, #2a1a52 0%, #6d28d9 55%, #2f6bff 100%);
+  background: linear-gradient(150deg, #10265e 0%, #1f56d1 55%, #3979ff 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   margin-bottom: 6px;
@@ -659,7 +659,7 @@ p.desc {
   overflow-y: auto;
   padding: 22px 20px 24px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(47, 107, 255, 0.28) transparent;
+  scrollbar-color: rgba(57, 121, 255, 0.28) transparent;
 }
 
 .image-panel::-webkit-scrollbar {
@@ -671,7 +671,7 @@ p.desc {
 }
 
 .image-panel::-webkit-scrollbar-thumb {
-  background: rgba(47, 107, 255, 0.25);
+  background: rgba(57, 121, 255, 0.25);
   border-radius: 4px;
 }
 
@@ -686,7 +686,7 @@ p.desc {
   flex-direction: column;
   padding: 22px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(47, 107, 255, 0.28) transparent;
+  scrollbar-color: rgba(57, 121, 255, 0.28) transparent;
 }
 
 .preview-panel::-webkit-scrollbar {
@@ -698,7 +698,7 @@ p.desc {
 }
 
 .preview-panel::-webkit-scrollbar-thumb {
-  background: rgba(47, 107, 255, 0.25);
+  background: rgba(57, 121, 255, 0.25);
   border-radius: 4px;
 }
 
@@ -959,7 +959,7 @@ textarea::placeholder {
   justify-content: center;
   gap: 7px;
   /* Oversized gradient pans across on hover — feels alive without motion noise */
-  background: linear-gradient(115deg, #8b5cf6 0%, #6366f1 40%, #8b5cf6 80%, #5b8dff 100%);
+  background: linear-gradient(115deg, #1443ad 0%, #3979ff 40%, #1443ad 80%, #3979ff 100%);
   background-size: 240% 100%;
   background-position: 0% 0;
   color: white;
@@ -1150,12 +1150,12 @@ input[type="range"]::-webkit-slider-thumb {
   border: 3px solid var(--accent);
   cursor: pointer;
   transition: var(--transition);
-  box-shadow: 0 1px 4px rgba(76, 29, 149, 0.28);
+  box-shadow: 0 1px 4px rgba(20, 67, 173, 0.28);
 }
 
 input[type="range"]::-webkit-slider-thumb:hover {
   transform: scale(1.2);
-  box-shadow: 0 0 0 5px rgba(47, 107, 255, 0.16), 0 1px 4px rgba(76, 29, 149, 0.28);
+  box-shadow: 0 0 0 5px rgba(57, 121, 255, 0.16), 0 1px 4px rgba(20, 67, 173, 0.28);
 }
 
 /* ─── File Upload ────────────────────────────────────────────── */
@@ -1187,9 +1187,9 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 .upload-zone.is-dragover,
 .upload-zone:focus-visible {
-  border-color: rgba(47, 107, 255, 0.7);
-  background: rgba(47, 107, 255, 0.08);
-  box-shadow: 0 0 0 4px rgba(47, 107, 255, 0.12);
+  border-color: rgba(57, 121, 255, 0.7);
+  background: rgba(57, 121, 255, 0.08);
+  box-shadow: 0 0 0 4px rgba(57, 121, 255, 0.12);
 }
 
 .upload-zone:hover .upload-icon {
@@ -1390,9 +1390,9 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 .preview-save.is-saved {
-  color: var(--accent-dim, #2f6bff);
-  border-color: rgba(47, 107, 255, 0.4);
-  background: rgba(47, 107, 255, 0.1);
+  color: var(--accent-dim, #3979ff);
+  border-color: rgba(57, 121, 255, 0.4);
+  background: rgba(57, 121, 255, 0.1);
 }
 
 .preview-save.is-error {
@@ -1419,7 +1419,7 @@ input[type="range"]::-webkit-slider-thumb:hover {
   justify-content: center;
   align-items: center;
   background:
-    radial-gradient(ellipse 65% 55% at 50% 40%, rgba(47, 107, 255, 0.06) 0%, transparent 70%),
+    radial-gradient(ellipse 65% 55% at 50% 40%, rgba(57, 121, 255, 0.06) 0%, transparent 70%),
     linear-gradient(180deg, #efeefa 0%, #e6e3f4 100%);
   border-radius: var(--radius-lg);
   border: 1px solid var(--hairline-2);
@@ -2365,7 +2365,7 @@ body.view-writers .edit-sheet {
 }
 
 /* Frosted-glass shells, matching the blur/saturate pairing the nav and panels
-   already use. The tint is the page's own violet rather than plain white, so
+   already use. The tint is the page's own blue rather than plain white, so
    the controls read as part of the card instead of sitting on top of it. */
 .analytics-roster-filter {
   display: inline-flex;
@@ -2414,7 +2414,7 @@ body.view-writers .edit-sheet {
 }
 
 /* ── Category listbox ──
-   A custom control because the three things asked of it — a translucent violet
+   A custom control because the three things asked of it — a translucent blue
    fill, an unhurried open, and its own scrollbar — are all off-limits on a
    native <select> popup. */
 .analytics-select {
@@ -3328,7 +3328,7 @@ body.view-writers .edit-sheet {
     padding: 0;
     border: 0;
     border-radius: 50%;
-    background: linear-gradient(135deg, var(--accent) 0%, #5d5df0 100%);
+    background: linear-gradient(135deg, var(--accent) 0%, #1443ad 100%);
     color: #fff;
     cursor: pointer;
     box-shadow: 0 10px 28px rgba(77, 132, 255, 0.42), 0 4px 12px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.18);
@@ -3611,14 +3611,14 @@ body.view-writers .edit-sheet {
 
 /* Text selection matches the brand */
 ::selection {
-  background: rgba(91, 141, 255, 0.35);
+  background: rgba(57, 121, 255, 0.35);
   color: #fff;
 }
 
-/* Thin violet scrollbars everywhere (WebKit + Firefox) */
+/* Thin blue scrollbars everywhere (WebKit + Firefox) */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(91, 141, 255, 0.28) transparent;
+  scrollbar-color: rgba(57, 121, 255, 0.28) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -3631,12 +3631,12 @@ body.view-writers .edit-sheet {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: rgba(91, 141, 255, 0.28);
+  background: rgba(57, 121, 255, 0.28);
   border-radius: 10px;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(91, 141, 255, 0.45);
+  background: rgba(57, 121, 255, 0.45);
 }
 
 /* ─── AI Enhance — iridescent gradient border + shimmer sweep ── */
@@ -3644,9 +3644,9 @@ body.view-writers .edit-sheet {
   position: relative;
   background:
     linear-gradient(rgba(13, 13, 20, 0.92), rgba(13, 13, 20, 0.92)) padding-box,
-    linear-gradient(120deg, #5b8dff, #6366f1 40%, #f0abfc 80%, #5b8dff) border-box;
+    linear-gradient(120deg, #3979ff, #6ea0ff 40%, #b9d0ff 80%, #3979ff) border-box;
   border: 1px solid transparent;
-  color: #d8ccff;
+  color: #cfe0ff;
   overflow: hidden;
 }
 
@@ -3663,7 +3663,7 @@ body.view-writers .edit-sheet {
 .btn-ai:hover:not(:disabled) {
   transform: translateY(-1px);
   color: #fff;
-  box-shadow: 0 6px 22px rgba(91, 141, 255, 0.22);
+  box-shadow: 0 6px 22px rgba(57, 121, 255, 0.22);
 }
 
 .btn-ai:hover:not(:disabled)::before {
@@ -3724,15 +3724,15 @@ body.view-poster-return .app-shell {
 /* ─── FAB attention pulse (mobile) — three soft rings then rest ── */
 @keyframes fab-pulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(91, 141, 255, 0.45);
+    box-shadow: 0 0 0 0 rgba(57, 121, 255, 0.45);
   }
 
   70% {
-    box-shadow: 0 0 0 16px rgba(91, 141, 255, 0);
+    box-shadow: 0 0 0 16px rgba(57, 121, 255, 0);
   }
 
   100% {
-    box-shadow: 0 0 0 0 rgba(91, 141, 255, 0);
+    box-shadow: 0 0 0 0 rgba(57, 121, 255, 0);
   }
 }
 
@@ -3745,8 +3745,8 @@ input[type="url"]:focus,
 input[type="text"]:focus,
 textarea:focus {
   box-shadow:
-    0 0 0 3px rgba(91, 141, 255, 0.14),
-    0 4px 20px rgba(91, 141, 255, 0.08);
+    0 0 0 3px rgba(57, 121, 255, 0.14),
+    0 4px 20px rgba(57, 121, 255, 0.08);
 }
 
 /* ─── Stock thumbs get a springier hover ── */
@@ -3778,7 +3778,7 @@ textarea:focus {
 
 .nav-logo:hover .nav-logo-mark {
   transform: rotate(-6deg) scale(1.06);
-  box-shadow: 0 6px 18px rgba(91, 141, 255, 0.5);
+  box-shadow: 0 6px 18px rgba(57, 121, 255, 0.5);
 }
 
 /* Aurora: calm it down on small screens (fill-rate) */
@@ -3832,21 +3832,21 @@ textarea:focus {
 
   /* On ink the glass is lit by the accent itself — a white tint would grey the
      card out rather than sit in front of it. */
-  --glass-fill:        rgba(91, 141, 255, 0.08);
-  --glass-inner:       rgba(91, 141, 255, 0.14);
-  --glass-edge:        rgba(91, 141, 255, 0.22);
-  --glass-edge-strong: rgba(91, 141, 255, 0.40);
+  --glass-fill:        rgba(57, 121, 255, 0.08);
+  --glass-inner:       rgba(57, 121, 255, 0.14);
+  --glass-edge:        rgba(57, 121, 255, 0.22);
+  --glass-edge-strong: rgba(57, 121, 255, 0.40);
   /* The open menu sits over the card, so it needs enough body to read as glass
      rather than as a hole punched in the page. */
   --glass-menu:        rgba(26, 40, 72, 0.86);
   --glass-shadow:      0 6px 20px rgba(0, 0, 0, 0.35);
 
-  --accent: #5b8dff;
-  --accent-dim: #8fb4ff;
+  --accent: #3979ff;
+  --accent-dim: #8cb1ff;
   /* "readable accent" — light on dark */
   --accent-deep: #3979ff;
-  --accent-soft: rgba(91, 141, 255, 0.16);
-  --accent-glow: rgba(91, 141, 255, 0.28);
+  --accent-soft: rgba(57, 121, 255, 0.16);
+  --accent-glow: rgba(57, 121, 255, 0.28);
   --iris: #22d3ee;
 
   --green: #34d399;
@@ -3869,13 +3869,13 @@ textarea:focus {
 }
 
 :root[data-theme="dark"] h1 {
-  background: linear-gradient(155deg, #ffffff 0%, #d8c6ff 55%, #5b8dff 100%);
+  background: linear-gradient(155deg, #ffffff 0%, #c3d8ff 55%, #3979ff 100%);
   -webkit-background-clip: text;
 }
 
 :root[data-theme="dark"] .canvas-container {
   background:
-    radial-gradient(ellipse 65% 55% at 50% 40%, rgba(91, 141, 255, 0.06) 0%, transparent 70%),
+    radial-gradient(ellipse 65% 55% at 50% 40%, rgba(57, 121, 255, 0.06) 0%, transparent 70%),
     linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.4) 100%);
   box-shadow: inset 0 1px 8px rgba(0, 0, 0, 0.3);
 }
@@ -3943,8 +3943,8 @@ textarea:focus {
 
 :root[data-theme="dark"] .analytics-card-note {
   color: #d8c8ff;
-  background: rgba(91, 141, 255, 0.16);
-  border-color: rgba(91, 141, 255, 0.3);
+  background: rgba(57, 121, 255, 0.16);
+  border-color: rgba(57, 121, 255, 0.3);
 }
 
 :root[data-theme="dark"] .analytics-day-label {
@@ -3957,7 +3957,7 @@ textarea:focus {
 
 :root[data-theme="dark"] .analytics-bars {
   background:
-    linear-gradient(180deg, rgba(91, 141, 255, 0.08), rgba(91, 141, 255, 0.02)),
+    linear-gradient(180deg, rgba(57, 121, 255, 0.08), rgba(57, 121, 255, 0.02)),
     rgba(255, 255, 255, 0.04);
 }
 
@@ -3989,7 +3989,7 @@ textarea:focus {
 }
 
 :root[data-theme="dark"] .analytics-rank {
-  background: rgba(91, 141, 255, 0.2);
+  background: rgba(57, 121, 255, 0.2);
   color: #e2d5ff;
 }
 

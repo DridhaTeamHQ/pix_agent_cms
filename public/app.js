@@ -666,6 +666,9 @@ function applySession(user) {
   // and don't spend a DailyMattr round-trip loading options a writer can
   // never use.
   syncDailyMattrAccess();
+  // Required/conditional section UI must update immediately on role change;
+  // loading the live option lists can finish later or fail independently.
+  syncSectionInputs();
   if (canReviewRole(user?.role)) loadDailyMattrMeta({ force: true });
   // Writers need the lists too, to file their own story.
   if (user) loadSectionOptions();
@@ -3823,9 +3826,9 @@ function drawTimestamp(x, y, s) {
   ctx.globalAlpha = TIMESTAMP_OPACITY;
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
-  // Poppins regular (400). PREVIEW_TEXT_FONT already resolves to Poppins;
-  // only the weight differs from the paragraph, which sits at 700.
-  ctx.font = `400 ${Math.round(TIMESTAMP_SIZE * s)}px ${PREVIEW_TEXT_FONT}`;
+  // Keep the complete date, including the month, firmly legible at export
+  // size while reusing the same Poppins face as the paragraph copy.
+  ctx.font = `700 ${Math.round(TIMESTAMP_SIZE * s)}px ${PREVIEW_TEXT_FONT}`;
   // A soft shadow only — at 70% over a blurred photo the glyphs would
   // otherwise disappear against light areas.
   ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
@@ -4083,30 +4086,30 @@ function drawHero() {
   // Overlay opacity (0-100)
   const opa = (state.overlayOpacity ?? 100) / 100;
 
-  // Smooth gradient — starts `fadeHeight` px above the headline top and
-  // fades to fully black BY the headline top, then stays black down to
-  // canvas.height. headline top is computed dynamically from line count,
-  // so the gradient automatically follows long vs short headlines.
+  // One continuous fade: transparent above the copy, dark enough at the
+  // first line to keep it readable while preserving some photograph, then
+  // progressively darker until the bottom is fully black. headlineTop moves
+  // with line count, so the fade continues to follow short and long titles.
   const L = getLayout();
   const headlineTop = state._render?.top ?? (canvas.height - L.headline.bottomPadding - 200);
-  const fullBlackY = headlineTop;
-  const gradientStart = Math.max(0, fullBlackY - L.gradient.fadeHeight);
+  const gradientStart = Math.max(0, headlineTop - L.gradient.fadeHeight);
   const gradientHeight = canvas.height - gradientStart;
-  const fullBlackFrac = (fullBlackY - gradientStart) / gradientHeight;
+  const headlineFrac = (headlineTop - gradientStart) / gradientHeight;
   const grad = ctx.createLinearGradient(0, gradientStart, 0, canvas.height);
-  // Stops are placed proportionally between gradientStart and fullBlackY.
-  // The original 9:16 stops (.12,.22,.30,.38,.44,.50 of 350px range) become:
-  //   t=0 → transparent, t=fullBlackFrac → fully black
-  const stop = (frac, alpha) =>
-    grad.addColorStop(Math.min(1, frac * fullBlackFrac), `rgba(0,0,0,${(alpha * opa).toFixed(2)})`);
+  const stopAt = (position, alpha) =>
+    grad.addColorStop(Math.min(1, position), `rgba(0,0,0,${(alpha * opa).toFixed(2)})`);
+  const beforeHeadline = (progress, alpha) => stopAt(progress * headlineFrac, alpha);
+  const belowHeadline = (progress, alpha) =>
+    stopAt(headlineFrac + progress * (1 - headlineFrac), alpha);
+
   grad.addColorStop(0, "rgba(0,0,0,0)");
-  stop(0.24, 0.10);
-  stop(0.44, 0.30);
-  stop(0.60, 0.55);
-  stop(0.76, 0.80);
-  stop(0.88, 0.95);
-  stop(1.00, 1.00);
-  grad.addColorStop(1, `rgba(0,0,0,${(1 * opa).toFixed(2)})`);
+  beforeHeadline(0.22, 0.03);
+  beforeHeadline(0.48, 0.13);
+  beforeHeadline(0.72, 0.34);
+  beforeHeadline(1.00, 0.72);
+  belowHeadline(0.38, 0.84);
+  belowHeadline(0.72, 0.94);
+  belowHeadline(1.00, 1.00);
   ctx.fillStyle = grad;
   ctx.fillRect(0, gradientStart, canvas.width, gradientHeight);
 
@@ -7003,6 +7006,10 @@ if (dailymattrCategory) {
   dailymattrCategory.addEventListener("change", () => {
     dailymattrDraftTouched.category = true;
     state.categoryId = dailymattrCategory.value;
+    if (!stateIsRequired(state.categoryId)) {
+      state.stateId = "";
+      dailymattrDraftTouched.state = false;
+    }
     syncSectionInputs();
   });
 }
@@ -7435,6 +7442,12 @@ function startNewPix() {
 async function savePixToLibrary() {
   if (!state.user) {
     return { ok: false, error: "Sign in to save posts." };
+  }
+  if (state.user.role === "writer" && !state.categoryId) {
+    return { ok: false, error: "Choose a category before saving." };
+  }
+  if (state.user.role === "writer" && stateIsRequired(state.categoryId) && !state.stateId) {
+    return { ok: false, error: "Choose a state before saving a State category post." };
   }
   // Nothing worth a row yet.
   if (!state.headline && !state.sourceUrl) {
@@ -8216,6 +8229,9 @@ document.getElementById("writers-refresh")?.addEventListener("click", () => load
 const postCategorySelect = document.getElementById("post-category");
 const postStateSelect = document.getElementById("post-state");
 const postSectionHint = document.getElementById("post-section-hint");
+const postStateField = document.getElementById("post-state-field");
+const postSectionRow = postCategorySelect?.closest(".section-row");
+const postCategoryRequired = document.getElementById("post-category-required");
 
 let stateCategoryId = null;   // the id of the category literally named "State"
 /* Shared with the analytics category filter, which lists the same sections. */
@@ -8227,11 +8243,27 @@ function stateIsRequired(categoryId) {
 
 /* Show the rule before it bites, rather than letting a publish fail on it. */
 function syncSectionHint() {
-  if (!postSectionHint) return;
   const needsState = stateIsRequired(state.categoryId);
-  const field = document.getElementById("post-state-field");
-  if (field) field.classList.toggle("is-required", needsState);
-  if (needsState && !state.stateId) {
+  const writerNeedsCategory = state.user?.role === "writer";
+  if (postCategorySelect) {
+    postCategorySelect.required = writerNeedsCategory;
+    postCategorySelect.setAttribute("aria-required", String(writerNeedsCategory));
+  }
+  if (postCategoryRequired) postCategoryRequired.hidden = !writerNeedsCategory;
+  if (postStateField) {
+    postStateField.hidden = !needsState;
+    postStateField.classList.toggle("is-required", needsState);
+  }
+  if (postSectionRow) postSectionRow.classList.toggle("has-state", needsState);
+  if (postStateSelect) {
+    postStateSelect.required = needsState;
+    postStateSelect.setAttribute("aria-required", String(needsState));
+  }
+  if (!postSectionHint) return;
+  if (writerNeedsCategory && !state.categoryId) {
+    postSectionHint.textContent = "Category is required before saving.";
+    postSectionHint.className = "helper-text is-warning";
+  } else if (needsState && !state.stateId) {
     postSectionHint.textContent = "The State category needs a state — pick one.";
     postSectionHint.className = "helper-text is-warning";
   } else {
@@ -8273,6 +8305,10 @@ function syncSectionInputs() {
    overwrite a choice QA had already made. */
 postCategorySelect?.addEventListener("change", () => {
   state.categoryId = postCategorySelect.value;
+  if (!stateIsRequired(state.categoryId)) {
+    state.stateId = "";
+    dailymattrDraftTouched.state = false;
+  }
   // A hand edit here outranks an earlier hand edit in the publish panel: the
   // guard exists to stop AUTOMATIC syncs clobbering a choice, not to make the
   // two controls disagree. Clearing it lets this one through.
@@ -8298,7 +8334,7 @@ async function loadSectionOptions() {
     const stateCat = categories.find((c) => /^state$/i.test(String(c.name).trim()));
     stateCategoryId = stateCat ? String(stateCat.id) : null;
     fillSelectOptions(postCategorySelect, categories, "Choose a category");
-    fillSelectOptions(postStateSelect, states, "Optional");
+    fillSelectOptions(postStateSelect, states, "Choose a state");
     syncSectionInputs();
     // The analytics category filter lists these same sections, by the same ids.
     sectionCategories = categories;

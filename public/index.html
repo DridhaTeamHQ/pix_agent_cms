@@ -329,12 +329,12 @@
           <h3 class="acc-subtitle">Section</h3>
           <div class="section-row">
             <label class="field">
-              <span class="field-label">Category</span>
-              <select id="post-category"><option value="">Choose a category</option></select>
+              <span class="field-label">Category <span class="required-mark" id="post-category-required" hidden aria-hidden="true">*</span></span>
+              <select id="post-category" aria-required="false"><option value="">Choose a category</option></select>
             </label>
-            <label class="field" id="post-state-field">
-              <span class="field-label">State</span>
-              <select id="post-state"><option value="">Optional</option></select>
+            <label class="field" id="post-state-field" hidden>
+              <span class="field-label">State <span class="required-mark" aria-hidden="true">*</span></span>
+              <select id="post-state" aria-required="false"><option value="">Choose a state</option></select>
             </label>
           </div>
           <small class="helper-text" id="post-section-hint">Where this story is filed on the web app.</small>

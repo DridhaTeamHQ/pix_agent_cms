@@ -539,10 +539,6 @@
             <span class="slider-label">Pan Y</span>
             <input type="range" id="img-offset-y" min="-900" max="900" value="0" />
           </label>
-          <label class="slider-container" style="margin-bottom:0;">
-            <span class="slider-label">Opacity</span>
-            <input type="range" id="overlay-opacity" min="0" max="100" value="100" />
-          </label>
         </div></div>
       </div>
 
@@ -965,9 +961,18 @@
           </div>
           <div class="analytics-roster-body" id="analytics-roster-body" hidden>
             <div class="analytics-roster-controls">
-              <div class="analytics-roster-sorts" role="group" aria-label="Sort the roster">
-                <button type="button" class="analytics-roster-sort is-active" data-roster-sort="approvals">By approvals</button>
-                <button type="button" class="analytics-roster-sort" data-roster-sort="rejections">By rejections</button>
+              <div class="analytics-roster-filter">
+                <span id="analytics-source-caption">By source</span>
+                <div class="analytics-select" id="analytics-source">
+                  <button type="button" class="analytics-select-trigger" id="analytics-source-trigger"
+                          aria-haspopup="listbox" aria-expanded="false"
+                          aria-labelledby="analytics-source-caption analytics-source-label">
+                    <span id="analytics-source-label">All sources</span>
+                    <span class="analytics-select-chevron" aria-hidden="true"></span>
+                  </button>
+                  <ul class="analytics-select-menu" id="analytics-source-menu" role="listbox"
+                      aria-labelledby="analytics-source-caption" tabindex="-1"></ul>
+                </div>
               </div>
 
               <!-- A listbox rather than a <select>: the native popup cannot be

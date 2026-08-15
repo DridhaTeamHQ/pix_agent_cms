@@ -20,7 +20,7 @@ import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
   login, logout, sessionUser, purgeExpiredSessions,
   throttleCheck, throttleRecordFailure, throttleClear,
-  ROLES, canReview, createUser, listUsers, setPassword, setUserActive, normaliseUsername, isAdmin,
+  ROLES, canReview, createUser, listUsers, setPassword, setUserActive, normaliseUsername, isAdmin, updateUser, deleteUser,
 } from "./lib/auth.js";
 import { handlePixRequest } from "./lib/pix-api.js";
 import { handlePixAnalyticsRequest } from "./lib/pix-analytics.js";
@@ -1793,6 +1793,37 @@ async function handleUsers(req, res) {
       if (!row) { sendJson(res, 404, { error: `No account named "${username}".` }); return; }
       console.log(`✓ ${user.username} ${active ? "enabled" : "disabled"} "${username}"`);
       sendJson(res, 200, { user: { username: row.username, role: row.role, active: row.active } });
+      return;
+    }
+
+    if (path === "/api/users/update") {
+      const oldUsername = normaliseUsername(body?.oldUsername);
+      const username = normaliseUsername(body?.username);
+      const role = String(body?.role || "writer");
+      const displayName = String(body?.displayName || "").trim() || null;
+      if (!username) { sendJson(res, 400, { error: "A username is required." }); return; }
+      try {
+        const row = await updateUser(oldUsername, { username, role, displayName });
+        if (!row) { sendJson(res, 404, { error: `No account named "${oldUsername}".` }); return; }
+        console.log(`✓ ${user.username} updated "${oldUsername}" to "${username}"`);
+        sendJson(res, 200, { user: { username: row.username, role: row.role, active: row.active, displayName: row.display_name } });
+      } catch (err) {
+        if (err?.code === "23505") sendJson(res, 409, { error: `"${username}" already exists.` });
+        else throw err;
+      }
+      return;
+    }
+
+    if (path === "/api/users/delete") {
+      const username = normaliseUsername(body?.username);
+      if (username === normaliseUsername(user.username)) {
+        sendJson(res, 400, { error: "You cannot delete your own account." });
+        return;
+      }
+      const deleted = await deleteUser(username);
+      if (!deleted) { sendJson(res, 404, { error: `No account named "${username}".` }); return; }
+      console.log(`✓ ${user.username} deleted "${username}"`);
+      sendJson(res, 200, { ok: true, username });
       return;
     }
 

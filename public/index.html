@@ -1100,6 +1100,32 @@
     </form>
   </dialog>
 
+  <dialog class="pix-dialog" id="edit-writer-dialog" aria-labelledby="edit-writer-title">
+    <form class="pix-dialog-inner" id="edit-writer-form">
+      <h3 class="pix-dialog-title" id="edit-writer-title">Edit Writer</h3>
+      <p class="pix-dialog-body" id="edit-writer-error" style="color:var(--c-red); font-size: 0.875rem;" hidden></p>
+      <label class="field" style="text-align: left; margin-bottom: 1rem;">
+        <span class="field-label">Username</span>
+        <input type="text" id="edit-writer-username" required />
+      </label>
+      <label class="field" style="text-align: left; margin-bottom: 1rem;">
+        <span class="field-label">Display name</span>
+        <input type="text" id="edit-writer-display" />
+      </label>
+      <label class="field" style="text-align: left; margin-bottom: 1.5rem;">
+        <span class="field-label">Role</span>
+        <select id="edit-writer-role">
+          <option value="writer">Writer</option>
+          <option value="qa">QA</option>
+        </select>
+      </label>
+      <div class="pix-dialog-actions">
+        <button type="button" class="btn-ghost" id="edit-writer-cancel">Cancel</button>
+        <button type="submit" class="btn-primary" id="edit-writer-confirm">Save Changes</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="./app.js"></script>
 </body>
 </html>

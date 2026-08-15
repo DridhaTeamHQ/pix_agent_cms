@@ -8089,7 +8089,43 @@ function renderWriterRow(u) {
     } catch (err) { setWritersStatus(err.message, "error"); }
   });
 
-  actions.append(resetBtn, toggleBtn);
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "btn-ghost";
+  editBtn.textContent = "Edit";
+  editBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openEditWriterDialog(u);
+  });
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "btn-ghost is-danger";
+  deleteBtn.textContent = "Delete";
+  if (isSelf) {
+    deleteBtn.disabled = true;
+    deleteBtn.title = "You cannot delete your own account.";
+  }
+  deleteBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const ok = await confirmAction({
+      title: `Delete ${u.displayName || u.username}?`,
+      body: "They will be permanently removed. Their posts will remain but without an attached author.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await usersRequest("/api/users/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u.username }),
+      });
+      setWritersStatus(`${u.username} deleted.`, "success");
+      loadWriters();
+    } catch (err) { setWritersStatus(err.message, "error"); }
+  });
+
+  actions.append(editBtn, deleteBtn, resetBtn, toggleBtn);
   li.append(open, actions);
   return li;
 }
@@ -8794,3 +8830,50 @@ function restoreStoredVideo(video) {
    above is initialised before setAuthState can touch it. See the note beside
    the state object for why this is not at the top. */
 initAuth();
+
+// Edit Writer Dialog Logic
+const editWriterDialog = document.getElementById("edit-writer-dialog");
+const editWriterForm = document.getElementById("edit-writer-form");
+const editWriterUsername = document.getElementById("edit-writer-username");
+const editWriterDisplay = document.getElementById("edit-writer-display");
+const editWriterRole = document.getElementById("edit-writer-role");
+const editWriterError = document.getElementById("edit-writer-error");
+const editWriterCancel = document.getElementById("edit-writer-cancel");
+
+window.openEditWriterDialog = function(user) {
+  if (!editWriterDialog) return;
+  window.currentEditingWriter = user.username;
+  editWriterUsername.value = user.username;
+  editWriterDisplay.value = user.displayName || "";
+  editWriterRole.value = user.role || "writer";
+  editWriterError.hidden = true;
+  editWriterDialog.showModal();
+};
+
+if (editWriterCancel) {
+  editWriterCancel.addEventListener("click", () => editWriterDialog.close());
+}
+
+if (editWriterForm) {
+  editWriterForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!window.currentEditingWriter) return;
+    try {
+      await usersRequest("/api/users/update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          oldUsername: window.currentEditingWriter,
+          username: editWriterUsername.value,
+          displayName: editWriterDisplay.value,
+          role: editWriterRole.value
+        }),
+      });
+      editWriterDialog.close();
+      setWritersStatus(`Updated ${editWriterUsername.value}.`, "success");
+      loadWriters();
+    } catch (err) {
+      editWriterError.textContent = err.message;
+      editWriterError.hidden = false;
+    }
+  });
+}

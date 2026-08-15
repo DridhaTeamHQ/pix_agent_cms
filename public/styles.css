@@ -5081,11 +5081,13 @@ select option[value=""] { color: var(--text-secondary); }
 /* ─── Category + state, side by side ─── */
 .section-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 10px;
   margin-top: 4px;
 }
+.section-row.has-state { grid-template-columns: 1fr 1fr; }
 .section-row .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.section-row .field[hidden] { display: none; }
 .section-row .field-label {
   font-size: 0.7rem;
   font-weight: 600;
@@ -5093,13 +5095,14 @@ select option[value=""] { color: var(--text-secondary); }
   text-transform: uppercase;
   color: var(--text-secondary);
 }
+.required-mark { color: var(--accent); }
 /* When DailyMattr will refuse without it, the field says so before you publish
    rather than after the upload. */
 .section-row .field.is-required select { border-color: var(--accent); }
 .helper-text.is-warning { color: var(--accent-dim); font-weight: 600; }
 
 @media (max-width: 420px) {
-  .section-row { grid-template-columns: 1fr; }
+  .section-row.has-state { grid-template-columns: 1fr; }
 }
 
 /* ─── Writers header: title and the add button on one row ─────────

@@ -126,6 +126,8 @@ const analyticsTitle = document.getElementById("analytics-title");
 const analyticsDesc = document.getElementById("analytics-desc");
 const analyticsMetaTitle = document.getElementById("analytics-meta-title");
 const analyticsMetaList = document.getElementById("analytics-meta-list");
+const analyticsTodayDate = document.getElementById("analytics-today-date");
+const analyticsDailyReset = document.getElementById("analytics-daily-reset");
 const analyticsRosterToggle = document.getElementById("analytics-roster-toggle");
 const analyticsRosterBody = document.getElementById("analytics-roster-body");
 const analyticsRosterList = document.getElementById("analytics-roster-list");
@@ -4985,6 +4987,69 @@ function analyticsValueEl(key) {
   return document.querySelector(`[data-analytics-value="${key}"]`);
 }
 
+function analyticsDailyValueEl(key) {
+  return document.querySelector(`[data-analytics-daily-value="${key}"]`);
+}
+
+let analyticsMidnightTimer = null;
+let analyticsResetClockTimer = null;
+
+function scheduleAnalyticsMidnightRefresh(nextResetAt) {
+  clearTimeout(analyticsMidnightTimer);
+  clearInterval(analyticsResetClockTimer);
+  analyticsMidnightTimer = null;
+  analyticsResetClockTimer = null;
+
+  const resetAt = new Date(nextResetAt || "");
+  if (Number.isNaN(resetAt.getTime())) {
+    if (analyticsDailyReset) analyticsDailyReset.textContent = "Resets automatically at 12:00 AM IST";
+    return;
+  }
+
+  const updateResetCopy = () => {
+    if (!analyticsDailyReset) return;
+    const remainingMinutes = Math.max(0, Math.ceil((resetAt.getTime() - Date.now()) / 60000));
+    if (!remainingMinutes) {
+      analyticsDailyReset.textContent = "Refreshing for the new India business day...";
+      return;
+    }
+    const hours = Math.floor(remainingMinutes / 60);
+    const minutes = remainingMinutes % 60;
+    const remaining = hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+    analyticsDailyReset.textContent = `Resets at 12:00 AM IST · ${remaining} remaining`;
+  };
+
+  updateResetCopy();
+  analyticsResetClockTimer = setInterval(updateResetCopy, 60000);
+  const delay = Math.max(0, resetAt.getTime() - Date.now()) + 1500;
+  analyticsMidnightTimer = setTimeout(() => {
+    clearInterval(analyticsResetClockTimer);
+    analyticsResetClockTimer = null;
+    loadAnalytics({ force: true });
+  }, delay);
+}
+
+function renderAnalyticsDaily(daily = {}) {
+  animateCounter(analyticsDailyValueEl("sent"), daily.sent_count || 0);
+  animateCounter(analyticsDailyValueEl("approved"), daily.approved_count || 0);
+  animateCounter(analyticsDailyValueEl("rejected"), daily.rejected_count || 0);
+  animateCounter(analyticsDailyValueEl("pending"), daily.pending_count || 0);
+
+  if (analyticsTodayDate) {
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(daily.day_key || "")
+      ? new Date(`${daily.day_key}T12:00:00+05:30`)
+      : new Date();
+    analyticsTodayDate.textContent = new Intl.DateTimeFormat("en-IN", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      timeZone: daily.timezone || "Asia/Kolkata",
+    }).format(day);
+  }
+
+  scheduleAnalyticsMidnightRefresh(daily.next_reset_at);
+}
+
 function renderAnalyticsSummary(summary = {}, role = "writer") {
   animateCounter(analyticsValueEl("sent"), summary.sent_count || 0);
   animateCounter(analyticsValueEl("approved"), summary.approved_count || 0);
@@ -5630,6 +5695,7 @@ async function loadAnalytics({ force = false } = {}) {
     }
 
     renderAnalyticsSummary(analytics.summary, role);
+    renderAnalyticsDaily(analytics.daily);
     renderAnalyticsMeta(analytics.summary, role);
 
     /* "full" (admin) gets the team roster and the reviewer table; "basic"

@@ -5213,6 +5213,9 @@ function renderWriterRoster() {
     // belongs to nobody in particular — hence the dashes.
     const sent = Number(row.sent_count) || 0;
     const awaiting = Number(row.pending_count) || 0;
+    // Writers count posts created today; QA rows count verdicts recorded
+    // today. Both values come from the same India-midnight SQL window.
+    const today = Number(row.today_count) || 0;
     // Share of what they uploaded that QA cleared. Derived from the two numbers
     // in the row rather than the server's approval_rate so it can never
     // disagree with the columns either side of it. A writer with nothing sent
@@ -5232,6 +5235,7 @@ function renderWriterRoster() {
       <div class="roster-row">
         <span class="roster-avatar">${escapeRosterText(rosterInitials(row.user_name))}</span>
         <span class="roster-name" title="${name}">${name}</span>
+        <span class="roster-cell roster-today" title="Resets at 12:00 AM IST">${formatCount(today)}</span>
         <span class="roster-cell roster-week is-${trend}" title="${weekTitle}">${isQa ? "—" : `${formatCount(week)}${trendMark}`}</span>
         <span class="roster-cell roster-sent">${isQa ? "—" : formatCount(sent)}</span>
         <span class="roster-cell roster-approved">${formatCount(approved)}</span>
@@ -5246,6 +5250,7 @@ function renderWriterRoster() {
     <div class="roster-row roster-head-row">
       <span></span>
       <span>${isQa ? "Reviewer" : "Writer"}</span>
+      <span class="roster-cell" title="Resets at 12:00 AM IST">Today</span>
       <span class="roster-cell">This week</span>
       <span class="roster-cell">Total sent</span>
       <span class="roster-cell">Approved</span>
@@ -5712,10 +5717,12 @@ async function loadAnalytics({ force = false } = {}) {
         approved_count: analytics.summary?.approved_count || 0,
         rejected_count: analytics.summary?.rejected_count || 0,
         pending_count: analytics.summary?.pending_count || 0,
+        today_count: analytics.daily?.sent_count || 0,
       }], [{
         user_name: "QA desk",
         approved_count: analytics.summary?.approved_count || 0,
         rejected_count: analytics.summary?.rejected_count || 0,
+        today_count: (analytics.daily?.approved_count || 0) + (analytics.daily?.rejected_count || 0),
       }], analytics.summary?.pending_count || 0);
     }
 

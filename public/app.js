@@ -132,6 +132,9 @@ const analyticsRosterList = document.getElementById("analytics-roster-list");
 const analyticsRosterCount = document.getElementById("analytics-roster-count");
 const analyticsRosterTitle = document.getElementById("analytics-roster-title");
 const analyticsRosterDesc = document.getElementById("analytics-roster-desc");
+const analyticsSourceTrigger = document.getElementById("analytics-source-trigger");
+const analyticsSourceMenu = document.getElementById("analytics-source-menu");
+const analyticsSourceLabel = document.getElementById("analytics-source-label");
 const analyticsCategoryTrigger = document.getElementById("analytics-category-trigger");
 const analyticsCategoryMenu = document.getElementById("analytics-category-menu");
 const analyticsCategoryLabel = document.getElementById("analytics-category-label");
@@ -156,7 +159,6 @@ const imgZoom = document.getElementById("img-zoom");
 const fontSizeInput = document.getElementById("font-size");
 const accentColorInput = document.getElementById("accent-color");
 const accentHexLabel = document.getElementById("accent-hex");
-const overlayOpacityInput = document.getElementById("overlay-opacity");
 const tagPresetsContainer = document.getElementById("tag-presets");
 
 const faceDetector =
@@ -242,7 +244,6 @@ const state = {
   imageZoom: 100,
   headlineStyle: "half-purple",
   fontSize: 0, // 0 = auto
-  overlayOpacity: 100,
   enhanceStrength: 70,      // percent of the AI upscale to keep
   logoX: 810,
   logoY: 80,
@@ -1412,12 +1413,6 @@ accentColorInput.addEventListener("input", () => {
   renderPoster();
 });
 
-// Overlay opacity slider
-overlayOpacityInput.addEventListener("input", () => {
-  state.overlayOpacity = Number(overlayOpacityInput.value);
-  renderPoster();
-});
-
 // Tag presets
 tagPresetsContainer.addEventListener("click", (e) => {
   const btn = e.target.closest(".preset-btn");
@@ -2314,7 +2309,7 @@ const MAX_PAGES = 5;
 // paints a blurred copy of it, so two text pages with one shared image
 // could not look different from each other.
 const IMAGE_PAGE_FIELDS = [
-  "mainImage", "imageOffset", "imageZoom", "overlayOpacity",
+  "mainImage", "imageOffset", "imageZoom",
   "filterPreset", "filterBrightness", "filterContrast", "filterSaturation", "filterBlur",
   "sourceImageUrl", "productImageAnalysis",
 ];
@@ -2590,7 +2585,6 @@ function blankPageContent(type) {
     mainImage: null,
     imageOffset: { x: 0, y: 0 },
     imageZoom: 100,
-    overlayOpacity: 100,
     filterPreset: "none",
     filterBrightness: 100,
     filterContrast: 100,
@@ -2727,7 +2721,6 @@ function serializePages() {
     // No text: a text page shows a slice of the post's paragraph, and the
     // slice is derived from the page order on open.
     if (page.type === "poster" || page.type === "text") {
-      entry.overlayOpacity = c.overlayOpacity ?? 100;
       entry.imageZoom = c.imageZoom ?? 100;
       entry.imageOffset = { x: c.imageOffset?.x ?? 0, y: c.imageOffset?.y ?? 0 };
       entry.filters = {
@@ -2786,7 +2779,6 @@ function restorePages(list) {
       if (entry.headlineStyle) content.headlineStyle = entry.headlineStyle;
     }
     if (entry.type === "poster" || entry.type === "text") {
-      content.overlayOpacity = numberOr(entry.overlayOpacity, 100);
       content.imageZoom = numberOr(entry.imageZoom, 100);
       content.imageOffset = {
         x: numberOr(entry.imageOffset?.x, 0),
@@ -3023,7 +3015,6 @@ function syncEditorFromState() {
   syncControl(imgOffsetY, state.imageOffset?.y ?? 0);
   syncControl(imgZoom, state.imageZoom);
   syncControl(fontSizeInput, state.fontSize);
-  syncControl(overlayOpacityInput, state.overlayOpacity);
   syncFilterUI();
 
   if (tagPresetsContainer) {
@@ -3261,19 +3252,18 @@ function drawPixVideoScreen() {
   // Bottom scrim so the logo and any platform UI stay legible over bright
   // footage. Lighter than the poster's gradient — the video is the subject
   // here, not a backdrop for a headline.
-  const opa = (state.overlayOpacity ?? 100) / 100;
   const fade = Math.min(H * 0.42, L.gradient.fadeHeight * 1.5);
   const grad = ctx.createLinearGradient(0, H - fade, 0, H);
   grad.addColorStop(0, "rgba(0,0,0,0)");
-  grad.addColorStop(0.55, `rgba(0,0,0,${(0.34 * opa).toFixed(2)})`);
-  grad.addColorStop(1, `rgba(0,0,0,${(0.72 * opa).toFixed(2)})`);
+  grad.addColorStop(0.55, "rgba(0,0,0,0.34)");
+  grad.addColorStop(1, "rgba(0,0,0,0.72)");
   ctx.fillStyle = grad;
   ctx.fillRect(0, H - fade, W, fade);
 
   // A matching top scrim keeps the logo readable on light footage.
   const topFade = H * 0.18;
   const topGrad = ctx.createLinearGradient(0, 0, 0, topFade);
-  topGrad.addColorStop(0, `rgba(0,0,0,${(0.46 * opa).toFixed(2)})`);
+  topGrad.addColorStop(0, "rgba(0,0,0,0.46)");
   topGrad.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = topGrad;
   ctx.fillRect(0, 0, W, topFade);
@@ -4083,9 +4073,6 @@ function drawHero() {
   const zoom = (state.imageZoom || 100) / 100;
   drawCoverImage(image, 0, 0, canvas.width, canvas.height, state.imageOffset, zoom);
 
-  // Overlay opacity (0-100)
-  const opa = (state.overlayOpacity ?? 100) / 100;
-
   // One continuous fade: transparent above the copy, dark enough at the
   // first line to keep it readable while preserving some photograph, then
   // progressively darker until the bottom is fully black. headlineTop moves
@@ -4097,7 +4084,7 @@ function drawHero() {
   const headlineFrac = (headlineTop - gradientStart) / gradientHeight;
   const grad = ctx.createLinearGradient(0, gradientStart, 0, canvas.height);
   const stopAt = (position, alpha) =>
-    grad.addColorStop(Math.min(1, position), `rgba(0,0,0,${(alpha * opa).toFixed(2)})`);
+    grad.addColorStop(Math.min(1, position), `rgba(0,0,0,${alpha.toFixed(2)})`);
   const beforeHeadline = (progress, alpha) => stopAt(progress * headlineFrac, alpha);
   const belowHeadline = (progress, alpha) =>
     stopAt(headlineFrac + progress * (1 - headlineFrac), alpha);
@@ -5081,18 +5068,17 @@ function renderAnalyticsBoard(container, rows, { empty, valueLabel, showRate = f
 
 /* ─── Content writer roster ────────────────────────────────
    A collapsed strip that opens into a table: total sent, then approvals in
-   green, rejections in red and pending in yellow. Sorting is client-side so
-   reordering never refetches; the category and date filters are server-side,
-   because the counts are SQL rollups and cannot be narrowed in the browser. */
+   green, rejections in red and pending in yellow. Source, category and date
+   filters are server-side because the counts are SQL rollups and cannot be
+   narrowed accurately in the browser. */
 let writerRoster = [];
 let qaRoster = [];
 let rosterMode = "writers";     // "writers" | "qa"
-let writerRosterSort = "approvals";
 
 /* Sentinel matching the server's, for posts with no category on them. */
 const UNCATEGORISED = "__none__";
 
-const analyticsFilters = { category: "all", from: "", to: "" };
+const analyticsFilters = { source: "all", category: "all", from: "", to: "" };
 
 /* Copy for each side of the toggle. The writer view counts verdicts on what a
    writer sent; the QA view counts verdicts a reviewer recorded. */
@@ -5129,18 +5115,6 @@ function rosterInitials(name) {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-function sortWriterRoster(rows) {
-  const sorted = [...rows];
-  if (writerRosterSort === "rejections") {
-    sorted.sort((a, b) => (Number(b.rejected_count) || 0) - (Number(a.rejected_count) || 0)
-      || (Number(b.approved_count) || 0) - (Number(a.approved_count) || 0));
-  } else {
-    sorted.sort((a, b) => (Number(b.approved_count) || 0) - (Number(a.approved_count) || 0)
-      || (Number(b.sent_count) || 0) - (Number(a.sent_count) || 0));
-  }
-  return sorted;
-}
-
 function renderWriterRoster() {
   if (!analyticsRosterList) return;
 
@@ -5166,7 +5140,7 @@ function renderWriterRoster() {
 
   // A header row plus one row per person, all on the same grid track list, so
   // the counts line up into columns.
-  const body = sortWriterRoster(rows).map((row) => {
+  const body = rows.map((row) => {
     const approved = Number(row.approved_count) || 0;
     const rejected = Number(row.rejected_count) || 0;
     // Total sent and awaiting both belong to a writer's own output. A QA row
@@ -5257,17 +5231,7 @@ document.querySelectorAll("[data-roster-mode]").forEach((btn) => {
   });
 });
 
-document.querySelectorAll("[data-roster-sort]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    writerRosterSort = btn.dataset.rosterSort || "approvals";
-    document.querySelectorAll("[data-roster-sort]").forEach((other) => {
-      other.classList.toggle("is-active", other === btn);
-    });
-    renderWriterRoster();
-  });
-});
-
-/* ── Category and date-range filters ──
+/* ── Source, category and date-range filters ──
    These narrow the SQL rollups, so every change is a refetch rather than a
    re-render.
 
@@ -5275,6 +5239,45 @@ document.querySelectorAll("[data-roster-sort]").forEach((btn) => {
    editorial order loadSectionOptions() already resolved — the same list, and
    the same ids, the writer files under. Nothing is hard-coded here: a rename or
    a renumber on their side flows through without touching this. */
+function sourceOptionEls() {
+  return analyticsSourceMenu ? [...analyticsSourceMenu.querySelectorAll("[data-value]")] : [];
+}
+
+function fillSourceOptions(sources = []) {
+  if (!analyticsSourceMenu) return;
+
+  const rows = [
+    { value: "all", label: "All sources" },
+    ...(sources || []).map((source) => ({
+      value: String(source.value || "").toLowerCase(),
+      label: String(source.value || ""),
+    })).filter((source) => source.value),
+  ];
+  if (analyticsFilters.source !== "all" && !rows.some((row) => row.value === analyticsFilters.source)) {
+    rows.push({ value: analyticsFilters.source, label: analyticsFilters.source });
+  }
+
+  analyticsSourceMenu.innerHTML = rows.map(({ value, label }) => `
+    <li class="analytics-select-option" role="option" tabindex="-1"
+        data-value="${escapeRosterText(value)}" aria-selected="false">${escapeRosterText(label)}</li>
+  `).join("");
+  setSourceValue(analyticsFilters.source, { refetch: false });
+}
+
+function setSourceValue(value, { refetch = true } = {}) {
+  const options = sourceOptionEls();
+  const chosen = options.find((el) => el.dataset.value === value) || options[0];
+  if (!chosen) return;
+
+  options.forEach((el) => el.setAttribute("aria-selected", String(el === chosen)));
+  if (analyticsSourceLabel) analyticsSourceLabel.textContent = chosen.textContent;
+
+  const next = chosen.dataset.value;
+  const changed = analyticsFilters.source !== next;
+  analyticsFilters.source = next;
+  if (refetch && changed) loadAnalytics({ force: true });
+}
+
 function categoryOptionEls() {
   return analyticsCategoryMenu ? [...analyticsCategoryMenu.querySelectorAll("[data-value]")] : [];
 }
@@ -5315,10 +5318,46 @@ function setCategoryValue(value, { refetch = true } = {}) {
   if (refetch && changed) loadAnalytics({ force: true });
 }
 
+function openSourceMenu() {
+  if (!analyticsSourceMenu || !analyticsSourceTrigger) return;
+  closeCategoryMenu();
+  const below = window.innerHeight - analyticsSourceTrigger.getBoundingClientRect().bottom - 24;
+  analyticsSourceMenu.style.maxHeight = `${Math.max(140, Math.min(280, below))}px`;
+  analyticsSourceMenu.classList.add("is-open");
+  analyticsSourceTrigger.setAttribute("aria-expanded", "true");
+  sourceOptionEls().find((el) => el.getAttribute("aria-selected") === "true")
+    ?.scrollIntoView({ block: "nearest" });
+}
+
+function closeSourceMenu({ focusTrigger = false } = {}) {
+  if (!analyticsSourceMenu || !analyticsSourceTrigger) return;
+  analyticsSourceMenu.classList.remove("is-open");
+  analyticsSourceTrigger.setAttribute("aria-expanded", "false");
+  if (focusTrigger) analyticsSourceTrigger.focus();
+}
+
+function sourceMenuIsOpen() {
+  return analyticsSourceMenu?.classList.contains("is-open") === true;
+}
+
+function moveSourceFocus(step) {
+  const options = sourceOptionEls();
+  if (!options.length) return;
+  const active = document.activeElement;
+  const from = options.indexOf(active);
+  const next = from === -1
+    ? options.findIndex((el) => el.getAttribute("aria-selected") === "true")
+    : from + step;
+  const index = Math.max(0, Math.min(options.length - 1, next === -1 ? 0 : next));
+  options[index].focus();
+  options[index].scrollIntoView({ block: "nearest" });
+}
+
 /* The menu opens downward and is never allowed to cover its own trigger: it is
    capped to the room actually left below, and scrolls internally past that. */
 function openCategoryMenu() {
   if (!analyticsCategoryMenu || !analyticsCategoryTrigger) return;
+  closeSourceMenu();
   const below = window.innerHeight - analyticsCategoryTrigger.getBoundingClientRect().bottom - 24;
   analyticsCategoryMenu.style.maxHeight = `${Math.max(140, Math.min(280, below))}px`;
   analyticsCategoryMenu.classList.add("is-open");
@@ -5350,6 +5389,47 @@ function moveCategoryFocus(step) {
   const index = Math.max(0, Math.min(options.length - 1, next === -1 ? 0 : next));
   options[index].focus();
   options[index].scrollIntoView({ block: "nearest" });
+}
+
+if (analyticsSourceTrigger) {
+  analyticsSourceTrigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (sourceMenuIsOpen()) closeSourceMenu();
+    else { openSourceMenu(); moveSourceFocus(0); }
+  });
+
+  analyticsSourceTrigger.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    openSourceMenu();
+    moveSourceFocus(0);
+  });
+}
+
+if (analyticsSourceMenu) {
+  analyticsSourceMenu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-value]");
+    if (!option) return;
+    event.stopPropagation();
+    setSourceValue(option.dataset.value);
+    closeSourceMenu({ focusTrigger: true });
+  });
+
+  analyticsSourceMenu.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") { event.preventDefault(); moveSourceFocus(1); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); moveSourceFocus(-1); }
+    else if (event.key === "Home") { event.preventDefault(); sourceOptionEls()[0]?.focus(); }
+    else if (event.key === "End") { event.preventDefault(); sourceOptionEls().pop()?.focus(); }
+    else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const option = event.target.closest("[data-value]");
+      if (!option) return;
+      setSourceValue(option.dataset.value);
+      closeSourceMenu({ focusTrigger: true });
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      closeSourceMenu({ focusTrigger: event.key === "Escape" });
+    }
+  });
 }
 
 if (analyticsCategoryTrigger) {
@@ -5395,8 +5475,12 @@ if (analyticsCategoryMenu) {
 
 // Clicking anywhere else dismisses it — including the card head, which would
 // otherwise collapse the whole roster with the menu still hanging open.
-document.addEventListener("click", () => { if (categoryMenuIsOpen()) closeCategoryMenu(); });
+document.addEventListener("click", () => {
+  if (sourceMenuIsOpen()) closeSourceMenu();
+  if (categoryMenuIsOpen()) closeCategoryMenu();
+});
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && sourceMenuIsOpen()) closeSourceMenu({ focusTrigger: true });
   if (event.key === "Escape" && categoryMenuIsOpen()) closeCategoryMenu({ focusTrigger: true });
 });
 
@@ -5493,6 +5577,9 @@ async function loadAnalytics({ force = false } = {}) {
   setAnalyticsStatus("Loading analytics…");
 
   const query = new URLSearchParams();
+  if (analyticsFilters.source && analyticsFilters.source !== "all") {
+    query.set("source", analyticsFilters.source);
+  }
   if (analyticsFilters.category && analyticsFilters.category !== "all") {
     query.set("category", analyticsFilters.category);
   }
@@ -5530,9 +5617,12 @@ async function loadAnalytics({ force = false } = {}) {
     // Sections may not have loaded yet on the first analytics open; refill from
     // whatever loadSectionOptions() has by now so the picker is never empty.
     fillCategoryOptions();
+    fillSourceOptions(analytics.sources || []);
     // The server is the authority on what it actually applied — a backwards
-    // range comes back swapped, so the pickers have to follow it.
+    // range comes back swapped and invalid filters are dropped, so the controls
+    // have to follow it.
     if (payload.filters) {
+      setSourceValue(payload.filters.source || "all", { refetch: false });
       analyticsFilters.from = payload.filters.from || "";
       analyticsFilters.to = payload.filters.to || "";
       if (analyticsFrom) analyticsFrom.value = analyticsFilters.from;
@@ -7581,7 +7671,6 @@ function collectDesignSnapshot() {
     accent: state.accent,
     headlineStyle: state.headlineStyle,
     fontSize: state.fontSize,
-    overlayOpacity: state.overlayOpacity,
     enhanceStrength: state.enhanceStrength,
     imageOffset: { ...state.imageOffset },
     imageZoom: state.imageZoom,
@@ -7808,7 +7897,6 @@ function applyDesignSnapshot(design, post) {
   state.tag = design.tag || post.tag || "none";
   state.headlineStyle = design.headlineStyle || state.headlineStyle;
   state.fontSize = numberOr(design.fontSize, state.fontSize);
-  state.overlayOpacity = numberOr(design.overlayOpacity, state.overlayOpacity);
   state.enhanceStrength = numberOr(design.enhanceStrength, state.enhanceStrength);
   state.imageZoom = numberOr(design.imageZoom, 100);
   state.imageOffset = {
@@ -7837,7 +7925,6 @@ function applyDesignSnapshot(design, post) {
   syncControl(imgOffsetY, state.imageOffset.y);
   syncControl(imgZoom, state.imageZoom);
   syncControl(fontSizeInput, state.fontSize);
-  syncControl(overlayOpacityInput, state.overlayOpacity);
   syncControl(accentColorInput, state.accent);
   syncControl(filterBrightnessInput, state.filterBrightness);
   syncControl(filterContrastInput, state.filterContrast);
@@ -8648,7 +8735,6 @@ function pixFingerprint() {
     state.tag,
     state.headlineStyle,
     state.fontSize,
-    state.overlayOpacity,
     state.imageZoom,
     state.imageOffset?.x,
     state.imageOffset?.y,

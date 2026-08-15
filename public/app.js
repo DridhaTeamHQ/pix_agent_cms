@@ -4106,7 +4106,7 @@ function drawHero() {
   beforeHeadline(0.22, 0.03);
   beforeHeadline(0.48, 0.13);
   beforeHeadline(0.72, 0.34);
-  beforeHeadline(1.00, 0.72);
+  beforeHeadline(1.00, 0.78);
   belowHeadline(0.38, 0.84);
   belowHeadline(0.72, 0.94);
   belowHeadline(1.00, 1.00);

@@ -4994,6 +4994,9 @@ textarea:focus {
   font-size: 0.86rem;
   text-align: center;
 }
+.writer-detail-empty[hidden] {
+  display: none;
+}
 .writer-detail-head { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--hairline-2); }
 .writer-detail-head h3 { margin: 0 0 3px; font-size: 1.12rem; font-weight: 700; color: var(--text-primary); }
 .writer-detail-meta { margin: 0; font-size: 0.78rem; color: var(--text-secondary); }

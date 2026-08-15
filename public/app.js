@@ -3775,7 +3775,8 @@ function wrapPlainLines(text, maxWidth, maxLines) {
  * change if it should read larger or smaller.
  */
 const TIMESTAMP_SIZE = 21;      // design px, against a 39px paragraph
-const TIMESTAMP_OPACITY = 0.7;
+const TIMESTAMP_OPACITY = 0.82;
+const TIMESTAMP_COLOR = "#ffffff";
 
 /**
  * Date only — "07 Aug". No time.
@@ -3820,7 +3821,6 @@ function drawTimestamp(x, y, s) {
   if (!state.showTimestamp) return;
   ctx.save();
   ctx.globalAlpha = TIMESTAMP_OPACITY;
-  ctx.fillStyle = "#ffffff";
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
   // Poppins regular (400). PREVIEW_TEXT_FONT already resolves to Poppins;
@@ -3831,6 +3831,7 @@ function drawTimestamp(x, y, s) {
   ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
   ctx.shadowBlur = 10 * s;
   ctx.shadowOffsetY = 2 * s;
+  ctx.fillStyle = TIMESTAMP_COLOR;
   ctx.fillText(formatCreatedAt(state.createdAt), x, y);
   ctx.restore();
 }

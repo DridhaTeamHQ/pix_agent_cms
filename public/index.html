@@ -600,6 +600,18 @@
             <svg width="13" height="13" aria-hidden="true"><use href="#i-save"/></svg>
             <span id="save-pix-label">Save</span>
           </button>
+          <!-- Clearing the editor for the next story. Editing a saved poster in
+               place keeps writing to the same row, so without this a writer who
+               types over their headline silently overwrites the post QA is
+               already reviewing. -->
+          <button type="button" class="btn-ghost preview-new" id="new-pix-btn"
+                  title="Clear the editor and start the next post">
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.9"
+                    fill="none" stroke-linecap="round"/>
+            </svg>
+            <span>New post</span>
+          </button>
           <div class="rail-nav">
             <button type="button" class="rail-arrow" id="rail-prev" aria-label="Previous slide">
               <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">

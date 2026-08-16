@@ -1401,6 +1401,14 @@ input[type="range"]::-webkit-slider-thumb:hover {
   background: rgba(214, 69, 69, 0.08);
 }
 
+/* Sits beside Save at the same weight — starting the next story is a normal
+   step in the writer's day, not a warning. */
+.preview-new {
+  padding: 6px 11px;
+  font-size: 0.74rem;
+  border-radius: 7px;
+}
+
 .preview-pixels {
   color: var(--text-muted);
   font-size: 0.7rem;

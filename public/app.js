@@ -6930,7 +6930,13 @@ async function resolvePublishClipFromState(onStatus = () => {}) {
   return blob;
 }
 
-async function publishToDailyMattr() {
+/* Returns true only when DailyMattr accepted the post; every other path falls
+   out as undefined. Approve & Publish reads that, because it hands control back
+   to the Review list where the publish panel's own status line is off screen.
+
+   `skipConfirm` is for callers that have already shown their own confirmation —
+   not a way to publish without one. */
+async function publishToDailyMattr({ skipConfirm = false } = {}) {
   if (!state.user) {
     setDailyMattrStatus("Sign in to publish.", "error");
     return;
@@ -6996,7 +7002,10 @@ async function publishToDailyMattr() {
   const railCount = slotOrder.filter((card) => card.mode !== "video" || hasVideo).length;
   const mediaCount = railCount + extraCount;
 
-  const go = await confirmAction({
+  /* Approve & Publish has already shown this same warning and collected the
+     category, so a second identical dialog would only train QA to click
+     through it. This skips the duplicate, never the confirmation. */
+  const go = skipConfirm ? true : await confirmAction({
     title: "Publish to DailyMattr?",
     body: "This goes live on shortlyindia.com straight away. It cannot be undone from here — a mistake has to be removed from their portal by hand.",
     facts: [
@@ -7142,6 +7151,7 @@ async function publishToDailyMattr() {
     // The badge in Review is rebuilt on entry, but refresh now so a QA who is
     // already looking at the list sees it flip.
     if (payload.approval?.ok) loadReviewQueue();
+    return true;
   } catch (err) {
     setDailyMattrStatus(err.message || "Could not publish to DailyMattr.", "error");
   } finally {
@@ -7154,7 +7164,8 @@ if (dailymattrRefreshBtn) {
   dailymattrRefreshBtn.addEventListener("click", () => loadDailyMattrMeta({ force: true }));
 }
 if (dailymattrPublishBtn) {
-  dailymattrPublishBtn.addEventListener("click", publishToDailyMattr);
+  // Wrapped, so the click event is never read as the options object.
+  dailymattrPublishBtn.addEventListener("click", () => publishToDailyMattr());
 }
 if (dailymattrContent) {
   dailymattrContent.addEventListener("input", () => { dailymattrDraftTouched.content = true; });
@@ -7411,7 +7422,11 @@ if (postKeywordsInput) {
    Returns a promise for true/false so callers keep reading top to bottom. */
 const pixDialogEl = document.getElementById("pix-dialog");
 
-function confirmAction({ title, body = "", facts = [], confirmLabel = "Confirm", danger = false } = {}) {
+/* `extras` is an optional element rendered inside the dialog — used by
+   Approve & Publish to ask for a category the post never carried. It stays the
+   caller's node, so the caller reads its values straight off it after this
+   resolves; detaching it from the dialog does not clear a <select>. */
+function confirmAction({ title, body = "", facts = [], confirmLabel = "Confirm", danger = false, extras = null } = {}) {
   // No <dialog> (very old browser, or the element was removed): fall back
   // rather than silently proceeding with something irreversible.
   if (!pixDialogEl || typeof pixDialogEl.showModal !== "function") {
@@ -7430,6 +7445,15 @@ function confirmAction({ title, body = "", facts = [], confirmLabel = "Confirm",
     const li = document.createElement("li");
     li.textContent = fact;
     factsEl.appendChild(li);
+  }
+
+  // Rebuilt on every open, so a picker left by a previous call cannot linger
+  // into a plain confirm.
+  const extrasEl = document.getElementById("pix-dialog-extras");
+  if (extrasEl) {
+    extrasEl.textContent = "";
+    extrasEl.hidden = !extras;
+    if (extras) extrasEl.appendChild(extras);
   }
 
   const confirmBtn = document.getElementById("pix-dialog-confirm");
@@ -8704,13 +8728,23 @@ function renderReviewItem(post) {
     reject.textContent = post.rejected ? "Undo reject" : "Reject";
     reject.addEventListener("click", () => setPostVerdict(post, post.rejected ? "awaiting" : "rejected", reject));
 
+    /* Kept separate from Approve on purpose. Approving is a reversible verdict
+       QA gives dozens of times a day; publishing puts the story on a public
+       site and Pix has no route to take it back. Folding the two into one
+       button would make the irreversible one the easy one to hit by mistake. */
+    const publish = document.createElement("button");
+    publish.type = "button";
+    publish.className = "btn-ghost btn-publish";
+    publish.textContent = "Approve & Publish";
+    publish.addEventListener("click", () => approveAndPublish(post, publish));
+
     const del = document.createElement("button");
     del.type = "button";
     del.className = "btn-ghost";
     del.textContent = "Delete";
     del.addEventListener("click", () => deleteReviewPost(post, li));
 
-    actions.append(approve, reject, del);
+    actions.append(approve, publish, reject, del);
   }
   li.append(main, actions);
   return li;
@@ -8749,6 +8783,153 @@ async function setPostVerdict(post, verdict, button) {
   } finally {
     button.disabled = false;
   }
+}
+
+/* ── Approve & publish, straight from the Review row ──
+
+   Publishing has to happen in the browser: the media DailyMattr receives is
+   the poster rasterised from the live DOM by exportSlidePng, and there is no
+   renderer on the server. So this opens the post in the editor, publishes it
+   the same way the Poster tab does, and comes back — rather than pretending
+   the Review list can send a post on its own.
+
+   The category comes off the post, where the writer set it. QA is only asked
+   when it is genuinely missing, which is the older posts saved before the
+   field was required. */
+async function approveAndPublish(post, button) {
+  if (!dailymattrMetaLoaded) {
+    setReviewStatus("Loading DailyMattr categories…");
+    await loadDailyMattrMeta({ force: true });
+    if (!dailymattrMetaLoaded) {
+      setReviewStatus("Could not load DailyMattr — open the post and publish from the Poster tab.", "error");
+      return;
+    }
+  }
+
+  let categoryId = post.category_id ? String(post.category_id) : "";
+  let stateId = post.state_id ? String(post.state_id) : "";
+  const needsAsking = !categoryId || (stateIsRequired(categoryId) && !stateId);
+  const picker = needsAsking ? buildPublishPicker(categoryId, stateId) : null;
+
+  const go = await confirmAction({
+    title: "Approve and publish?",
+    body: "This marks the post approved and sends it live on shortlyindia.com straight away. It cannot be undone from here — a mistake has to be removed from DailyMattr's portal by hand.",
+    facts: [
+      post.headline ? `“${post.headline}”` : "Untitled post",
+      picker
+        ? "This post has no category — choose one below"
+        : `Category: ${labelForOption(dailymattrCategory, categoryId) || `#${categoryId}`}` +
+          (stateId ? ` · ${labelForOption(dailymattrState, stateId)}` : ""),
+      "Its pages will be rendered and sent as they appear in the editor",
+    ],
+    confirmLabel: "Approve & publish",
+    extras: picker,
+  });
+  if (!go) return;
+
+  if (picker) {
+    categoryId = picker.querySelector("[data-role='category']")?.value || "";
+    stateId = picker.querySelector("[data-role='state']")?.value || "";
+    if (!categoryId) {
+      setReviewStatus("Choose a category before publishing.", "error");
+      return;
+    }
+    if (stateIsRequired(categoryId) && !stateId) {
+      setReviewStatus("The State category needs a state.", "error");
+      return;
+    }
+  }
+
+  button.disabled = true;
+  const previous = button.textContent;
+  button.textContent = "Publishing…";
+  setReviewStatus("Opening the post and rendering its pages…");
+
+  try {
+    await openSavedPost(post.id);
+    /* exportSlidePng reads the live poster, so the editor has to be the
+       visible view — rendering it while Review is on screen produces blank
+       images. QA watches the poster for the few seconds it takes. */
+    setView("poster");
+
+    state.categoryId = categoryId;
+    state.stateId = stateIsRequired(categoryId) ? stateId : "";
+    if (dailymattrCategory) dailymattrCategory.value = state.categoryId;
+    if (dailymattrState) dailymattrState.value = state.stateId;
+
+    const ok = await publishToDailyMattr({ skipConfirm: true });
+
+    /* Order matters: setView("review") kicks off its own loadReviewQueue, and
+       that clears the status line when it lands. Awaiting a reload before
+       writing the verdict is what stops "Published" being wiped a moment
+       after QA reads it. */
+    setView("review");
+    await loadReviewQueue();
+    setReviewStatus(
+      ok
+        ? "Published to DailyMattr and marked approved."
+        : "Not published — the reason is on the Poster tab, under the DailyMattr panel.",
+      ok ? "success" : "error",
+    );
+  } catch (err) {
+    setView("review");
+    await loadReviewQueue();
+    setReviewStatus(err.message || "Could not publish this post.", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
+}
+
+/* A category (and a state, when the category is State) for a post that
+   arrived without one. Options are copied from the publish panel's selects so
+   there is one source of truth for the live DailyMattr lists. */
+function buildPublishPicker(categoryId, stateId) {
+  const wrap = document.createElement("div");
+
+  const catField = document.createElement("label");
+  catField.className = "publish-picker-field";
+  catField.append("Category");
+  const cat = document.createElement("select");
+  cat.dataset.role = "category";
+  copyOptionsInto(cat, dailymattrCategory);
+  cat.value = categoryId || "";
+  catField.appendChild(cat);
+
+  const stateField = document.createElement("label");
+  stateField.className = "publish-picker-field";
+  stateField.append("State");
+  const st = document.createElement("select");
+  st.dataset.role = "state";
+  copyOptionsInto(st, dailymattrState);
+  st.value = stateId || "";
+  stateField.appendChild(st);
+
+  // Only the State category takes one, and showing it otherwise invites QA to
+  // file a national story against a region.
+  const syncState = () => { stateField.hidden = !stateIsRequired(cat.value); };
+  cat.addEventListener("change", syncState);
+  syncState();
+
+  wrap.append(catField, stateField);
+  return wrap;
+}
+
+function copyOptionsInto(target, source) {
+  target.textContent = "";
+  if (!source) return;
+  for (const option of source.options) {
+    const clone = document.createElement("option");
+    clone.value = option.value;
+    clone.textContent = option.textContent;
+    target.appendChild(clone);
+  }
+}
+
+function labelForOption(select, value) {
+  if (!select || !value) return "";
+  const match = Array.from(select.options).find((option) => option.value === String(value));
+  return match ? match.textContent : "";
 }
 
 async function deleteReviewPost(post, itemEl) {

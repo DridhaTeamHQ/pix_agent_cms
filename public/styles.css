@@ -1931,6 +1931,14 @@ body.view-writers .edit-sheet {
   background: rgba(220, 38, 38, 0.1) !important;
 }
 
+/* Deliberately the loudest button in the row: it is the only one that puts
+   something on a public site, and the only one Pix cannot undo. */
+.btn-publish {
+  border-color: rgba(79, 124, 255, 0.45) !important;
+  color: #4f7cff !important;
+  background: rgba(79, 124, 255, 0.12) !important;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -5374,6 +5382,39 @@ select option[value=""] { color: var(--text-secondary); }
   color: var(--text-secondary);
 }
 .pix-dialog-body[hidden] { display: none; }
+
+/* Controls the caller injected — currently the category picker for a post
+   that reached Review without one. */
+.pix-dialog-extras {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 0;
+}
+.pix-dialog-extras[hidden] { display: none; }
+
+.publish-picker-field {
+  display: grid;
+  gap: 5px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.publish-picker-field[hidden] { display: none; }
+
+.publish-picker-field select {
+  width: 100%;
+  padding: 9px 11px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-md);
+}
 
 /* The specifics of what is about to happen — the reason this exists rather
    than window.confirm, which has nowhere to put them. */

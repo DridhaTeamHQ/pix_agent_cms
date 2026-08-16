@@ -7855,12 +7855,59 @@ if (savePixBtn) {
       if (result.warning) {
         setPostStatus(`Saved, but the ${result.warning}.`, "error");
       } else {
-        setPostStatus(result.created ? "Saved to your library." : "Saved — library copy updated.", "success");
+        /* Say where it went and how to move on. Writers were typing the next
+           story over a saved poster because nothing told them Save would keep
+           landing on the same row. */
+        setPostStatus(
+          result.created
+            ? "Saved and sent to QA for review. Press New post to start the next one."
+            : "Saved — the copy QA is reviewing has been updated. Press New post to start a different story.",
+          "success",
+        );
       }
     } else {
       showState("Not saved", "is-error");
       setPostStatus(result?.error || "Could not save this post.", "error");
     }
+  });
+}
+
+/* ── Starting the next post ────────────────────────────────────────────────
+
+   Save writes to state.pixId when there is one, which is right for "fix a typo
+   and save again" and wrong for "that one is done, here is the next story".
+   startNewPix() already drops the row id, but only Scrape & Build and Write
+   Text call it — so a writer who cleared the headline and typed a new one by
+   hand kept saving over the post QA was reviewing, with no sign anything was
+   amiss.
+
+   This reloads rather than unsetting fields one by one. A poster carries pages,
+   images, a video with its trim, filters, logo placement and framing; clearing
+   that by hand means enumerating state no one can be sure is complete, and a
+   single missed field means the next story silently inherits it. The session
+   cookie survives a reload, so the writer stays signed in and lands on an
+   editor that is genuinely empty. */
+const newPixBtn = document.getElementById("new-pix-btn");
+if (newPixBtn) {
+  newPixBtn.addEventListener("click", async () => {
+    /* Deliberately not the button's is-dirty class: that is suppressed for a
+       post which has never been saved, and unsaved work is exactly what must
+       not be thrown away without asking. */
+    const hasContent = Boolean(state.headline || state.sourceUrl);
+    const unsaved = hasContent
+      && (lastSavedFingerprint === null || pixFingerprint() !== lastSavedFingerprint);
+
+    if (unsaved) {
+      const go = await confirmAction({
+        title: "Start a new post?",
+        body: "This poster has changes that are not in the library yet. Starting a new one discards them.",
+        facts: [state.headline ? `“${state.headline}”` : "Untitled poster"],
+        confirmLabel: "Discard and start new",
+        danger: true,
+      });
+      if (!go) return;
+    }
+    window.location.reload();
   });
 }
 

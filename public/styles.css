@@ -49,12 +49,12 @@
 
   /* Frosted-glass surfaces, tinted with the accent rather than neutral white so
      anything built from them picks up the page's own colour. */
-  --glass-fill:        rgba(255, 255, 255, 0.55);
-  --glass-inner:       rgba(255, 255, 255, 0.72);
-  --glass-edge:        rgba(57, 121, 255, 0.16);
+  --glass-fill: rgba(255, 255, 255, 0.55);
+  --glass-inner: rgba(255, 255, 255, 0.72);
+  --glass-edge: rgba(57, 121, 255, 0.16);
   --glass-edge-strong: rgba(57, 121, 255, 0.30);
-  --glass-menu:        rgba(244, 247, 255, 0.88);
-  --glass-shadow:      0 4px 18px rgba(17, 26, 46, 0.08);
+  --glass-menu: rgba(244, 247, 255, 0.88);
+  --glass-shadow: 0 4px 18px rgba(17, 26, 46, 0.08);
 
   --accent: #3979ff;
   /* the brand blue, darkened just enough to stay readable as text on white */
@@ -333,8 +333,13 @@ body.auth-ready .agent-auth-gate {
 /* An admin can do everything QA can, so they must see everything marked
    qa-only too — gating on the literal string "qa" would have hidden the
    review filters from the one role that outranks it. */
-body:not([data-role="qa"]):not([data-role="admin"]) .qa-only { display: none; }
-body:not([data-role="admin"]) .admin-only { display: none; }
+body:not([data-role="qa"]):not([data-role="admin"]) .qa-only {
+  display: none;
+}
+
+body:not([data-role="admin"]) .admin-only {
+  display: none;
+}
 
 .role-badge.is-qa {
   background: rgba(16, 152, 110, 0.14);
@@ -2185,7 +2190,7 @@ body.view-writers .edit-sheet {
   text-transform: uppercase;
 }
 
-.analytics-live-badge > span {
+.analytics-live-badge>span {
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -2223,15 +2228,15 @@ body.view-writers .edit-sheet {
   border-left: 1px solid var(--hairline);
 }
 
-.analytics-today-metric > span,
-.analytics-today-metric > small {
+.analytics-today-metric>span,
+.analytics-today-metric>small {
   display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.analytics-today-metric > span {
+.analytics-today-metric>span {
   color: var(--analytics-faint);
   font-size: 0.66rem;
   font-weight: 800;
@@ -2239,7 +2244,7 @@ body.view-writers .edit-sheet {
   text-transform: uppercase;
 }
 
-.analytics-today-metric > strong {
+.analytics-today-metric>strong {
   display: block;
   margin-top: 7px;
   color: var(--text-primary);
@@ -2249,15 +2254,23 @@ body.view-writers .edit-sheet {
   letter-spacing: -0.05em;
 }
 
-.analytics-today-metric > small {
+.analytics-today-metric>small {
   margin-top: 6px;
   color: var(--text-muted);
   font-size: 0.68rem;
 }
 
-.analytics-today-metric.tone-approved > strong { color: #10986e; }
-.analytics-today-metric.tone-rejected > strong { color: #dc5262; }
-.analytics-today-metric.tone-pending > strong { color: #d88a16; }
+.analytics-today-metric.tone-approved>strong {
+  color: #10986e;
+}
+
+.analytics-today-metric.tone-rejected>strong {
+  color: #dc5262;
+}
+
+.analytics-today-metric.tone-pending>strong {
+  color: #d88a16;
+}
 
 @media (max-width: 760px) {
   .analytics-today-card {
@@ -2273,8 +2286,13 @@ body.view-writers .edit-sheet {
     padding: 12px 14px;
   }
 
-  .analytics-today-metric:nth-child(odd) { border-left: 0; }
-  .analytics-today-metric:nth-child(n + 3) { border-top: 1px solid var(--hairline); }
+  .analytics-today-metric:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .analytics-today-metric:nth-child(n + 3) {
+    border-top: 1px solid var(--hairline);
+  }
 }
 
 .analytics-grid {
@@ -2783,7 +2801,10 @@ body.view-writers .edit-sheet {
 /* Without subgrid the rows would have no tracks at all, so they fall back to
    the fixed list — alignment is then approximate but the table still reads. */
 @supports not (grid-template-columns: subgrid) {
-  .analytics-roster-list { display: block; }
+  .analytics-roster-list {
+    display: block;
+  }
+
   .roster-row {
     grid-template-columns: 34px minmax(90px, 1fr) repeat(7, minmax(0, 106px));
     gap: 14px;
@@ -2842,19 +2863,39 @@ body.view-writers .edit-sheet {
   font-variant-numeric: tabular-nums;
 }
 
-.roster-row .roster-today { color: var(--iris); }
-.roster-row .roster-sent { color: var(--text-primary); }
-.roster-row .roster-approved { color: #34d399; }
-.roster-row .roster-rejected { color: #f87171; }
-.roster-row .roster-awaiting { color: #fbbf24; }
+.roster-row .roster-today {
+  color: var(--iris);
+}
+
+.roster-row .roster-sent {
+  color: var(--text-primary);
+}
+
+.roster-row .roster-approved {
+  color: #34d399;
+}
+
+.roster-row .roster-rejected {
+  color: #f87171;
+}
+
+.roster-row .roster-awaiting {
+  color: #fbbf24;
+}
+
 /* Neutral on purpose: it restates the green column as a ratio, and colouring it
    green too would double-count the same signal. */
-.roster-row .roster-rate { color: var(--text-primary); }
+.roster-row .roster-rate {
+  color: var(--text-primary);
+}
 
 @media (max-width: 720px) {
+
   /* The mode switch is the one control that has to survive — the row count is
      restated by the list itself. */
-  #analytics-roster-count { display: none; }
+  #analytics-roster-count {
+    display: none;
+  }
 
   /* Headings stay on one line at every width, so past a certain narrowness the
      table scrolls sideways rather than folding its own column names in half.
@@ -2864,8 +2905,14 @@ body.view-writers .edit-sheet {
     grid-template-columns: 34px minmax(80px, 1fr) repeat(7, minmax(max-content, auto));
     column-gap: 8px;
   }
-  .analytics-roster-dates { flex-wrap: wrap; }
-  .roster-cell { font-size: 0.85rem; }
+
+  .analytics-roster-dates {
+    flex-wrap: wrap;
+  }
+
+  .roster-cell {
+    font-size: 0.85rem;
+  }
 }
 
 .analytics-empty {
@@ -4021,14 +4068,14 @@ textarea:focus {
 
   /* On ink the glass is lit by the accent itself — a white tint would grey the
      card out rather than sit in front of it. */
-  --glass-fill:        rgba(57, 121, 255, 0.08);
-  --glass-inner:       rgba(57, 121, 255, 0.14);
-  --glass-edge:        rgba(57, 121, 255, 0.22);
+  --glass-fill: rgba(57, 121, 255, 0.08);
+  --glass-inner: rgba(57, 121, 255, 0.14);
+  --glass-edge: rgba(57, 121, 255, 0.22);
   --glass-edge-strong: rgba(57, 121, 255, 0.40);
   /* The open menu sits over the card, so it needs enough body to read as glass
      rather than as a hole punched in the page. */
-  --glass-menu:        rgba(26, 40, 72, 0.86);
-  --glass-shadow:      0 6px 20px rgba(0, 0, 0, 0.35);
+  --glass-menu: rgba(26, 40, 72, 0.86);
+  --glass-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
 
   --accent: #3979ff;
   --accent-dim: #8cb1ff;
@@ -4131,9 +4178,17 @@ textarea:focus {
   background: rgba(52, 211, 153, 0.1);
 }
 
-:root[data-theme="dark"] .analytics-today-metric.tone-approved > strong { color: #34d399; }
-:root[data-theme="dark"] .analytics-today-metric.tone-rejected > strong { color: #fb7185; }
-:root[data-theme="dark"] .analytics-today-metric.tone-pending > strong { color: #fbbf24; }
+:root[data-theme="dark"] .analytics-today-metric.tone-approved>strong {
+  color: #34d399;
+}
+
+:root[data-theme="dark"] .analytics-today-metric.tone-rejected>strong {
+  color: #fb7185;
+}
+
+:root[data-theme="dark"] .analytics-today-metric.tone-pending>strong {
+  color: #fbbf24;
+}
 
 :root[data-theme="dark"] .analytics-card {
   border-color: rgba(255, 255, 255, 0.12);
@@ -5003,11 +5058,17 @@ textarea:focus {
 .video-reframe.dragging {
   cursor: grabbing;
 }
+
 /* ─── Search boxes (Review + Analytics) ───────────────────────────
    Sized to sit inline with the filter tabs without pushing the Refresh
    button off a narrow toolbar. */
 .review-search,
-.analytics-search { flex: 1 1 220px; min-width: 0; max-width: 340px; }
+.analytics-search {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 340px;
+}
+
 .review-search input,
 .analytics-search input {
   width: 100%;
@@ -5019,14 +5080,29 @@ textarea:focus {
   font-family: inherit;
   font-size: 0.82rem;
 }
+
 .review-search input:focus,
-.analytics-search input:focus { outline: none; border-color: var(--accent); }
+.analytics-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .review-search input::placeholder,
-.analytics-search input::placeholder { color: var(--text-muted); }
+.analytics-search input::placeholder {
+  color: var(--text-muted);
+}
 
 /* ─── Analytics: recent posts, each naming its writer ───────────── */
-.analytics-card-wide { grid-column: 1 / -1; }
-.analytics-recent { display: flex; flex-direction: column; gap: 6px; }
+.analytics-card-wide {
+  grid-column: 1 / -1;
+}
+
+.analytics-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .analytics-recent-row {
   display: flex;
   align-items: center;
@@ -5042,8 +5118,20 @@ textarea:focus {
   cursor: pointer;
   transition: var(--transition);
 }
-.analytics-recent-row:hover { background: var(--hover-tint); border-color: var(--hairline); }
-.analytics-recent-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+
+.analytics-recent-row:hover {
+  background: var(--hover-tint);
+  border-color: var(--hairline);
+}
+
+.analytics-recent-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .analytics-recent-title {
   font-size: 0.86rem;
   font-weight: 600;
@@ -5052,8 +5140,17 @@ textarea:focus {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.analytics-recent-meta { font-size: 0.74rem; color: var(--text-secondary); }
-.analytics-empty { font-size: 0.8rem; color: var(--text-secondary); padding: 10px 2px; }
+
+.analytics-recent-meta {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.analytics-empty {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 10px 2px;
+}
 
 
 /* ─── Writers: roster on the left, that writer's stories on the right ───
@@ -5086,16 +5183,23 @@ textarea:focus {
   border-radius: var(--radius-lg);
   transition: var(--transition);
 }
-.writers-item:hover { border-color: var(--hairline); }
+
+.writers-item:hover {
+  border-color: var(--hairline);
+}
+
 /* The selected writer is marked with a full border and tint, not just a rail:
    at a glance you should be able to tell whose stories are on the right. */
 .writers-item.is-selected {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+
 /* Disabled accounts stay legible — they are still the audit trail for every
    post that writer produced — but read as switched off. */
-.writers-item.is-disabled { opacity: 0.6; }
+.writers-item.is-disabled {
+  opacity: 0.6;
+}
 
 .writers-item-open {
   display: flex;
@@ -5125,7 +5229,13 @@ textarea:focus {
   letter-spacing: 0.02em;
 }
 
-.writers-item-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.writers-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .writers-item-name {
   font-size: 0.9rem;
   font-weight: 650;
@@ -5134,7 +5244,11 @@ textarea:focus {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.writers-item-meta { font-size: 0.74rem; color: var(--text-secondary); }
+
+.writers-item-meta {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
 
 .writers-item-actions {
   display: flex;
@@ -5143,6 +5257,7 @@ textarea:focus {
   margin-left: 49px;
   margin-top: -2px;
 }
+
 .writers-item-actions .btn-ghost {
   flex: none;
   padding: 4px 6px;
@@ -5154,17 +5269,25 @@ textarea:focus {
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
 }
+
 .writers-item-actions .btn-ghost:hover {
   background: var(--surface-2);
   color: var(--text-primary);
 }
+
 .writers-item-actions .btn-ghost.is-danger {
   color: var(--red);
 }
+
 .writers-item-actions .btn-ghost.is-danger:hover {
   background: rgba(220, 53, 69, 0.08);
 }
-.writers-item-actions .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; background: transparent; }
+
+.writers-item-actions .btn-ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: transparent;
+}
 
 /* ─── The detail pane ─── */
 .writer-detail {
@@ -5174,6 +5297,7 @@ textarea:focus {
   border: 1px solid var(--hairline-2);
   border-radius: var(--radius-lg);
 }
+
 .writer-detail-empty {
   display: grid;
   place-items: center;
@@ -5182,16 +5306,43 @@ textarea:focus {
   font-size: 0.86rem;
   text-align: center;
 }
+
 .writer-detail-empty[hidden] {
   display: none;
 }
-.writer-detail-head { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--hairline-2); }
-.writer-detail-head h3 { margin: 0 0 3px; font-size: 1.12rem; font-weight: 700; color: var(--text-primary); }
-.writer-detail-meta { margin: 0; font-size: 0.78rem; color: var(--text-secondary); }
-.writer-posts-empty { list-style: none; padding: 26px 4px; color: var(--text-muted); font-size: 0.84rem; text-align: center; }
+
+.writer-detail-head {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--hairline-2);
+}
+
+.writer-detail-head h3 {
+  margin: 0 0 3px;
+  font-size: 1.12rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.writer-detail-meta {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.writer-posts-empty {
+  list-style: none;
+  padding: 26px 4px;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  text-align: center;
+}
 
 /* ─── Add-writer form (hidden until asked for) ─── */
-.writers-add-toggle { flex-shrink: 0; }
+.writers-add-toggle {
+  flex-shrink: 0;
+}
+
 .writers-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -5203,9 +5354,20 @@ textarea:focus {
   border: 1px solid var(--hairline-2);
   border-radius: var(--radius-lg);
 }
-.writers-form[hidden] { display: none; }
-.writers-form .btn-primary { height: 40px; }
-.writers-form-note { grid-column: 1 / -1; margin: 0; }
+
+.writers-form[hidden] {
+  display: none;
+}
+
+.writers-form .btn-primary {
+  height: 40px;
+}
+
+.writers-form-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .writers-form select,
 .writers-form input {
   width: 100%;
@@ -5217,12 +5379,21 @@ textarea:focus {
   font-family: inherit;
   font-size: 0.85rem;
 }
+
 .writers-form select:focus,
-.writers-form input:focus { outline: none; border-color: var(--accent); }
+.writers-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 
 @media (max-width: 900px) {
-  .writers-layout { grid-template-columns: 1fr; }
-  .writer-detail { min-height: 0; }
+  .writers-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .writer-detail {
+    min-height: 0;
+  }
 }
 
 /* ─── Navigation: make the current view unmistakable ───────────────
@@ -5234,11 +5405,13 @@ textarea:focus {
   font-weight: 550;
   transition: var(--transition);
 }
+
 .view-tab.active {
   background: var(--accent-soft);
   color: var(--accent-dim);
   font-weight: 680;
 }
+
 .view-tab.active::after {
   content: "";
   position: absolute;
@@ -5249,7 +5422,11 @@ textarea:focus {
   border-radius: 2px;
   background: var(--accent);
 }
-.view-tab:hover:not(.active) { background: var(--hover-tint); color: var(--text-primary); }
+
+.view-tab:hover:not(.active) {
+  background: var(--hover-tint);
+  color: var(--text-primary);
+}
 
 /* ─── Native <select> popups ──────────────────────────────────────
    The select itself uses --surface-input, which on the dark theme is
@@ -5261,13 +5438,17 @@ select option {
   background-color: var(--surface-solid);
   color: var(--text-primary);
 }
+
 select option:checked,
 select option:hover {
   background-color: var(--accent-soft);
   color: var(--text-primary);
 }
+
 /* Firefox keeps the placeholder legible instead of inheriting the muted grey. */
-select option[value=""] { color: var(--text-secondary); }
+select option[value=""] {
+  color: var(--text-secondary);
+}
 
 /* ─── Category + state, side by side ─── */
 .section-row {
@@ -5276,9 +5457,22 @@ select option[value=""] { color: var(--text-secondary); }
   gap: 10px;
   margin-top: 4px;
 }
-.section-row.has-state { grid-template-columns: 1fr 1fr; }
-.section-row .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.section-row .field[hidden] { display: none; }
+
+.section-row.has-state {
+  grid-template-columns: 1fr 1fr;
+}
+
+.section-row .field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.section-row .field[hidden] {
+  display: none;
+}
+
 .section-row .field-label {
   font-size: 0.7rem;
   font-weight: 600;
@@ -5286,14 +5480,26 @@ select option[value=""] { color: var(--text-secondary); }
   text-transform: uppercase;
   color: var(--text-secondary);
 }
-.required-mark { color: var(--accent); }
+
+.required-mark {
+  color: var(--accent);
+}
+
 /* When DailyMattr will refuse without it, the field says so before you publish
    rather than after the upload. */
-.section-row .field.is-required select { border-color: var(--accent); }
-.helper-text.is-warning { color: var(--accent-dim); font-weight: 600; }
+.section-row .field.is-required select {
+  border-color: var(--accent);
+}
+
+.helper-text.is-warning {
+  color: var(--accent-dim);
+  font-weight: 600;
+}
 
 @media (max-width: 420px) {
-  .section-row.has-state { grid-template-columns: 1fr; }
+  .section-row.has-state {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ─── Writers header: title and the add button on one row ─────────
@@ -5308,6 +5514,7 @@ select option[value=""] { color: var(--text-secondary); }
   gap: 20px;
   flex-wrap: wrap;
 }
+
 /* .btn-primary is width:100% globally, which is what stretched it. */
 #writers-view .writers-add-toggle {
   width: auto;
@@ -5324,7 +5531,16 @@ select option[value=""] { color: var(--text-secondary); }
   gap: 8px;
   margin-top: 8px;
 }
-.date-row .field { flex: 1 1 auto; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+
+.date-row .field {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
 .date-row .field-label {
   font-size: 0.7rem;
   font-weight: 600;
@@ -5332,6 +5548,7 @@ select option[value=""] { color: var(--text-secondary); }
   text-transform: uppercase;
   color: var(--text-secondary);
 }
+
 .date-row input[type="date"] {
   width: 100%;
   padding: 9px 12px;
@@ -5342,12 +5559,23 @@ select option[value=""] { color: var(--text-secondary); }
   font-family: inherit;
   font-size: 0.85rem;
 }
-.date-row input[type="date"]:focus { outline: none; border-color: var(--accent); }
+
+.date-row input[type="date"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* The native picker icon is drawn black, which vanishes on the dark theme. */
 :root[data-theme="dark"] .date-row input[type="date"]::-webkit-calendar-picker-indicator {
   filter: invert(1) opacity(0.7);
 }
-.date-row .btn-ghost { flex: 0 0 auto; width: auto; padding: 9px 14px; white-space: nowrap; }
+
+.date-row .btn-ghost {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 9px 14px;
+  white-space: nowrap;
+}
 
 #post-keywords {
   width: 100%;
@@ -5360,7 +5588,11 @@ select option[value=""] { color: var(--text-secondary); }
   font-family: inherit;
   font-size: 0.85rem;
 }
-#post-keywords:focus { outline: none; border-color: var(--accent); }
+
+#post-keywords:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 
 /* ─── Confirmation dialog ─────────────────────────────────────────
    ::backdrop is the browser's own layer for a modal <dialog>, so it always
@@ -5375,24 +5607,33 @@ select option[value=""] { color: var(--text-secondary); }
   color: var(--text-primary);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
+
 .pix-dialog::backdrop {
   background: rgba(8, 11, 20, 0.62);
   backdrop-filter: blur(3px);
 }
-.pix-dialog-inner { padding: 22px; }
+
+.pix-dialog-inner {
+  padding: 22px;
+}
+
 .pix-dialog-title {
   margin: 0 0 8px;
   font-size: 1.08rem;
   font-weight: 700;
   color: var(--text-primary);
 }
+
 .pix-dialog-body {
   margin: 0;
   font-size: 0.86rem;
   line-height: 1.55;
   color: var(--text-secondary);
 }
-.pix-dialog-body[hidden] { display: none; }
+
+.pix-dialog-body[hidden] {
+  display: none;
+}
 
 /* Controls the caller injected — currently the category picker for a post
    that reached Review without one. */
@@ -5401,7 +5642,10 @@ select option[value=""] { color: var(--text-secondary); }
   gap: 10px;
   margin: 14px 0 0;
 }
-.pix-dialog-extras[hidden] { display: none; }
+
+.pix-dialog-extras[hidden] {
+  display: none;
+}
 
 .publish-picker-field {
   display: grid;
@@ -5412,7 +5656,10 @@ select option[value=""] { color: var(--text-secondary); }
   text-transform: uppercase;
   color: var(--text-secondary);
 }
-.publish-picker-field[hidden] { display: none; }
+
+.publish-picker-field[hidden] {
+  display: none;
+}
 
 .publish-picker-field select {
   width: 100%;
@@ -5438,7 +5685,10 @@ select option[value=""] { color: var(--text-secondary); }
   line-height: 1.7;
   color: var(--text-primary);
 }
-.pix-dialog-facts[hidden] { display: none; }
+
+.pix-dialog-facts[hidden] {
+  display: none;
+}
 
 .pix-dialog-actions {
   display: flex;
@@ -5446,34 +5696,56 @@ select option[value=""] { color: var(--text-secondary); }
   gap: 10px;
   margin-top: 20px;
 }
+
 .pix-dialog-actions .btn-ghost,
 .pix-dialog-actions .btn-primary {
   width: auto;
   padding: 9px 18px;
   font-size: 0.84rem;
 }
+
 /* Destructive actions read red; publishing is not destructive, just final. */
 .pix-dialog-actions .btn-primary.is-danger {
   background: var(--red);
   border-color: var(--red);
   color: #fff;
 }
-.pix-dialog-actions .btn-primary.is-danger:hover { filter: brightness(1.08); }
+
+.pix-dialog-actions .btn-primary.is-danger:hover {
+  filter: brightness(1.08);
+}
 
 @media (max-width: 420px) {
-  .pix-dialog-actions { flex-direction: column-reverse; }
+  .pix-dialog-actions {
+    flex-direction: column-reverse;
+  }
+
   .pix-dialog-actions .btn-ghost,
-  .pix-dialog-actions .btn-primary { width: 100%; }
+  .pix-dialog-actions .btn-primary {
+    width: 100%;
+  }
 }
 
 /* ─── Weekly output column ─────────────────────────────────────────
    The headline number on the roster: what this writer produced in the last
    seven days, with an arrow against the seven before it. A lifetime total
    says who has been here longest; this says who is producing now. */
-.roster-week { font-weight: 700; font-variant-numeric: tabular-nums; }
-.roster-week.is-up { color: var(--green); }
-.roster-week.is-down { color: var(--red); }
-.roster-week.is-flat { color: var(--text-primary); }
+.roster-week {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.roster-week.is-up {
+  color: var(--green);
+}
+
+.roster-week.is-down {
+  color: var(--red);
+}
+
+.roster-week.is-flat {
+  color: var(--text-primary);
+}
 
 /* Same figure on the Writers roster, where it sits under the name. */
 .writers-week {

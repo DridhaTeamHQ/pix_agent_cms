@@ -5890,6 +5890,29 @@ function syncPrimaryAction() {
   }
 }
 
+/* ── Collapsing the rail ──
+   Icons rather than nothing: hiding it outright would leave no way back
+   except a control floating over the content, and no sense of where you are.
+   The choice is remembered, because a collapsed rail is a working preference
+   about screen space, not a per-page state. */
+const navCollapseBtn = document.getElementById("nav-collapse");
+
+function setNavCollapsed(collapsed) {
+  document.body.classList.toggle("nav-collapsed", collapsed);
+  localStorage.setItem("pix-nav-collapsed", collapsed ? "1" : "0");
+  if (navCollapseBtn) {
+    navCollapseBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    navCollapseBtn.setAttribute("aria-label", collapsed ? "Expand the navigation" : "Collapse the navigation");
+    navCollapseBtn.title = collapsed ? "Expand" : "Collapse";
+  }
+  // The poster canvas is sized from its column, which just changed width.
+  requestAnimationFrame(() => { try { renderPoster(); } catch {} });
+}
+
+setNavCollapsed(localStorage.getItem("pix-nav-collapsed") === "1");
+navCollapseBtn?.addEventListener("click", () =>
+  setNavCollapsed(!document.body.classList.contains("nav-collapsed")));
+
 const cmsToday = document.getElementById("cms-today");
 if (cmsToday) {
   cmsToday.textContent = new Date().toLocaleDateString("en-GB", {

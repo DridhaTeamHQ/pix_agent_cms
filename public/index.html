@@ -102,6 +102,18 @@
         <span class="cms-brand-text">PIX <em>CMS</em></span>
       </div>
 
+      <!-- Collapse the rail to icons. Sits on the sidebar's own edge rather
+           than in the topbar, because that is where the thing it moves is —
+           and it stays visible when collapsed, so the way back is the same
+           control as the way in. -->
+      <button type="button" id="nav-collapse" class="cms-nav-collapse"
+              aria-label="Collapse the navigation" aria-expanded="true">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="2"
+                fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
       <div class="view-tabs" id="view-tabs" role="tablist" aria-label="View">
         <button type="button" class="view-tab active" data-view="poster" role="tab" aria-selected="true">
           <svg width="17" height="17" aria-hidden="true"><use href="#i-image"/></svg>

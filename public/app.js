@@ -7860,6 +7860,18 @@ async function savePixToLibrary() {
   if (!state.headline && !state.sourceUrl) {
     return { ok: false, error: "Nothing to save yet — scrape a link or write a headline first." };
   }
+  /* Source link is required, for every role.
+
+     It is the only record of where a story came from. QA checks it on every
+     post, it is what Review searches, and it is what anyone answering "where
+     did this come from" months later has to work with — and once a post is
+     published to DailyMattr there is no going back to add it, because their
+     API is write-only. A scrape fills it in automatically, so the only way to
+     arrive here empty is a hand-written post, which is exactly the case where
+     the provenance is least obvious and most worth recording. */
+  if (!String(state.sourceUrl || "").trim()) {
+    return { ok: false, error: "Add the source link before saving.", needsSource: true };
+  }
 
   // Impatient double-clicks are the one way two saves overlap. Serialising
   // them keeps the first response — which carries the new id — from racing
@@ -8110,6 +8122,23 @@ if (savePixBtn) {
     } else {
       showState("Not saved", "is-error");
       setPostStatus(result?.error || "Could not save this post.", "error");
+      /* A missing source link gets a dialog rather than a status line: it is
+         the one failure here that is a step the person skipped rather than
+         something that went wrong, so it needs to say what to do and put them
+         in front of the field. */
+      if (result?.needsSource) {
+        await confirmAction({
+          notice: true,
+          title: "Source link required",
+          body: "Every pix needs the link it came from. Paste the article URL into Source Link.",
+          facts: [
+            "QA checks it on every post, and Review searches by it.",
+            "Scraping a link fills it in for you.",
+          ],
+          confirmLabel: "Add it now",
+        });
+        focusSourceLink();
+      }
     }
   });
 }
@@ -8874,6 +8903,17 @@ async function loadSectionOptions() {
        paragraph inputs, so the box has to be refilled explicitly or it looks
        empty over a post that has one. */
 const sourceUrlEdit = document.getElementById("source-url-edit");
+
+/* Open the section, scroll to it and focus. Telling someone a field is
+   required and leaving them to find it — inside a collapsed accordion, in a
+   three-column editor — is most of the annoyance of a required field. */
+function focusSourceLink() {
+  if (!sourceUrlEdit) return;
+  const acc = sourceUrlEdit.closest(".acc");
+  if (acc) acc.dataset.open = "true";
+  sourceUrlEdit.scrollIntoView({ behavior: "smooth", block: "center" });
+  setTimeout(() => sourceUrlEdit.focus(), 320);
+}
 if (sourceUrlEdit) {
   sourceUrlEdit.addEventListener("input", () => {
     state.sourceUrl = sourceUrlEdit.value.trim();

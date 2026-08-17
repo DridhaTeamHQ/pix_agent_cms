@@ -8973,7 +8973,13 @@ async function loadReviewQueue() {
   setReviewStatus("Loading…");
   reviewList.innerHTML = "";
 
-  const params = new URLSearchParams({ limit: "100" });
+  /* 200 is the server's ceiling. It was 100 against a library that has passed
+     220 posts, so the oldest 120 were unreachable — ordered newest first, a
+     writer's submission simply fell off the end of QA's list as newer ones
+     arrived, which reads exactly like "my post never showed up".
+     Hitting even this ceiling is reported below rather than hidden. */
+  const PAGE_LIMIT = 200;
+  const params = new URLSearchParams({ limit: String(PAGE_LIMIT) });
   // `status` rather than `approved`: the queue has three states now, and a
   // boolean cannot say "rejected".
   if (reviewFilter !== "all") params.set("status", reviewFilter);
@@ -9005,6 +9011,17 @@ async function loadReviewQueue() {
       reviewList.appendChild(empty);
       setReviewStatus("");
       return;
+    }
+
+    /* Say so when the list is full. Silent truncation is what made the old
+       100-post cap look like lost work rather than a paging limit: a writer's
+       post really was missing from QA's screen, with nothing on the page
+       admitting it. If this ever fills up, it says so and says what to do. */
+    if (posts.length >= PAGE_LIMIT) {
+      setReviewStatus(
+        `Showing the ${PAGE_LIMIT} most recent — older posts are not on this page. Narrow it with a filter or the search box.`,
+        "error",
+      );
     }
 
     const approvedCount = posts.filter((p) => p.approved).length;

@@ -649,6 +649,48 @@ function roleLabel(role) {
 function canReviewRole(role) { return role === "qa" || role === "admin"; }
 function isAdminRole(role) { return role === "admin"; }
 
+/* ── Your own count, in the header ──
+
+   Every role sees a number for their own work. A writer sees how many stories
+   they have written, a reviewer how many they have cleared — the question each
+   one actually asks about themselves. Analytics answers this for QA and admins
+   only, because it reports across the whole team; a writer's own output is not
+   management reporting and should not have been behind that gate.
+
+   Weekly leads, with the all-time total behind it, matching how the roster
+   counts read elsewhere so the two never tell different stories. */
+const accountCount = document.getElementById("account-count");
+
+async function refreshMyPixCount() {
+  if (!accountCount) return;
+  if (!state.user) {
+    accountCount.hidden = true;
+    return;
+  }
+  try {
+    const response = await fetch("/api/pix/stats", { credentials: "same-origin" });
+    if (!response.ok) {
+      accountCount.hidden = true;
+      return;
+    }
+    const { counts } = await response.json();
+    if (!counts) {
+      accountCount.hidden = true;
+      return;
+    }
+    const reviewer = canReviewRole(state.user.role);
+    const week = reviewer ? counts.reviewed_week : counts.written_week;
+    const total = reviewer ? counts.reviewed_total : counts.written_total;
+    const noun = reviewer ? "reviewed" : "written";
+    accountCount.textContent = `${week} this week`;
+    accountCount.title = `${total} ${noun} in total · ${week} in the last 7 days`;
+    accountCount.hidden = false;
+  } catch {
+    // A header ornament must never be the thing that breaks sign-in.
+    accountCount.hidden = true;
+  }
+}
+
 function applySession(user) {
   state.user = user || null;
   document.body.dataset.role = user?.role || "";
@@ -662,6 +704,7 @@ function applySession(user) {
   }
   if (accountBox) accountBox.hidden = !user;
   if (logoutBtn) logoutBtn.hidden = !user;
+  refreshMyPixCount();
   setAuthState(user ? "ready" : "blocked", user ? "" : "Sign in to continue.");
   syncReviewCopy();
   // Publishing to shortlyindia.com is QA-only (the server returns 403 for
@@ -5236,7 +5279,7 @@ function renderWriterRoster() {
         <span class="roster-avatar">${escapeRosterText(rosterInitials(row.user_name))}</span>
         <span class="roster-name" title="${name}">${name}</span>
         <span class="roster-cell roster-today" title="Resets at 12:00 AM IST">${formatCount(today)}</span>
-        <span class="roster-cell roster-week is-${trend}" title="${weekTitle}">${isQa ? "—" : `${formatCount(week)}${trendMark}`}</span>
+        <span class="roster-cell roster-week is-${trend}" title="${weekTitle}">${formatCount(week)}${trendMark}</span>
         <span class="roster-cell roster-sent">${isQa ? "—" : formatCount(sent)}</span>
         <span class="roster-cell roster-approved">${formatCount(approved)}</span>
         <span class="roster-cell roster-rejected">${formatCount(rejected)}</span>
@@ -7426,10 +7469,17 @@ const pixDialogEl = document.getElementById("pix-dialog");
    Approve & Publish to ask for a category the post never carried. It stays the
    caller's node, so the caller reads its values straight off it after this
    resolves; detaching it from the dialog does not clear a <select>. */
-function confirmAction({ title, body = "", facts = [], confirmLabel = "Confirm", danger = false, extras = null } = {}) {
+/* `notice: true` turns this into a one-button acknowledgement — same dialog,
+   no choice to make. A notice is telling the user something happened, so a
+   Cancel would be answering a question that was never asked. */
+function confirmAction({ title, body = "", facts = [], confirmLabel = "Confirm", danger = false, extras = null, notice = false } = {}) {
   // No <dialog> (very old browser, or the element was removed): fall back
   // rather than silently proceeding with something irreversible.
   if (!pixDialogEl || typeof pixDialogEl.showModal !== "function") {
+    if (notice) {
+      window.alert(`${title}\n\n${body}`);
+      return Promise.resolve(true);
+    }
     return Promise.resolve(window.confirm(`${title}\n\n${body}`));
   }
 
@@ -7461,6 +7511,7 @@ function confirmAction({ title, body = "", facts = [], confirmLabel = "Confirm",
   confirmBtn.classList.toggle("is-danger", Boolean(danger));
 
   const cancelBtn = document.getElementById("pix-dialog-cancel");
+  cancelBtn.hidden = notice;
 
   return new Promise((resolve) => {
     /* Resolve from whichever signal arrives first, rather than trusting the
@@ -7496,8 +7547,9 @@ function confirmAction({ title, body = "", facts = [], confirmLabel = "Confirm",
 
     pixDialogEl.returnValue = "cancel";   // anything but an explicit yes means no
     pixDialogEl.showModal();
-    // Focus Cancel, not Confirm: a stray Enter must not publish.
-    cancelBtn.focus();
+    // Focus Cancel, not Confirm: a stray Enter must not publish. A notice has
+    // no Cancel and nothing to guard against, so its one button takes focus.
+    (notice ? confirmBtn : cancelBtn).focus();
   });
 }
 
@@ -7667,6 +7719,8 @@ async function savePixToLibrary() {
       }
       state.pixId = data.id || state.pixId;
       markPixSaved();
+      // Only a new row moves the writer's tally; an update does not.
+      if (data.created) refreshMyPixCount();
       console.log(`[pix] saved ${data.id}`);
       return {
         ok: true,
@@ -7865,6 +7919,26 @@ if (savePixBtn) {
           "success",
         );
       }
+
+      /* Writers get this as a dialog, not just a status line. Handing the
+         story over is the end of their work on it, and a line of text under
+         the preview was being missed — writers kept typing the next story
+         over the row they had just sent. QA sees no dialog: saving is not a
+         handoff for them, and a modal on every edit would be in the way. */
+      if (state.user?.role === "writer") {
+        confirmAction({
+          notice: true,
+          title: result.created ? "Sent to QA" : "Update sent to QA",
+          body: result.created
+            ? "Your article is saved and has moved to QA for review."
+            : "Your changes are saved. QA is reviewing the updated copy.",
+          facts: [
+            state.headline ? cleanHeadlineForPublish(state.headline) : "(untitled)",
+            "Press New post to start the next story.",
+          ],
+          confirmLabel: "Got it",
+        });
+      }
     } else {
       showState("Not saved", "is-error");
       setPostStatus(result?.error || "Could not save this post.", "error");
@@ -7953,6 +8027,12 @@ async function loadPixIntoEditor(post) {
   const design = post.design || {};
 
   resetDailyMattrExtraMedia();
+
+  /* The publish line belongs to the post that was open, not to the panel.
+     Without this, "Published to DailyMattr" stayed on screen when the next
+     article was opened, so an untouched post read as already sent — the one
+     mistake this panel must never invite. */
+  setDailyMattrStatus("");
 
   state.pixId = post.id;
   state.headline = post.headline || post.ai_headline || post.scraped_title || "";
@@ -8127,11 +8207,14 @@ let reviewFilter = "all";   // "all" | "pending" | "approved" — QA only
 function syncReviewCopy() {
   const isQa = canReviewRole(state.user?.role);
   if (reviewTabLabel) reviewTabLabel.textContent = isQa ? "Review" : "My posts";
-  if (reviewTitle) reviewTitle.innerHTML = isQa ? "Review<br>and approve." : "Your<br>saved posts.";
+  if (reviewTitle) reviewTitle.innerHTML = isQa ? "Review<br>and publish." : "Your<br>saved posts.";
   if (reviewDesc) {
+    // Approving is no longer something QA does from this list — a post is
+    // approved by being published from the editor — so the wording points at
+    // the route that exists rather than at a button that has gone.
     reviewDesc.textContent = isQa
-      ? "Every post the writers have saved. Open one to edit it, then approve it when it is ready to publish."
-      : "Everything you have saved. Open one to keep working on it — QA approves them from their own view.";
+      ? "Every post the writers have saved. Open one to edit and publish it, or send it back with Reject."
+      : "Everything you have saved. Open one to keep working on it — QA reviews them from their own view.";
   }
   if (!isQa) reviewFilter = "all";
 }
@@ -8759,31 +8842,23 @@ function renderReviewItem(post) {
 
   actions.append(open);
 
-  // Approving and deleting are QA's; a writer would only ever get a 403.
-  if (canReviewRole(state.user?.role)) {
-    const approve = document.createElement("button");
-    approve.type = "button";
-    approve.className = "btn-ghost" + (post.approved ? "" : " btn-approve");
-    approve.textContent = post.approved ? "Unapprove" : "Approve";
-    approve.addEventListener("click", () => setPostVerdict(post, post.approved ? "awaiting" : "approved", approve));
+  /* Three actions, and approving is not one of them.
 
-    // Rejecting is the counterpart to approving, not a kind of delete: the post
-    // stays, and the verdict is reversible straight back to awaiting.
+     Approval is not a decision made from a list — it is made after reading the
+     post, which means opening it, and publishing from the editor marks the
+     post approved on the way out. A row-level Approve was therefore a second
+     path to the same state that skipped the reading, and Approve & Publish put
+     the one irreversible action in this app next to four reversible ones.
+
+     Reject stays here because it is the verdict that does NOT need the editor:
+     a row can be sent back on the strength of its headline and writer alone.
+     Rejecting from inside the post is available too, on the editor toolbar. */
+  if (canReviewRole(state.user?.role)) {
     const reject = document.createElement("button");
     reject.type = "button";
     reject.className = "btn-ghost" + (post.rejected ? "" : " btn-reject");
     reject.textContent = post.rejected ? "Undo reject" : "Reject";
     reject.addEventListener("click", () => setPostVerdict(post, post.rejected ? "awaiting" : "rejected", reject));
-
-    /* Kept separate from Approve on purpose. Approving is a reversible verdict
-       QA gives dozens of times a day; publishing puts the story on a public
-       site and Pix has no route to take it back. Folding the two into one
-       button would make the irreversible one the easy one to hit by mistake. */
-    const publish = document.createElement("button");
-    publish.type = "button";
-    publish.className = "btn-ghost btn-publish";
-    publish.textContent = "Approve & Publish";
-    publish.addEventListener("click", () => approveAndPublish(post, publish));
 
     const del = document.createElement("button");
     del.type = "button";
@@ -8791,7 +8866,7 @@ function renderReviewItem(post) {
     del.textContent = "Delete";
     del.addEventListener("click", () => deleteReviewPost(post, li));
 
-    actions.append(approve, publish, reject, del);
+    actions.append(reject, del);
   }
   li.append(main, actions);
   return li;
@@ -8824,159 +8899,13 @@ async function setPostVerdict(post, verdict, button) {
     // Re-fetch rather than patch the row in place: under the Pending or
     // Approved filter the post has just left the list it is sitting in.
     loadReviewQueue();
+    refreshMyPixCount();   // a verdict is a review, so the reviewer's tally moved
   } catch (err) {
     setReviewStatus(err.message || "Could not update the verdict.", "error");
     button.textContent = previous;
   } finally {
     button.disabled = false;
   }
-}
-
-/* ── Approve & publish, straight from the Review row ──
-
-   Publishing has to happen in the browser: the media DailyMattr receives is
-   the poster rasterised from the live DOM by exportSlidePng, and there is no
-   renderer on the server. So this opens the post in the editor, publishes it
-   the same way the Poster tab does, and comes back — rather than pretending
-   the Review list can send a post on its own.
-
-   The category comes off the post, where the writer set it. QA is only asked
-   when it is genuinely missing, which is the older posts saved before the
-   field was required. */
-async function approveAndPublish(post, button) {
-  if (!dailymattrMetaLoaded) {
-    setReviewStatus("Loading DailyMattr categories…");
-    await loadDailyMattrMeta({ force: true });
-    if (!dailymattrMetaLoaded) {
-      setReviewStatus("Could not load DailyMattr — open the post and publish from the Poster tab.", "error");
-      return;
-    }
-  }
-
-  let categoryId = post.category_id ? String(post.category_id) : "";
-  let stateId = post.state_id ? String(post.state_id) : "";
-  const needsAsking = !categoryId || (stateIsRequired(categoryId) && !stateId);
-  const picker = needsAsking ? buildPublishPicker(categoryId, stateId) : null;
-
-  const go = await confirmAction({
-    title: "Approve and publish?",
-    body: "This marks the post approved and sends it live on shortlyindia.com straight away. It cannot be undone from here — a mistake has to be removed from DailyMattr's portal by hand.",
-    facts: [
-      post.headline ? `“${post.headline}”` : "Untitled post",
-      picker
-        ? "This post has no category — choose one below"
-        : `Category: ${labelForOption(dailymattrCategory, categoryId) || `#${categoryId}`}` +
-          (stateId ? ` · ${labelForOption(dailymattrState, stateId)}` : ""),
-      "Its pages will be rendered and sent as they appear in the editor",
-    ],
-    confirmLabel: "Approve & publish",
-    extras: picker,
-  });
-  if (!go) return;
-
-  if (picker) {
-    categoryId = picker.querySelector("[data-role='category']")?.value || "";
-    stateId = picker.querySelector("[data-role='state']")?.value || "";
-    if (!categoryId) {
-      setReviewStatus("Choose a category before publishing.", "error");
-      return;
-    }
-    if (stateIsRequired(categoryId) && !stateId) {
-      setReviewStatus("The State category needs a state.", "error");
-      return;
-    }
-  }
-
-  button.disabled = true;
-  const previous = button.textContent;
-  button.textContent = "Publishing…";
-  setReviewStatus("Opening the post and rendering its pages…");
-
-  try {
-    await openSavedPost(post.id);
-    /* exportSlidePng reads the live poster, so the editor has to be the
-       visible view — rendering it while Review is on screen produces blank
-       images. QA watches the poster for the few seconds it takes. */
-    setView("poster");
-
-    state.categoryId = categoryId;
-    state.stateId = stateIsRequired(categoryId) ? stateId : "";
-    if (dailymattrCategory) dailymattrCategory.value = state.categoryId;
-    if (dailymattrState) dailymattrState.value = state.stateId;
-
-    const ok = await publishToDailyMattr({ skipConfirm: true });
-
-    /* Order matters: setView("review") kicks off its own loadReviewQueue, and
-       that clears the status line when it lands. Awaiting a reload before
-       writing the verdict is what stops "Published" being wiped a moment
-       after QA reads it. */
-    setView("review");
-    await loadReviewQueue();
-    setReviewStatus(
-      ok
-        ? "Published to DailyMattr and marked approved."
-        : "Not published — the reason is on the Poster tab, under the DailyMattr panel.",
-      ok ? "success" : "error",
-    );
-  } catch (err) {
-    setView("review");
-    await loadReviewQueue();
-    setReviewStatus(err.message || "Could not publish this post.", "error");
-  } finally {
-    button.disabled = false;
-    button.textContent = previous;
-  }
-}
-
-/* A category (and a state, when the category is State) for a post that
-   arrived without one. Options are copied from the publish panel's selects so
-   there is one source of truth for the live DailyMattr lists. */
-function buildPublishPicker(categoryId, stateId) {
-  const wrap = document.createElement("div");
-
-  const catField = document.createElement("label");
-  catField.className = "publish-picker-field";
-  catField.append("Category");
-  const cat = document.createElement("select");
-  cat.dataset.role = "category";
-  copyOptionsInto(cat, dailymattrCategory);
-  cat.value = categoryId || "";
-  catField.appendChild(cat);
-
-  const stateField = document.createElement("label");
-  stateField.className = "publish-picker-field";
-  stateField.append("State");
-  const st = document.createElement("select");
-  st.dataset.role = "state";
-  copyOptionsInto(st, dailymattrState);
-  st.value = stateId || "";
-  stateField.appendChild(st);
-
-  // Only the State category takes one, and showing it otherwise invites QA to
-  // file a national story against a region.
-  const syncState = () => { stateField.hidden = !stateIsRequired(cat.value); };
-  cat.addEventListener("change", syncState);
-  syncState();
-
-  wrap.append(catField, stateField);
-  return wrap;
-}
-
-function copyOptionsInto(target, source) {
-  target.textContent = "";
-  if (!source) return;
-  for (const option of source.options) {
-    const clone = document.createElement("option");
-    clone.value = option.value;
-    clone.textContent = option.textContent;
-    target.appendChild(clone);
-  }
-}
-
-function labelForOption(select, value) {
-  if (!select || !value) return "";
-  const match = Array.from(select.options).find((option) => option.value === String(value));
-  return match ? match.textContent : "";
 }
 
 async function deleteReviewPost(post, itemEl) {
@@ -9076,8 +9005,124 @@ function refreshSaveIndicator() {
    dozens of places — sliders, drags, chips, the AI writer, an image load —
    and a single cheap comparison is more reliable than remembering to call a
    hook from all of them. */
+/* ── Reject, from the editor ──
+
+   Shown only once the open post has a row and only to a reviewer: rejecting
+   something that was never saved would have nothing to write to, and the
+   button would be a dead control for every writer.
+
+   confirmAction first. Rejection is visible to the writer and resets the
+   post's standing, so it should not be one stray click away. */
+const rejectPixBtn = document.getElementById("reject-pix-btn");
+const rejectPixLabel = document.getElementById("reject-pix-label");
+
+function syncRejectButton() {
+  if (!rejectPixBtn) return;
+  const allowed = Boolean(state.user && canReviewRole(state.user.role) && state.pixId);
+  rejectPixBtn.hidden = !allowed;
+}
+
+if (rejectPixBtn) {
+  rejectPixBtn.addEventListener("click", async () => {
+    if (!state.pixId) return;
+    const ok = await confirmAction({
+      title: "Reject this post?",
+      body: "It goes back to the writer as rejected. They can edit it and it returns to the queue.",
+      confirmLabel: "Reject",
+      danger: true,
+    });
+    if (!ok) return;
+
+    rejectPixBtn.disabled = true;
+    if (rejectPixLabel) rejectPixLabel.textContent = "Rejecting…";
+    try {
+      const response = await fetch(`/api/pix/approve?id=${encodeURIComponent(state.pixId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ approved: false, rejected: true }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (response.status === 401) return handleSignedOut();
+        setStatus(payload.error || `Could not reject that post (${response.status}).`, "error");
+        return;
+      }
+      setStatus("Rejected — sent back to the writer.", "success");
+      // The Review list is now stale by one row.
+      if (typeof loadReviewQueue === "function") loadReviewQueue();
+      refreshMyPixCount();
+    } catch (err) {
+      setStatus(err.message || "Could not reject that post.", "error");
+    } finally {
+      rejectPixBtn.disabled = false;
+      if (rejectPixLabel) rejectPixLabel.textContent = "Reject";
+    }
+  });
+}
+
+/* ── Autosave ──
+
+   Only for a post that already has a row. A new post still needs one manual
+   Save, for two reasons: a writer has to choose a category before the server
+   will accept it at all, so an autosave before that could only fail; and most
+   experiments in this editor are never meant to be kept, so creating a row the
+   moment someone types a headline would fill the library with abandoned
+   drafts. Once the row exists, every later edit saves itself.
+
+   That is exactly the case QA is in — they only ever open posts that are
+   already saved — which is where edits were being lost.
+
+   Idle-triggered rather than on a fixed timer: saving mid-sentence would write
+   half a headline and, with QA editing a post a writer may also have open,
+   the fewer intermediate versions written the better. */
+const AUTOSAVE_IDLE_MS = 2500;
+let autosaveFingerprint = null;
+let autosaveDirtySince = 0;
+let autosaveInFlight = false;
+
+function considerAutosave() {
+  if (!state.user || !state.pixId || autosaveInFlight) return;
+  // A manual save owns the button and the row while it runs.
+  if (savePixBtn?.disabled) return;
+  if (lastSavedFingerprint === null) return;
+
+  const fingerprint = pixFingerprint();
+  if (fingerprint === lastSavedFingerprint) {
+    autosaveDirtySince = 0;
+    return;
+  }
+  // Still changing — restart the clock so it fires after typing stops.
+  if (fingerprint !== autosaveFingerprint) {
+    autosaveFingerprint = fingerprint;
+    autosaveDirtySince = Date.now();
+    return;
+  }
+  if (Date.now() - autosaveDirtySince < AUTOSAVE_IDLE_MS) return;
+
+  autosaveInFlight = true;
+  savePixToLibrary()
+    .then((result) => {
+      if (result.ok) {
+        setStatus("Saved automatically.", "success");
+      } else {
+        /* Quietly. The unsaved dot stays lit, so the state is still visible,
+           and a validation failure here would otherwise reappear as a toast
+           every few seconds until the writer happened to fix it. */
+        console.warn("[pix] autosave skipped:", result.error);
+      }
+    })
+    .finally(() => {
+      autosaveInFlight = false;
+      autosaveDirtySince = 0;
+      autosaveFingerprint = null;
+    });
+}
+
 setInterval(() => {
   refreshSaveIndicator();
+  syncRejectButton();
+  considerAutosave();
   syncDailyMattrDraft();
   syncDailyMattrMediaCount();
 }, 800);

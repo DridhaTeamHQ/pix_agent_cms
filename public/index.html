@@ -130,6 +130,10 @@
         <div class="nav-session">
           <div class="nav-account" id="account-box" hidden>
             <span class="nav-account-name" id="account-name">—</span>
+            <!-- Your own tally, for every role. Writers had no number at all —
+                 analytics is QA-and-admin because it reports on colleagues,
+                 which left a writer with no way to see their own output. -->
+            <span class="nav-count" id="account-count" hidden title="Your work this week"></span>
             <span class="role-badge" id="account-role">writer</span>
           </div>
           <button type="button" id="logout-btn" class="nav-logout" hidden>Logout</button>
@@ -259,6 +263,24 @@
           <button type="button" class="btn-ghost btn-tiny" id="page-context-back">Edit main post</button>
         </div>
 
+        <!-- Source Link, first in the panel.
+
+             It was below the Text Paragraph, which put the one field QA checks
+             on every post behind a ten-row textarea. It is also the field a
+             scrape fills in, so seeing it at the top is how a writer confirms
+             the right article was pulled. Kept in the shared editor rather than
+             the Write Text panel so both flows reach it. -->
+        <div class="acc" data-open="true">
+          <button type="button" class="acc-head" aria-expanded="true">
+            <span class="acc-title">Source Link</span>
+            <svg class="acc-chevron" width="14" height="14"><use href="#i-chevron"/></svg>
+          </button>
+          <div class="acc-body"><div class="acc-inner">
+            <input type="url" id="source-url-edit" placeholder="https://example.com/article" />
+            <small class="helper-text">Where the story came from. Filled automatically when you scrape a link.</small>
+          </div></div>
+        </div>
+
         <!-- Aspect Ratio -->
         <div class="acc" data-open="true">
           <button type="button" class="acc-head" aria-expanded="true">
@@ -315,13 +337,6 @@
               <textarea id="story-body-edit" rows="6" placeholder="The paragraph for this slide..."></textarea>
               <small class="helper-text">Belongs to this page only — each story slide carries its own copy.</small>
             </div>
-
-          <!-- Lives in the shared editor rather than the Write Text panel so it
-               serves both flows: a scrape fills it in, a hand-written post can
-               have it typed. Shown in Review and searchable. -->
-          <h3 class="acc-subtitle">Source Link</h3>
-          <input type="url" id="source-url-edit" placeholder="https://example.com/article" />
-          <small class="helper-text">Where the story came from. Filled automatically when you scrape a link.</small>
 
           <!-- The writer files the story, because they have the context. QA can
                still change it at publish; this is the starting point, not a
@@ -512,11 +527,6 @@
           <small class="helper-text" id="enhance-strength-hint">70% — lower this if faces look painted or plastic.</small>
           <small class="helper-text">Uses paid AI credits (~$0.06 per enhance). Runs only when you click.</small>
           <p id="ai-enhance-status" class="status-text" role="status" aria-live="polite"></p>
-
-          <div id="stock-images-section" class="acc-subgroup" hidden>
-            <h3 class="acc-subtitle">Stock Backgrounds</h3>
-            <div id="stock-images-grid" class="stock-grid"></div>
-          </div>
         </div></div>
       </div>
 
@@ -579,6 +589,24 @@
         </div></div>
       </div>
 
+      <!-- Suggested images, last on purpose.
+
+           These are a fallback, not a starting point: the writer's own upload
+           or the scraped article's picture is nearly always the right image,
+           and a grid of stock photos sitting directly under AI Enhance pushed
+           Adjustments off the panel and invited picking a generic photo over
+           the real one. It also keeps Adjustments where it belongs — directly
+           below the enhance control it adjusts the result of. -->
+      <div id="stock-images-section" class="acc" data-open="true" hidden>
+        <button type="button" class="acc-head" aria-expanded="true">
+          <span class="acc-title">Suggested Images</span>
+          <svg class="acc-chevron" width="14" height="14"><use href="#i-chevron"/></svg>
+        </button>
+        <div class="acc-body"><div class="acc-inner">
+          <div id="stock-images-grid" class="stock-grid"></div>
+        </div></div>
+      </div>
+
     </section>
 
     </div><!-- /.edit-sheet -->
@@ -599,6 +627,20 @@
                   title="Save this post to the library">
             <svg width="13" height="13" aria-hidden="true"><use href="#i-save"/></svg>
             <span id="save-pix-label">Save</span>
+          </button>
+          <!-- Rejecting from the editor, not just from the Review list. A
+               reviewer reads the post here — that is where the decision is
+               actually made, and going back to the list to act on it meant
+               finding the row again. Approve stays on the list: it is paired
+               with Approve & Publish there, and splitting that pair across two
+               screens is how the wrong one gets pressed. -->
+          <button type="button" class="btn-ghost preview-reject qa-only" id="reject-pix-btn" hidden
+                  title="Send this post back to the writer">
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.9"
+                    fill="none" stroke-linecap="round"/>
+            </svg>
+            <span id="reject-pix-label">Reject</span>
           </button>
           <!-- Clearing the editor for the next story. Editing a saved poster in
                place keeps writing to the same row, so without this a writer who
@@ -882,8 +924,8 @@
   <section class="review-shell" id="review-view" hidden>
     <div class="glass-panel review-panel">
       <header class="review-intro">
-        <h1 id="review-title">Review<br>and approve.</h1>
-        <p class="desc" id="review-desc">Every post the writers have saved. Open one to edit it, then approve it when it is ready to publish.</p>
+        <h1 id="review-title">Review<br>and publish.</h1>
+        <p class="desc" id="review-desc">Every post the writers have saved. Open one to edit and publish it, or send it back with Reject.</p>
       </header>
 
       <div class="review-toolbar">

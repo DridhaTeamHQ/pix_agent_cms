@@ -326,6 +326,24 @@ body.auth-ready .agent-auth-gate {
   border: 1px solid rgba(57, 121, 255, 0.3);
 }
 
+/* The signed-in user's own tally. Quieter than the role badge on purpose:
+   it is information, not identity, and it sits next to a badge that is
+   already carrying colour. */
+.nav-count {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: var(--surface-input, rgba(148, 163, 184, 0.12));
+  color: var(--text-dim, #94a3b8);
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.22));
+  white-space: nowrap;
+}
+
 /* QA is the role that can change other people's work — worth telling apart at
    a glance from the writer accounts. */
 /* Before the session resolves the role is still empty — stay hidden until we
@@ -1935,24 +1953,10 @@ body.view-writers .edit-sheet {
   font-size: 0.78rem;
 }
 
-.btn-approve {
-  border-color: rgba(16, 152, 110, 0.4) !important;
-  color: #10986e !important;
-  background: rgba(16, 152, 110, 0.1) !important;
-}
-
 .btn-reject {
   border-color: rgba(220, 38, 38, 0.4) !important;
   color: #dc2626 !important;
   background: rgba(220, 38, 38, 0.1) !important;
-}
-
-/* Deliberately the loudest button in the row: it is the only one that puts
-   something on a public site, and the only one Pix cannot undo. */
-.btn-publish {
-  border-color: rgba(79, 124, 255, 0.45) !important;
-  color: #4f7cff !important;
-  background: rgba(79, 124, 255, 0.12) !important;
 }
 
 .status-pill {

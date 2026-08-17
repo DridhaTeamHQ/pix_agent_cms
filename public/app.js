@@ -287,7 +287,11 @@ const state = {
      these are swapped in and out by setActivePage; the page keeps the copy. */
   storyHeading: "",
   storyBody: "",
-  isDraft: false,
+  /* Unfinished until the writer says otherwise. Defaulting to false meant a
+     brand-new post was born already marked "submitted", so anything that
+     saved it — a mis-click, autosave once a row existed — handed work in
+     progress to QA. Only an explicit Submit clears this. */
+  isDraft: true,
   createdAt: null,
   // Sent to DailyMattr with the post. Chosen here rather than inferred at
   // publish so the writer's wording survives.
@@ -7825,6 +7829,10 @@ let pixSaveInFlight = null;
  */
 function startNewPix() {
   state.pixId = null;
+  // The next story starts unfinished, whatever the last one ended as. Without
+  // this a writer who submitted, then pressed New post, began the next
+  // article already flagged as submitted.
+  state.isDraft = true;
   state.article = null;
   state.storedImageFor = null;
   state.storedImageUrl = null;
@@ -7864,7 +7872,11 @@ function startNewPix() {
    undefined the post keeps whatever it already was, so autosave never quietly
    promotes a draft into the queue. */
 async function savePixToLibrary({ asDraft } = {}) {
-  if (asDraft !== undefined) state.isDraft = Boolean(asDraft);
+  /* Submitting always applies. Marking something back down to a draft only
+     applies to a post that is still one — otherwise QA pressing Save draft on
+     a post they are reviewing would pull it out of their own queue. */
+  if (asDraft === false) state.isDraft = false;
+  else if (asDraft === true && state.isDraft) state.isDraft = true;
   if (!state.user) {
     return { ok: false, error: "Sign in to save posts." };
   }

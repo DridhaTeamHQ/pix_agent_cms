@@ -7287,6 +7287,16 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     if (!response.ok) {
       if (response.status === 401) return handleSignedOut();
       setDailyMattrStatus(payload.error || `Publish failed (${response.status}).`, "error");
+      /* A failure needs the dialog more than a success does: the post is NOT
+         live, and a red line at the foot of the column is exactly the thing
+         someone scrolls past before assuming it went out. */
+      confirmAction({
+        notice: true,
+        title: "Not published",
+        body: payload.error || `DailyMattr refused the post (HTTP ${response.status}).`,
+        facts: ["Nothing was sent — fix the problem and publish again."],
+        confirmLabel: "Close",
+      });
       return;
     }
 
@@ -7305,6 +7315,26 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
       approvalNote = ` Published, but could not mark it approved (${payload.approval.reason}) — approve it in Review.`;
     }
     setDailyMattrStatus(`Published to DailyMattr.${publishedId}${approvalNote}`, "success");
+
+    /* And say it in a dialog. Publishing is the one action in this app that
+       cannot be undone — the story is on a public site and their API is
+       write-only, so a mistake means asking DailyMattr to delete a row. A
+       status line at the foot of a scrolling column is the wrong weight for
+       that, and it was being missed.
+
+       The id is the useful part: it is the only handle anyone has if the post
+       later needs pulling, and it exists nowhere else on our side. */
+    const facts = [];
+    if (payload.publishedId) facts.push(`DailyMattr ID ${payload.publishedId}`);
+    if (state.headline) facts.push(cleanHeadlineForPublish(state.headline));
+    if (approvalNote.trim()) facts.push(approvalNote.trim());
+    confirmAction({
+      notice: true,
+      title: "Published",
+      body: "This pix is live on the web app.",
+      facts,
+      confirmLabel: "Done",
+    });
 
     // The badge in Review is rebuilt on entry, but refresh now so a QA who is
     // already looking at the list sees it flip.

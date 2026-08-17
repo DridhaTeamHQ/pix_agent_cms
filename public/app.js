@@ -679,11 +679,25 @@ async function refreshMyPixCount() {
       return;
     }
     const reviewer = canReviewRole(state.user.role);
-    const week = reviewer ? counts.reviewed_week : counts.written_week;
+    const today = reviewer ? counts.reviewed_today : counts.written_today;
+    const week  = reviewer ? counts.reviewed_week  : counts.written_week;
     const total = reviewer ? counts.reviewed_total : counts.written_total;
     const noun = reviewer ? "reviewed" : "written";
-    accountCount.textContent = `${week} this week`;
-    accountCount.title = `${total} ${noun} in total · ${week} in the last 7 days`;
+    /* Both numbers, because they answer different questions: today is "am I
+       on track", the week is "how am I doing". These count POSTS, not saves —
+       reopening a pix and editing it never moves them, which is the whole
+       point of a per-writer tally. */
+    accountCount.innerHTML =
+      `<strong>${today}</strong>&nbsp;today <span class="nav-count-sep">·</span> <strong>${week}</strong>&nbsp;this week`;
+    accountCount.title = `${today} ${noun} today · ${week} in the last 7 days · ${total} all time`;
+    // Pulse only on an actual change, so it reads as "that went up" rather
+    // than as an animation that fires on every poll.
+    if (accountCount.dataset.week !== String(week) && accountCount.dataset.week !== undefined) {
+      accountCount.classList.remove("just-changed");
+      void accountCount.offsetWidth;                       // restart the animation
+      accountCount.classList.add("just-changed");
+    }
+    accountCount.dataset.week = String(week);
     accountCount.hidden = false;
   } catch {
     // A header ornament must never be the thing that breaks sign-in.
@@ -705,6 +719,7 @@ function applySession(user) {
   if (accountBox) accountBox.hidden = !user;
   if (logoutBtn) logoutBtn.hidden = !user;
   refreshMyPixCount();
+  syncPrimaryAction();
   setAuthState(user ? "ready" : "blocked", user ? "" : "Sign in to continue.");
   syncReviewCopy();
   // Publishing to shortlyindia.com is QA-only (the server returns 403 for
@@ -5746,11 +5761,11 @@ async function loadAnalytics({ force = false } = {}) {
     renderAnalyticsDaily(analytics.daily);
     renderAnalyticsMeta(analytics.summary, role);
 
-    /* "full" (admin) gets the team roster and the reviewer table; "basic"
-       (QA) gets their own line only. The server decides which it sent and
-       says so, rather than the client inferring it from the role — the two
-       could otherwise disagree and render a roster the payload does not
-       contain. */
+    /* "full" gets the team roster and the reviewer table — both QA and admin
+       now, since QA works the queue and needs to see whose posts are piling
+       up. The server decides which it sent and says so, rather than the
+       client inferring it from the role: the two could otherwise disagree and
+       render a roster the payload does not contain. */
     if ((payload.scope || "full") === "full" && canReviewRole(role)) {
       setWriterRoster(analytics.writers || [], analytics.qas || [], analytics.summary?.pending_count || 0);
     } else {
@@ -5783,6 +5798,105 @@ const viewTabs = document.getElementById("view-tabs");
 const articleView = document.getElementById("article-view");
 const reviewView = document.getElementById("review-view");
 
+/* ── Topbar title + breadcrumb ──
+   The sidebar says where you are by highlight; the topbar says it in words,
+   which is what makes a deep-linked or reloaded tab legible. Titles are
+   role-agnostic except Review, whose label already flips between "Review" and
+   "My posts" depending on who is signed in — reused here so the two never
+   disagree. */
+const CMS_VIEW_TITLES = {
+  poster:    { title: "Create a Pix", crumb: "Create Pix" },
+  article:   { title: "Article Writer", crumb: "Article" },
+  review:    { title: "Review", crumb: "Review" },
+  analytics: { title: "Analytics", crumb: "Analytics" },
+  writers:   { title: "Content Writers", crumb: "Writers" },
+};
+
+function syncCmsHeader(view) {
+  const meta = CMS_VIEW_TITLES[view] || CMS_VIEW_TITLES.poster;
+  const titleEl = document.getElementById("cms-page-title");
+  const crumbEl = document.getElementById("cms-crumb-current");
+  const reviewLabel = document.getElementById("review-tab-label")?.textContent?.trim();
+  const title = view === "review" && reviewLabel ? reviewLabel : meta.title;
+  if (titleEl) titleEl.textContent = title;
+  if (crumbEl) crumbEl.textContent = view === "review" && reviewLabel ? reviewLabel : meta.crumb;
+}
+
+/* ── Action bar proxies ──
+   The footer buttons forward their click to the original control rather than
+   duplicating its logic. Every handler, guard and disabled state written for
+   those buttons keeps working, and there is still exactly one implementation
+   of Save, Publish and Reject. Disabled/hidden state is mirrored back so a
+   proxy can never offer something its target refuses. */
+document.addEventListener("click", (e) => {
+  const proxy = e.target.closest("[data-proxy]");
+  if (!proxy) return;
+  const target = document.getElementById(proxy.dataset.proxy);
+  if (target && !target.disabled) target.click();
+});
+
+setInterval(() => {
+  for (const proxy of document.querySelectorAll("[data-proxy]")) {
+    const target = document.getElementById(proxy.dataset.proxy);
+    if (!target) continue;
+    proxy.disabled = Boolean(target.disabled);
+    /* A proxy hidden by ROLE stays hidden. Mirroring the target's own hidden
+       flag unconditionally was undoing that every 500ms — Save draft kept
+       reappearing for writers, because the button it proxies is not itself
+       hidden, only irrelevant to them. */
+    if (proxy.dataset.roleHidden === "true") { proxy.hidden = true; continue; }
+    proxy.hidden = Boolean(target.hidden);
+  }
+}, 500);
+
+/* The footer's own saved indicator. Autosave writes silently by design, so
+   without this the only sign anything happened was a status line three
+   columns away. */
+const cmsAutosave = document.getElementById("cms-autosave");
+const cmsAutosaveText = document.getElementById("cms-autosave-text");
+let cmsAutosaveTimer = null;
+
+function showAutosaved(label) {
+  if (!cmsAutosave) return;
+  if (cmsAutosaveText) cmsAutosaveText.textContent = label;
+  cmsAutosave.hidden = false;
+  clearTimeout(cmsAutosaveTimer);
+  cmsAutosaveTimer = setTimeout(() => { cmsAutosave.hidden = true; }, 6000);
+}
+
+/* ── The primary action is not the same job for both roles ──
+
+   A writer cannot publish at all — the server returns 403 — so a "Publish"
+   button was offering them an action that could only fail. What they actually
+   do is hand the post to QA, which is what saving does. So for a writer the
+   primary button says Submit and drives the save, and the separate Save draft
+   is dropped: with only one action, two buttons doing the same thing is just
+   a question the writer has to answer for no reason.
+
+   QA and admin keep Publish, wired to the DailyMattr publish. */
+function syncPrimaryAction() {
+  const primary = document.querySelector('.cms-topbar-actions .btn-primary');
+  const draft = document.querySelector('.cms-topbar-actions [data-proxy="save-pix-btn"]');
+  if (!primary || !state.user) return;
+  const reviewer = canReviewRole(state.user.role);
+  primary.textContent = reviewer ? "Publish" : "Submit";
+  primary.dataset.proxy = reviewer ? "dailymattr-publish-btn" : "save-pix-btn";
+  primary.title = reviewer
+    ? "Publish this pix to the web app"
+    : "Save and send to QA for review";
+  if (draft) {
+    draft.dataset.roleHidden = reviewer ? "false" : "true";
+    draft.hidden = !reviewer;
+  }
+}
+
+const cmsToday = document.getElementById("cms-today");
+if (cmsToday) {
+  cmsToday.textContent = new Date().toLocaleDateString("en-GB", {
+    day: "numeric", month: "short", year: "numeric",
+  });
+}
+
 function setView(view) {
   // Signed out, there is nothing to list.
   if ((view === "review" || view === "analytics" || view === "writers") && !state.user) view = "poster";
@@ -5808,6 +5922,7 @@ function setView(view) {
       t.setAttribute("aria-selected", active ? "true" : "false");
     });
   }
+  syncCmsHeader(view);
   // The mobile edit sheet makes no sense away from the poster — drop it
   if (view !== "poster") setSheetOpen(false);
   if (view === "review") loadReviewQueue();
@@ -6102,13 +6217,13 @@ if (aiEnhanceBtn) {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("pix-theme", theme);
     if (themeColorMeta) {
-      themeColorMeta.setAttribute("content", theme === "dark" ? "#0b0a13" : "#eeecf7");
+      themeColorMeta.setAttribute("content", theme === "dark" ? "#0e1117" : "#f5f7fb");
     }
     btn.setAttribute("aria-label", theme === "dark" ? "Switch to light theme" : "Switch to dark theme");
   }
 
   // Sync meta/aria with whatever the head bootstrap already applied
-  applyTheme(document.documentElement.dataset.theme || "dark");
+  applyTheme(document.documentElement.dataset.theme || "light");
 
   btn.addEventListener("click", () => {
     const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
@@ -9105,6 +9220,7 @@ function considerAutosave() {
     .then((result) => {
       if (result.ok) {
         setStatus("Saved automatically.", "success");
+        showAutosaved(`Autosaved at ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`);
       } else {
         /* Quietly. The unsaved dot stays lit, so the state is still visible,
            and a validation failure here would otherwise reappear as a toast

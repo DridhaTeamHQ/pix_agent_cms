@@ -28,66 +28,64 @@
      A cool grey page with white panels. The page is deliberately not white:
      a white panel on a white page has to be drawn with a border, and borders
      everywhere is exactly the "boxed in" look we are leaving behind. */
-  /* ── Palette: #F5F7F8 · #F4CE14 · #495E57 · #45474B ──
+  /* ── Palette: #F1FCFD · #C7EEFF · #4D6DE3 · #393737 ──
 
-     Measured first, because the yellow decides the structure. #F4CE14 is a
-     very light colour (relative luminance 0.63): white on it is 1.55:1 and
-     unusable, while #45474B on it is 6.1:1. So yellow can never be a surface
-     for light text — it is a HIGHLIGHT, and anything it fills takes dark ink.
+     The first of these palettes whose accent is unconstrained. #4D6DE3 gives
+     white 4.56:1 AND reads at 4.56:1 as text on the light page, so unlike the
+     yellow and the teal before it, it can both fill a button and be a link —
+     which is why the interface can finally be one colour rather than a system
+     of workarounds.
 
-     That leaves the greens and greys to carry the interface: #495E57 takes
-     white at 6.97:1 and #45474B at 9.44:1, so those are the solid fills and
-     the sidebar. Yellow is spent sparingly on what needs to be found — the
-     active nav item, focus rings, selection.
+     #F1FCFD  page — a cyan-white, so white cards still separate from it
+     #C7EEFF  borders, soft fills, hover, selection
+     #4D6DE3  the accent: buttons, active states, links, rings
+     #393737  text and the sidebar
 
-     #F5F7F8  page          #495E57  primary fills, sidebar
-     #45474B  text          #F4CE14  highlight (always with dark ink) */
-  --bg-color: #f5f7f8;
+     4.56:1 clears AA for normal text but not by much, so hover deepens rather
+     than lightens — a lighter hover would drop the label below the line. */
+  --bg-color: #f1fcfd;
   --surface: #ffffff;
-  --surface-2: #fafbfc;
+  --surface-2: #f7fcfe;
   --surface-solid: #ffffff;
-  --surface-input: #f1f4f5;
-  --surface-card: #fcfdfd;
+  --surface-input: #eef8fc;
+  --surface-card: #fafdfe;
 
-  --ink:     #45474b;
-  --forest:  #495e57;
-  --gold:    #f4ce14;
-  --paper:   #f5f7f8;
+  --pale:   #f1fcfd;
+  --sky:    #c7eeff;
+  --indigo: #4d6de3;
+  --ink:    #393737;
 
-  --hairline:   rgba(69, 71, 75, 0.16);
-  --hairline-2: rgba(69, 71, 75, 0.09);
-  --hover-tint: rgba(73, 94, 87, 0.07);
-  --press-tint: rgba(73, 94, 87, 0.14);
-  --sunken:     rgba(69, 71, 75, 0.05);
+  --hairline:   rgba(57, 55, 55, 0.14);
+  --hairline-2: rgba(57, 55, 55, 0.08);
+  --hover-tint: rgba(77, 109, 227, 0.07);
+  --press-tint: rgba(77, 109, 227, 0.14);
+  --sunken:     rgba(57, 55, 55, 0.05);
   --border-color: var(--hairline);
   --border-subtle: var(--hairline-2);
 
-  --text-primary: #2f3134;          /* 12.6:1 on white */
-  --text-secondary: #45474b;        /* 9.4:1  */
-  --text-muted: #63666b;            /* 6.0:1  */
+  --text-primary: #2b2929;          /* 13.6:1 on white */
+  --text-secondary: #393737;        /* 11.9:1 */
+  --text-muted: #615e5e;            /* 6.4:1  */
 
-  --shadow-sm: 0 1px 2px rgba(69, 71, 75, 0.07), 0 1px 3px rgba(69, 71, 75, 0.05);
-  --shadow-md: 0 2px 4px rgba(69, 71, 75, 0.06), 0 8px 20px rgba(69, 71, 75, 0.09);
-  --shadow-lg: 0 4px 8px rgba(69, 71, 75, 0.08), 0 20px 48px rgba(69, 71, 75, 0.14);
-  --shadow-accent: 0 4px 14px rgba(73, 94, 87, 0.30);
+  --shadow-sm: 0 1px 2px rgba(57, 55, 55, 0.07), 0 1px 3px rgba(57, 55, 55, 0.05);
+  --shadow-md: 0 2px 4px rgba(57, 55, 55, 0.06), 0 8px 20px rgba(57, 55, 55, 0.09);
+  --shadow-lg: 0 4px 8px rgba(57, 55, 55, 0.08), 0 20px 48px rgba(57, 55, 55, 0.14);
+  --shadow-accent: 0 4px 14px rgba(77, 109, 227, 0.32);
 
   --glass-fill: rgba(255, 255, 255, 0.86);
   --glass-inner: rgba(255, 255, 255, 0.6);
-  --glass-edge: rgba(69, 71, 75, 0.10);
-  --glass-edge-strong: rgba(244, 206, 20, 0.6);
+  --glass-edge: rgba(57, 55, 55, 0.10);
+  --glass-edge-strong: rgba(77, 109, 227, 0.45);
   --glass-menu: rgba(255, 255, 255, 0.97);
   --glass-shadow: var(--shadow-lg);
 
-  /* --accent is read for fills AND for accent text. Yellow is 1.3:1 as text
-     on white, so the token holds the forest green and the gold is applied by
-     selector wherever it cannot be mistaken for type. */
-  --accent: #495e57;
-  --accent-bright: #f4ce14;
-  --accent-light: #fbe694;
-  --accent-dim: #3c4e48;
-  --accent-deep: #2f3d38;
-  --accent-soft: rgba(244, 206, 20, 0.18);
-  --accent-glow: rgba(244, 206, 20, 0.38);
+  --accent: #4d6de3;
+  --accent-bright: #4d6de3;
+  --accent-light: #c7eeff;
+  --accent-dim: #3f5bc4;            /* hover — deeper, so white stays legible */
+  --accent-deep: #33489c;
+  --accent-soft: rgba(199, 238, 255, 0.55);
+  --accent-glow: rgba(77, 109, 227, 0.28);
 
   --green: #0a7f50;
   --green-soft: rgba(10, 127, 80, 0.10);
@@ -126,40 +124,42 @@
    real step up instead of white at 3.5% alpha, which is what produced the
    1.07:1 measurement. Panels now separate from the page by roughly 1.9:1. */
 :root[data-theme="dark"] {
-  --bg-color: #26282b;
-  --surface: #35373b;
-  --surface-2: #2e3033;
-  --surface-solid: #3b3d42;
-  --surface-input: #2b2d31;
-  --surface-card: #313337;
+  /* #393737 is the page; the pale cyan becomes the text at 11.9:1, and the
+     sky blue takes over as the accent because #4D6DE3 on charcoal is only
+     3.1:1 — the same rule as the light theme, read the other way round. */
+  --bg-color: #2a2828;
+  --surface: #393737;
+  --surface-2: #333131;
+  --surface-solid: #423f3f;
+  --surface-input: #2f2d2d;
+  --surface-card: #3d3a3a;
 
-  --hairline: rgba(245, 247, 248, 0.13);
-  --hairline-2: rgba(245, 247, 248, 0.07);
-  --hover-tint: rgba(244, 206, 20, 0.12);
-  --press-tint: rgba(244, 206, 20, 0.20);
+  --hairline: rgba(241, 252, 253, 0.13);
+  --hairline-2: rgba(241, 252, 253, 0.07);
+  --hover-tint: rgba(199, 238, 255, 0.10);
+  --press-tint: rgba(199, 238, 255, 0.18);
   --sunken: rgba(0, 0, 0, 0.26);
 
-  --text-primary: #f5f7f8;
-  --text-secondary: #c2c5c9;
-  --text-muted: #9a9ea4;
+  --text-primary: #f1fcfd;
+  --text-secondary: #c3cccd;
+  --text-muted: #9aa2a3;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.32), 0 8px 20px rgba(0, 0, 0, 0.38);
   --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.38), 0 20px 48px rgba(0, 0, 0, 0.52);
-  --shadow-accent: 0 4px 14px rgba(244, 206, 20, 0.30);
+  --shadow-accent: 0 4px 14px rgba(199, 238, 255, 0.22);
 
-  --glass-fill: rgba(53, 55, 59, 0.9);
-  --glass-inner: rgba(245, 247, 248, 0.05);
-  --glass-edge: rgba(245, 247, 248, 0.12);
-  --glass-menu: rgba(43, 45, 49, 0.98);
+  --glass-fill: rgba(57, 55, 55, 0.9);
+  --glass-inner: rgba(241, 252, 253, 0.05);
+  --glass-edge: rgba(241, 252, 253, 0.12);
+  --glass-menu: rgba(47, 45, 45, 0.98);
 
-  /* On ink the gold is finally safe as text — 10.9:1 on the page. */
-  --accent: #f4ce14;
-  --accent-bright: #f4ce14;
-  --accent-light: #fbe694;
-  --accent-dim: #ffd93d;
-  --accent-deep: #c9a800;
-  --accent-soft: rgba(244, 206, 20, 0.18);
+  --accent: #c7eeff;                /* 12.5:1 on the page */
+  --accent-bright: #c7eeff;
+  --accent-light: #8fd4f0;
+  --accent-dim: #a8e0f7;
+  --accent-deep: #6fb8dc;
+  --accent-soft: rgba(199, 238, 255, 0.16);
 
   --green: #34d399;
   --green-soft: rgba(52, 211, 153, 0.14);
@@ -559,7 +559,7 @@ h2, h3 { letter-spacing: -0.01em; }
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-5) var(--space-3) var(--space-4);
-  background: #495e57;
+  background: #393737;
   border-right: 1px solid rgba(255, 255, 255, 0.10);
   z-index: 40;
 }
@@ -581,7 +581,7 @@ h2, h3 { letter-spacing: -0.01em; }
 .cms-brand-text em {
   font-style: normal;
   font-weight: 500;
-  color: #f4ce14;
+  color: #c7eeff;
 }
 
 /* The switcher becomes a vertical rail. Same element, same id, same buttons —
@@ -605,7 +605,7 @@ h2, h3 { letter-spacing: -0.01em; }
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
-  color: #cfd8d4;
+  color: #c9d2d3;
   font-size: 0.86rem;
   font-weight: 550;
   text-align: left;
@@ -652,7 +652,7 @@ h2, h3 { letter-spacing: -0.01em; }
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
-  color: #cfd8d4;
+  color: #c9d2d3;
   font-size: 0.82rem;
   font-weight: 550;
   cursor: pointer;
@@ -673,7 +673,7 @@ h2, h3 { letter-spacing: -0.01em; }
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #f4ce14;
+  color: #c7eeff;
   background: rgba(255, 255, 255, 0.07);
 }
 
@@ -1444,4 +1444,69 @@ body.auth-blocked  .cms-layout { grid-template-columns: minmax(0, 1fr); }
    and hid the only action they had. */
 body:not([data-role="qa"]):not([data-role="admin"]) .cms-topbar-actions .btn-ghost[data-proxy="save-pix-btn"] {
   display: none;
+}
+
+/* ═══ One accent, used plainly ══════════════════════════════════════════════
+   Nothing here is a workaround: #4D6DE3 carries white on a fill and reads as
+   text on the page at the same 4.56:1, so buttons, links, rings and the active
+   nav item can all simply be the accent. */
+
+.btn-primary, .btn-ai { background: var(--accent); color: #ffffff; }
+.btn-primary:hover:not(:disabled), .btn-ai:hover:not(:disabled) { background: var(--accent-dim); }
+
+.cms-sidebar .view-tab.active {
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 650;
+  box-shadow: 0 4px 14px rgba(77, 109, 227, 0.34);
+}
+:root[data-theme="dark"] .cms-sidebar .view-tab.active { color: #2a2828; }
+
+/* Dark mode inverts which of the two is safe on a fill. */
+:root[data-theme="dark"] .btn-primary,
+:root[data-theme="dark"] .btn-ai { background: var(--accent); color: #2a2828; }
+
+input:focus, textarea:focus, select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.preview-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), var(--shadow-md);
+}
+.preview-card:hover { border-color: var(--accent-light); }
+.acc[data-open="true"] { border-color: var(--accent-light); }
+input[type="range"] { accent-color: var(--accent); }
+a { color: var(--accent); }
+a:hover { color: var(--accent-deep); }
+:root[data-theme="dark"] a:hover { color: var(--accent-light); }
+* { scrollbar-color: var(--accent-light) transparent; }
+*::-webkit-scrollbar-thumb { background: var(--accent-light); background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--accent); background-clip: content-box; }
+
+/* The accent clears 4.56:1 on white, but the upload zone is a tinted well —
+   on that slightly darker fill the same colour drops to 4.22:1. Accent text
+   sitting on a tinted surface takes the deeper step. */
+.upload-zone em,
+.upload-text em,
+.surface-input a,
+.upload-zone a { color: var(--accent-deep); }
+:root[data-theme="dark"] .upload-zone em,
+:root[data-theme="dark"] .upload-text em { color: var(--accent); }
+
+/* ═══ Stale dark literals from styles.css ═══════════════════════════════════
+   styles.css carries a block of ":root[data-theme=dark] .selector { literal }"
+   rules from the original navy theme. They outrank a plain .selector here on
+   specificity, so the panels and nav kept painting #14131e no matter what the
+   tokens said — the dark theme was half this palette and half the old one.
+   Matched selector-for-selector so the token wins. */
+
+:root[data-theme="dark"] .glass-panel { background: var(--surface); }
+:root[data-theme="dark"] .app-nav,
+:root[data-theme="dark"] .cms-topbar { background: var(--surface); }
+:root[data-theme="dark"] h1 {
+  background: none;
+  -webkit-background-clip: initial;
+  -webkit-text-fill-color: currentColor;
+  color: var(--text-primary);
 }

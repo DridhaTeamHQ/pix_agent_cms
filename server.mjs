@@ -15,6 +15,7 @@ import {
 import {
   configureDb, isConfigured as dbConfigured, ping as dbPing,
   getPix, setApproval,
+  claimPublish, recordPublishedId, releasePublishClaim,
 } from "./lib/db.js";
 import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
@@ -248,7 +249,55 @@ function withAssetVersion(html) {
     .replace(/(<link[^>]+href=")\.\/styles\.css(")/g, `$1./styles.css?v=${ASSET_V}$2`);
 }
 
+/* ── Who may call /api/* ──
+   The only thing that used to stand between the open internet and
+   OPENAI_API_KEY, FAL_KEY, the upscaler and yt-dlp was the browser's login
+   screen — and curl does not run app.js. The reasoning was already written
+   down for the media upload ("an open upload endpoint backed by that key is a
+   free file host for anyone who finds it") but never applied to the routes
+   that spend money: /api/generate-article, /api/generate-caption,
+   /api/analyze-image, /api/flux-image, /api/upscale-image, /api/stock-images
+   and /api/google-images all bill a third party per call, /api/video/clip
+   spawns yt-dlp and ffmpeg per call, and /api/twitter/post writes to the org's
+   X account. Anyone who knew the hostname could run any of them.
+
+   The check lives here rather than in fourteen handlers so it is deny-by-
+   default: a route added later is protected before its author thinks about
+   auth, and forgetting to allowlist something surfaces as a 401 in
+   development instead of as a bill. Handlers that already do their own
+   currentUser() check keep it — it costs nothing (the lookup is memoised per
+   request) and states each route's own rule where a reader will look for it.
+
+   Only /api/* is matched. /health and /healthz must answer for the platform
+   healthcheck — Railway fails the deploy if that path 401s — and every static
+   asset must stay open or the browser cannot fetch the login page it needs in
+   order to get a session at all. Neither is /api/*, so neither is touched. */
+const PUBLIC_API_ROUTES = new Set([
+  // How a session is obtained; gating it would make signing in impossible.
+  "/api/auth/login",
+  // Must work with a dead or already-expired session, otherwise a user
+  // holding a stale cookie has no way to clear it.
+  "/api/auth/logout",
+  // The boot probe (app.js initAuth). It answers its own 401 when signed out
+  // and a 503 when the database is unreachable, and the login screen tells
+  // those two apart — a blanket 401 here would report an outage as "sign in".
+  "/api/auth/me",
+]);
+
 const server = http.createServer(async (req, res) => {
+  /* Compare the path alone. Most of these routes carry their arguments in the
+     query string and are matched with startsWith() below (/api/image?url=…,
+     /api/flux-image?query=…), so testing req.url against the allowlist would
+     miss every one of them. */
+  const apiPath = req.url?.split("?")[0] || "";
+  if (apiPath.startsWith("/api/") && !PUBLIC_API_ROUTES.has(apiPath)) {
+    const user = await currentUser(req);
+    if (!user) {
+      sendJson(res, 401, { error: "Sign in to use Pix." });
+      return;
+    }
+  }
+
   if (req.method === "POST" && req.url === "/api/scrape") {
     await handleScrape(req, res);
     return;
@@ -1379,6 +1428,13 @@ const MAX_DAILYMATTR_MEDIA_BYTES = Number(env("MAX_DAILYMATTR_MEDIA_BYTES") || 0
 // from ever reaching a query.
 const PIX_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/* Stands in for DailyMattr's buzz id when they accept a post but return
+   nothing we can read as one. Stored so published_id is non-null, which is the
+   flag separating "confirmed live" from "sent, outcome unknown" everywhere
+   else — a null there makes a publish we watched succeed look like one that
+   may never have happened. */
+const PUBLISH_ID_MISSING = "(accepted, no id returned)";
+
 const DAILYMATTR_TARGET_VIDEO_BYTES =
   Math.round(Number(env("DAILYMATTR_TARGET_VIDEO_MB") || 9) * 1024 * 1024);
 const COMPRESS_CRF = String(env("DAILYMATTR_VIDEO_CRF") || 23);
@@ -1450,7 +1506,30 @@ async function compressForDailyMattr(file) {
   }
 }
 
+/* The publish route used to be one big try whose catch answered 502 "Could not
+   publish" for everything — the encode, the upload, the logging, the approval
+   write and the response send alike. That is what let a failure AFTER
+   DailyMattr had accepted the post be reported to QA as a failed publish.
+
+   runDailyMattrPublish() now classifies its own failures and always answers,
+   so this wrapper exists only to stop an unforeseen throw becoming an
+   unhandled rejection (the http.createServer callback has no catch of its
+   own). It reports the outcome as unknown, because by definition it does not
+   know where the throw came from. */
 async function handleDailyMattrPublish(req, res) {
+  try {
+    await runDailyMattrPublish(req, res);
+  } catch (err) {
+    console.error("✗ DailyMattr publish handler crashed:", err);
+    if (res.headersSent || res.writableEnded) return;
+    sendJson(res, 500, {
+      error: "The publish failed in an unexpected way and this server cannot tell whether the post reached DailyMattr. Check their portal before publishing again.",
+      indeterminate: true,
+    });
+  }
+}
+
+async function runDailyMattrPublish(req, res) {
   const user = await currentUser(req);
   if (!user) {
     sendJson(res, 401, { error: "Sign in to publish to DailyMattr." });
@@ -1517,77 +1596,269 @@ async function handleDailyMattrPublish(req, res) {
     return;
   }
 
+  /* ── Claim the publish before anything can be sent ──
+     DailyMattr's integration API is write-only: no delete, no lookup, no
+     idempotency key. A second POST for the same post is a second live story on
+     shortlyindia.com that can only be removed by hand from their portal, and
+     until this claim existed nothing anywhere recorded that a row had already
+     gone out — so a bookmarked editor tab, a browser refresh, or two QA users
+     working the same queue entry all produced one.
+
+     Taken here, before the encode and the upload, for two reasons: the window
+     between "decided to publish" and "sent" is minutes long on a compressed
+     clip, and a claim taken after the send guards nothing. */
+  let claimed = false;
+  if (payload.pixId) {
+    let claim;
+    try {
+      claim = await claimPublish(payload.pixId, { byId: user.id });
+    } catch (err) {
+      /* The database being unreachable must NOT degrade into publishing
+         unguarded. Everywhere else in this app storage is optional and a
+         failure costs a saved row; here it would cost a duplicate on a public
+         site, which is the one loss that cannot be undone. */
+      console.warn(`⚠ could not claim the publish for ${payload.pixId}: ${err.message}`);
+      sendJson(res, 503, {
+        error: "The post library is unreachable, so this publish cannot be checked against earlier ones. Nothing was sent — try again once storage is back.",
+        indeterminate: false,
+      });
+      return;
+    }
+
+    if (!claim.claimed) {
+      const row = claim.row;
+      if (!row) {
+        sendJson(res, 404, { error: "That post is no longer in the library. Nothing was sent.", indeterminate: false });
+        return;
+      }
+      if (row.rejected) {
+        /* Refused outright rather than offered an override. Publishing a
+           rejected post used to be allowed and the auto-approve below then
+           erased rejected_by, rejected_at and rejected_by_name — the live
+           story kept no trace it had been turned down, and the reviewer lost
+           the credit for the decision. Withdrawing the rejection is one click
+           in Review ("Undo reject"), it is recorded, and it makes the
+           override a deliberate, attributable act instead of a flag on an
+           upload nobody sees. */
+        const who = row.rejected_by_name || "a reviewer";
+        const when = row.rejected_at ? new Date(row.rejected_at).toISOString() : "";
+        sendJson(res, 409, {
+          error: `This post was rejected by ${who}${when ? ` on ${when}` : ""}. Nothing was sent. Withdraw the rejection in Review ("Undo reject") before publishing.`,
+          indeterminate: false,
+          rejected: true,
+          rejectedByName: row.rejected_by_name || null,
+          rejectedAt: row.rejected_at || null,
+        });
+        return;
+      }
+      /* The claim's WHERE clause is `published_at is null and rejected =
+         false`, so reaching here with neither set means the row changed
+         between the UPDATE and this read — another request released a claim,
+         or a rejection was withdrawn. Nothing was sent and the next attempt
+         will be decided on the settled state, so say exactly that rather than
+         guessing at one of the two messages below. */
+      if (!row.published_at) {
+        sendJson(res, 409, {
+          error: "This post's status changed while the publish was being checked. Nothing was sent — reload the post and try again.",
+          indeterminate: false,
+        });
+        return;
+      }
+      /* published_at set with published_id still null is the unconfirmed case:
+         an earlier attempt reached DailyMattr and never heard back, so nobody
+         knows whether the story is live. Refusing is the only safe answer —
+         the alternative is a blind retry that may well duplicate it. */
+      const when = new Date(row.published_at).toISOString();
+      sendJson(res, 409, {
+        error: row.published_id
+          ? `Already published to DailyMattr as ID ${row.published_id} on ${when}. Nothing was sent — publishing again would put a second copy on the live site, and their API has no delete.`
+          : `A publish of this post was started on ${when} and never confirmed, so it may already be live. Nothing was sent. Check the DailyMattr portal before doing anything else.`,
+        indeterminate: false,
+        alreadyPublished: true,
+        publishedId: row.published_id || null,
+        publishedAt: row.published_at,
+        unconfirmed: !row.published_id,
+      });
+      return;
+    }
+    claimed = true;
+  }
+  /* No pixId means QA built the poster without ever saving it, so there is no
+     row to claim and this one publish is unguarded. Accepted knowingly rather
+     than blocked: the library row is what makes the guard possible, and
+     refusing here would break the ad-hoc poster workflow. The exposure is one
+     browser session — nothing persists an unsaved poster, so the duplicate
+     needs the same tab and a second deliberate click. */
+
+  /* Compression is entirely local — temp files and ffmpeg — so a throw from it
+     provably means nothing was sent. Kept in its own try for exactly that
+     reason: folded in with the publish call below it would be classified as
+     indeterminate and would lock the post out of publishing for no reason. */
   try {
     // Applies to every video part whatever its origin — a freshly rendered
     // clip, the stored copy from our bucket, or a file QA attached by hand.
     payload.files = await Promise.all(payload.files.map(compressForDailyMattr));
+  } catch (err) {
+    console.warn("⚠ DailyMattr publish failed before sending (media preparation):", err.message);
+    if (claimed) await releasePublishClaim(payload.pixId).catch(() => {});
+    sendJson(res, 502, {
+      error: `The media could not be prepared: ${err.message || "unknown error"}. Nothing was sent.`,
+      indeterminate: false,
+    });
+    return;
+  }
 
-    /* Log what actually goes out, per file. "3 files" alone cannot answer the
-       only question that matters when something is missing at the other end —
-       WHICH file, and was it a video? Without the type and size here there is
-       no way to tell "we never attached the clip" from "we sent it and
-       DailyMattr dropped it". */
-    const manifest = payload.files
-      .map((f) => `${f.fieldName}=${f.contentType} ${(f.buffer.length / 1048576).toFixed(2)}MB "${f.filename}"`)
-      .join(", ");
-    const videoCount = payload.files.filter((f) => /^video\//i.test(f.contentType || "")).length;
-    console.log(
-      `→ DailyMattr publish by ${user.username}: ${payload.files.length} file(s), ${videoCount} video — ${manifest}`,
+  /* Log what actually goes out, per file. "3 files" alone cannot answer the
+     only question that matters when something is missing at the other end —
+     WHICH file, and was it a video? Without the type and size here there is
+     no way to tell "we never attached the clip" from "we sent it and
+     DailyMattr dropped it". */
+  const manifest = payload.files
+    .map((f) => `${f.fieldName}=${f.contentType} ${(f.buffer.length / 1048576).toFixed(2)}MB "${f.filename}"`)
+    .join(", ");
+  const videoCount = payload.files.filter((f) => /^video\//i.test(f.contentType || "")).length;
+  console.log(
+    `→ DailyMattr publish by ${user.username}: ${payload.files.length} file(s), ${videoCount} video — ${manifest}`,
+  );
+
+  /* The irreversible call, alone in its own try so its failure can be
+     classified rather than lumped in with everything else in the handler. */
+  let result;
+  try {
+    result = await publishDailyMattrBuzzContent(payload, dailyMattrConfig());
+  } catch (err) {
+    const neverSent = publishDefinitelyNotSent(err);
+    console.warn(
+      `⚠ DailyMattr publish failed (${neverSent ? "nothing sent" : "OUTCOME UNKNOWN"}, ` +
+      `status=${err?.status ?? "n/a"}) for ${payload.pixId || "unsaved poster"}: ${err.message}`,
     );
 
-    const result = await publishDailyMattrBuzzContent(payload, dailyMattrConfig());
-
-    // Their response is the only record of what they accepted. Log it whole:
-    // a 200 that quietly stored fewer items than we sent is exactly the
-    // failure we are chasing, and it is invisible without this.
-    // 600 chars cut off before the interesting part — their content_en echo
-    // alone eats most of it, and any media list they return comes after.
-    console.log(`✓ DailyMattr accepted (id=${result.publishedId ?? "none"}): ${JSON.stringify(result.response).slice(0, 4000)}`);
-
-    /* Publishing IS approval — QA would otherwise have to remember a second
-       click for a decision they have already made by sending the story live.
-
-       Deliberately outside the try/catch above, in its own guard. The
-       DailyMattr publish has already happened and cannot be undone; if an
-       approval write threw and bubbled into that catch, QA would see a 502,
-       assume nothing was sent, and publish again — posting the story to the
-       live site twice. A failed approval must cost a checkbox, never a
-       duplicate.
-
-       Only approves a post that is not already approved, so re-publishing
-       does not rewrite the original approver's name or reset approved_at
-       (which would skew the approval-time figures on the analytics screen). */
-    let approval = null;
-    if (payload.pixId) {
-      try {
-        const current = await getPix(payload.pixId);
-        if (!current) {
-          approval = { ok: false, reason: "post not found" };
-        } else if (current.approved) {
-          approval = { ok: true, alreadyApproved: true };
-        } else {
-          const row = await setApproval(payload.pixId, {
-            approved: true,
-            byId: user.id,
-            byName: user.displayName || user.username,
-          });
-          approval = row ? { ok: true, approvedAt: row.approved_at } : { ok: false, reason: "post not found" };
-          if (row) console.log(`✓ auto-approved ${payload.pixId} on publish by ${user.username}`);
-        }
-      } catch (err) {
-        console.warn(`⚠ published but could not auto-approve ${payload.pixId}: ${err.message}`);
-        approval = { ok: false, reason: err.message };
-      }
-    } else {
-      // Unsaved poster: nothing in the library to mark.
-      approval = { ok: false, reason: "post not saved" };
+    if (neverSent) {
+      // Provably nothing was stored at their end, so hand the claim back and
+      // let QA fix the problem and publish again.
+      if (claimed) await releasePublishClaim(payload.pixId).catch(() => {});
+      sendJson(res, 502, {
+        error: err.message || "Could not publish to DailyMattr.",
+        indeterminate: false,
+      });
+      return;
     }
 
-    sendJson(res, 200, { ...result, approval });
-  } catch (err) {
-    console.warn("⚠ DailyMattr publish failed:", err.message);
-    sendJson(res, 502, { error: err.message || "Could not publish to DailyMattr." });
+    /* Unknown: the request left this server and no usable answer came back — a
+       reset connection, a gateway 504, a body timeout on a slow media
+       endpoint. DailyMattr may have created the story. The claim is
+       deliberately KEPT so a retry is refused rather than silently doubling a
+       live post, and the response says so instead of the old "Nothing was
+       sent — publish again", which is what turned this into duplicates. */
+    sendJson(res, 409, {
+      error: (err.message || "The connection to DailyMattr failed.")
+        + " The post may already be live — this was sent and no confirmation came back."
+        + " Check the DailyMattr portal before publishing again.",
+      indeterminate: true,
+    });
+    return;
   }
+
+  // Their response is the only record of what they accepted. Log it whole:
+  // a 200 that quietly stored fewer items than we sent is exactly the
+  // failure we are chasing, and it is invisible without this.
+  // 600 chars cut off before the interesting part — their content_en echo
+  // alone eats most of it, and any media list they return comes after.
+  console.log(`✓ DailyMattr accepted (id=${result.publishedId ?? "none"}): ${JSON.stringify(result.response).slice(0, 4000)}`);
+
+  /* Turn the claim into a receipt. The claim itself is already committed, so
+     the duplicate guard holds whatever happens here — what a failure costs is
+     the buzz id, which is the only handle anyone has for pulling the story
+     from DailyMattr's portal later. That is worth an error-level log and a
+     line in the response rather than the silent warn the approval below gets. */
+  let publishRecord = { ok: false, reason: "post not saved" };
+  if (payload.pixId) {
+    try {
+      /* A confirmed publish must never be recorded as an unconfirmed one.
+         published_id is what tells those apart, so when DailyMattr answers 200
+         without an id we can recognise (it normally returns buzz_id), the
+         column takes this marker rather than staying null — otherwise the row
+         reads "sent, never confirmed" and every later reader is told the story
+         may not be live when we watched them accept it. */
+      const row = await recordPublishedId(payload.pixId, result.publishedId ?? PUBLISH_ID_MISSING);
+      publishRecord = row
+        ? { ok: true, publishedId: row.published_id, publishedAt: row.published_at }
+        : { ok: false, reason: "post not found" };
+    } catch (err) {
+      console.error(
+        `✗ PUBLISHED but the DailyMattr id was not recorded on ${payload.pixId} ` +
+        `(buzz id ${result.publishedId ?? "none"}): ${err.message}`,
+      );
+      publishRecord = { ok: false, reason: err.message };
+    }
+  }
+
+  /* Publishing IS approval — QA would otherwise have to remember a second
+     click for a decision they have already made by sending the story live.
+
+     Deliberately in its own guard, outside anything that could be reported as
+     a failed publish. The DailyMattr publish has already happened and cannot
+     be undone; if an approval write threw and was reported as a publish
+     error, QA would assume nothing was sent and publish again — posting the
+     story to the live site twice. A failed approval must cost a checkbox,
+     never a duplicate.
+
+     Only approves a post that is not already approved, so re-publishing
+     does not rewrite the original approver's name or reset approved_at
+     (which would skew the approval-time figures on the analytics screen). */
+  let approval = null;
+  if (payload.pixId) {
+    try {
+      const current = await getPix(payload.pixId);
+      if (!current) {
+        approval = { ok: false, reason: "post not found" };
+      } else if (current.approved) {
+        approval = { ok: true, alreadyApproved: true };
+      } else {
+        const row = await setApproval(payload.pixId, {
+          approved: true,
+          byId: user.id,
+          byName: user.displayName || user.username,
+        });
+        approval = row ? { ok: true, approvedAt: row.approved_at } : { ok: false, reason: "post not found" };
+        if (row) console.log(`✓ auto-approved ${payload.pixId} on publish by ${user.username}`);
+      }
+    } catch (err) {
+      console.warn(`⚠ published but could not auto-approve ${payload.pixId}: ${err.message}`);
+      approval = { ok: false, reason: err.message };
+    }
+  } else {
+    // Unsaved poster: nothing in the library to mark.
+    approval = { ok: false, reason: "post not saved" };
+  }
+
+  sendJson(res, 200, { ...result, approval, publishRecord });
+}
+
+/**
+ * Did this failure provably never reach DailyMattr?
+ *
+ * Only "yes" is safe to act on, because "yes" is what lets the server release
+ * the publish claim and tell QA to try again. Everything unrecognised
+ * therefore answers no: the cost of a false "yes" is a duplicate live story
+ * that cannot be deleted, and the cost of a false "no" is a post that has to
+ * be checked by hand in their portal.
+ *
+ * The markers come from lib/dailymattr.js; see the note there for why the HTTP
+ * status could not previously be read at all.
+ */
+function publishDefinitelyNotSent(err) {
+  if (err?.beforeSend) return true;
+  if (err?.upstreamRejected) {
+    const status = Number(err.status);
+    /* A 4xx is DailyMattr having looked at the request and declined it, so
+       nothing was stored. The three exceptions are 4xx codes that mean "not
+       now" rather than "no" — a 408 or 429 can be raised by an intermediary
+       that already forwarded the body, and 425 is explicitly "retry later". */
+    return status >= 400 && status < 500 && status !== 408 && status !== 425 && status !== 429;
+  }
+  // transportFailed, an upstream 5xx, or something with no marker at all.
+  return false;
 }
 
 function readDailyMattrPublish(req) {
@@ -1851,16 +2122,31 @@ async function handlePixAnalytics(req, res) {
   sendJson(res, result.status, result.body);
 }
 
+/* Where the resolved session is parked for the rest of the request. A Symbol
+   so it cannot collide with anything Node puts on the request object, and so
+   nothing that enumerates the request picks it up. */
+const REQUEST_USER = Symbol("pixSessionUser");
+
+/* Resolved at most once per request. sessionUser() is a database round trip,
+   and since the /api/* gate above resolves the session before dispatching,
+   every handler that asks again would otherwise cost a second query — on
+   /api/pix that is two per autosave, per open editor. `undefined` means "not
+   looked up yet"; null is a real answer meaning nobody is signed in, so the
+   check has to be against undefined rather than falsiness. */
 async function currentUser(req) {
+  if (req[REQUEST_USER] !== undefined) return req[REQUEST_USER];
+  let user = null;
   try {
     const cookies = parseCookies(req.headers.cookie);
-    return await sessionUser(cookies[SESSION_COOKIE]);
+    user = await sessionUser(cookies[SESSION_COOKIE]);
   } catch (err) {
     // The caller cannot tell this apart from "not signed in", so the user just
     // gets bounced to the login screen. Name it in the log as what it is.
     console.warn(`⚠ session lookup failed (user will appear signed out): ${err.code || "no-code"} ${err.message}`);
-    return null;
+    user = null;
   }
+  req[REQUEST_USER] = user;
+  return user;
 }
 
 /* Railway terminates TLS in front of the app, so req.socket is plain HTTP and
@@ -2923,6 +3209,18 @@ function extractKeywords(title, posterText) {
 
 /* ── Twitter / X — Post poster image with caption ── */
 async function handleTwitterPost(req, res) {
+  /* Publishing to the org's X account is an irreversible external write with
+     the same standing as a DailyMattr publish, so it takes the same review
+     role rather than merely a session — a writer must not be able to put a
+     poster in front of the audience without QA. Checked through canReview()
+     (as handleDailyMattrPublish does) so a future review role inherits it
+     instead of hitting a 403. Dormant today because TWITTER_* is unset and the
+     503 below fires first; the gate goes in before those keys ever appear. */
+  const user = await currentUser(req);
+  if (!canReview(user?.role)) {
+    sendJson(res, 403, { error: "Only QA or admin can post to X." });
+    return;
+  }
   if (!twitterClient) {
     res.writeHead(503, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Twitter not configured. Set TWITTER_* keys in .env." }));

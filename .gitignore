@@ -6,3 +6,4 @@ output/
 local.secrets.json
 .env
 .bin/
+AUDIT-FINDINGS.md

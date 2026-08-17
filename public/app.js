@@ -317,6 +317,31 @@ const state = {
      have to scrape it back out of the DOM. */
   pixId: null,
   article: null,
+
+  /* ── The row's standing, as the library reported it ──
+     Read from the post when it is opened and otherwise left alone: none of
+     these are editor content, and nothing here writes them back. They exist so
+     the editor can refuse an action the server is going to refuse anyway —
+     which matters because "the server will catch it" arrives AFTER a video
+     encode and an upload that can take minutes, and because publishing is the
+     one action in this app that cannot be undone.
+
+     `publishedAt` set with `publishedId` null means an earlier publish was
+     started and never confirmed: the story may or may not be live. Treated
+     exactly like a confirmed publish here — the button stays shut either
+     way — but the wording differs, because only one of the two has an id
+     anyone can look up. */
+  publishedAt: null,
+  publishedId: null,
+  /* QA's sign-off. Read here so the editor knows the post's review is settled:
+     an approved post is one DailyMattr has, or is about to be given, and a
+     rewrite underneath it leaves the approval stamp pointing at text no
+     reviewer saw. What it stops is chiefly the unattended write — autosave
+     refuses to fire on an approved row (see considerAutosave). */
+  approved: false,
+  rejected: false,
+  rejectedByName: "",
+
   // Uploads already pushed to storage, remembered against their exact source
   // so pressing Save repeatedly uploads once.
   storedImageFor: null,
@@ -687,7 +712,12 @@ async function refreshMyPixCount() {
     const today = reviewer ? counts.reviewed_today : counts.written_today;
     const week  = reviewer ? counts.reviewed_week  : counts.written_week;
     const total = reviewer ? counts.reviewed_total : counts.written_total;
-    const noun = reviewer ? "reviewed" : "written";
+    /* "submitted", not "written": the tally counts posts that were handed
+       over, and drafts are deliberately outside it — they are unfinished work,
+       and counting them made the chip read one higher than anything the writer
+       could point at in a list. Their drafts are still theirs to find, under
+       My posts. */
+    const noun = reviewer ? "reviewed" : "submitted";
     /* Both numbers, because they answer different questions: today is "am I
        on track", the week is "how am I doing". These count POSTS, not saves —
        reopening a pix and editing it never moves them, which is the whole
@@ -2507,6 +2537,33 @@ function syncActivePageContent() {
   }
 }
 
+/* Read the post as its OWN page holds it, whatever page is selected.
+   `state` is the SELECTED page's values — setActivePage() applies the base
+   page's content and then the selected page's on top — so a save taken while
+   an added page is selected was reading that page's headline, tag, image and
+   framing and writing them into the post's own columns. Clicking "Add page"
+   on a saved post was enough: the new page's blank image landed in
+   main_image_url and the row lost its picture with nobody touching a key.
+
+   Deliberately a READ-ONLY view. The obvious alternative — swap the base
+   page's values into `state` for the duration of the save — corrupts the
+   other direction: serializePages() and withPrimaryVideo() both begin with
+   syncActivePageContent(), which would file the base page's headline and
+   image under the selected page and write that into design.pages, where a
+   restore of `state` afterwards cannot reach it. Nothing here writes back,
+   so those helpers keep seeing the true selection.
+
+   The spread is safe for fields the selected page does not own:
+   syncActivePageContent() has just folded those onto basePage.content, and
+   fields no page owns at all (storedImageUrl, sourceUrl, article…) are not
+   in BASE_PAGE_FIELDS, so `state`'s value survives the overlay untouched.
+   That is what lets callers read every field off the view rather than having
+   to remember which of them the pages happen to own. */
+function basePageView() {
+  syncActivePageContent();
+  return activePage() === basePage ? state : { ...state, ...(basePage.content || {}) };
+}
+
 function paintCardInto(target, mode) {
   if (!target) return;
   if (target.width !== canvas.width || target.height !== canvas.height) {
@@ -2949,6 +3006,56 @@ function restoreSpineCards(modes) {
   }
 }
 
+/* Back to a blank story: the two spine cards, no added pages, no clip, no
+   image, no copy.
+
+   "Start a new post" is not only the New post button. That button reloads the
+   document, so it never had to clear anything by hand — but Scrape & Build and
+   Write Text start a new post inside a live tab, and everything the previous
+   story built is still standing when they do.
+
+   Clearing scalar fields on `state` is not enough on its own, and that is the
+   part that is easy to get wrong: every field in ALL_PAGE_FIELDS is owned by a
+   PAGE, and `page.content` — not live state — is what setActivePage() applies
+   and what serializePages() writes. So story A's Video page stayed in the rail
+   with its uploaded clip, A's storedVideoUrl went into story B's saved row,
+   and QA publishing B shipped A's slides and A's footage to DailyMattr under
+   B's headline. DailyMattr is write-only; that cannot be taken back. */
+function resetPostModel() {
+  /* Read the blanks first, while live state is still intact: blankPageContent()
+     seeds headlineStyle and videoCaptionSize from `state` on purpose — those
+     are settings the writer chose, not content belonging to the last story.
+     base + story + video together cover exactly ALL_PAGE_FIELDS. */
+  const blank = {
+    ...blankPageContent("base"),
+    ...blankPageContent("story"),
+    ...blankPageContent("video"),
+  };
+
+  /* Drops every added page, unloads each one's parked <video>, resets
+     activePageId and playerOwner, and renumbers the rail. It leaves the last
+     clip loaded in the shared <video> element, which is deliberate and
+     harmless: no card paints it once state.videoEl is cleared below, and the
+     next video page's adoptPageVideo() detaches the src it does not want. */
+  restorePages([]);
+  // A spine card the last story removed belongs back in a fresh post.
+  restoreSpineCards(["pix", "text"]);
+
+  /* Not optional: setActivePage() applies basePage.content over live state on
+     every selection, so without this the writer's first click on any card
+     brings back A's headline, image and paragraph. If a non-base page was
+     selected when the new post started, syncActivePageContent() has already
+     folded A's base fields in there. */
+  basePage.content = null;
+  for (const field of ALL_PAGE_FIELDS) state[field] = clonePageValue(blank[field]);
+
+  /* restorePages() sets activePageId by assignment, so live state and the
+     editor controls were never refreshed from the now-blank base page. This is
+     the call that pushes the cleared content out to both — applyDesignSnapshot
+     ends the same way, for the same reason. */
+  setActivePage("base", { force: true });
+}
+
 function removePage(id) {
   const index = pages.findIndex((p) => p.id === id);
   if (index <= 0) return;                    // the spine is not removable
@@ -3216,8 +3323,11 @@ function ensureVideoPage() {
 /* restoreStoredVideo() finishes asynchronously, on loadedmetadata, and
    writes the trim range into live state — by which time the selection has
    moved back to page 1. Registering after it (listeners run in order) lets
-   us catch those values and file them under the page they belong to. */
-function bindRestoredVideoToPage(page) {
+   us catch those values and file them under the page they belong to.
+
+   `loadToken` is loadPixIntoEditor's load counter; see the re-baseline at the
+   foot of the handler for why this needs one. */
+function bindRestoredVideoToPage(page, loadToken) {
   if (!videoPreviewEl || !page) return;
   videoPreviewEl.addEventListener("loadedmetadata", () => {
     Object.assign(page.content, capturePageFields(VIDEO_PAGE_FIELDS), {
@@ -3227,6 +3337,16 @@ function bindRestoredVideoToPage(page) {
     playerOwner = page;
     if (activePageId === page.id) syncEditorFromState();
     renderPoster();
+    /* This handler is the real end of the open, long after loadPixIntoEditor's
+       promise resolved — so its editorLoading window has already closed and
+       cannot cover us. Everything just written (trimStart, trimEnd,
+       storedVideoFor) was DERIVED from the row's own design.video, so it is
+       what the library already holds, not an edit; without saying so, merely
+       opening a post with a clip left the editor looking dirty and the idle
+       poller wrote it back ~3s later — re-encoding the clip from a source URL
+       that has usually expired. The token stops a slow clip belonging to the
+       previously-open post from declaring the current one saved. */
+    if (loadToken === editorLoadSeq) markPixSaved();
   }, { once: true });
 }
 
@@ -5842,11 +5962,18 @@ document.addEventListener("click", (e) => {
   if (!proxy) return;
   const target = document.getElementById(proxy.dataset.proxy);
   if (!target || target.disabled) return;
-  /* Both header buttons drive the same save control, so the intent rides on
-     the element rather than being inferred — otherwise "Save draft" and
-     "Submit" would be indistinguishable by the time the handler runs. */
+  /* Save is the one proxy that cannot forward through target.click(): the
+     topbar drives the same button with two different meanings ("Save draft"
+     and, for a writer, "Submit"). This used to stamp the intent onto the
+     target — and never cleared it. #save-pix-btn carries no data-intent of
+     its own, so after a single Submit the in-editor Save button meant Submit
+     for the life of the page, and a writer could not stamp it back because
+     syncPrimaryAction() hides the only "draft" proxy from them. That is how a
+     half-written story reached QA's queue while it was still being typed.
+     The intent is now an argument, so it lives exactly as long as the click. */
   if (target.id === "save-pix-btn") {
-    target.dataset.intent = proxy.dataset.intent || "draft";
+    runSave(proxy.dataset.intent || "draft");
+    return;
   }
   target.click();
 });
@@ -5905,6 +6032,10 @@ function syncPrimaryAction() {
     draft.dataset.roleHidden = reviewer ? "false" : "true";
     draft.hidden = !reviewer;
   }
+  /* Last, so it can override the "Publish" just written above for a post that
+     is already live. Running it the other way round would leave the topbar
+     offering an action the panel below it has disabled. */
+  syncPublishState();
 }
 
 /* ── Collapsing the rail ──
@@ -7067,6 +7198,77 @@ async function loadDailyMattrMeta({ force = false } = {}) {
   }
 }
 
+/* ── Is this post publishable at all? ──
+
+   Set when a publish attempt ended without an answer — the server kept its
+   claim on the row and a retry would be refused, but this session should not
+   even offer the button. Session-scoped on purpose: it describes what just
+   happened in this tab, whereas state.publishedAt describes the row, and a
+   reload correctly re-reads the row rather than remembering the scare. */
+let publishOutcomeUnknown = false;
+
+/* One place decides whether Publish is available and what it says, because
+   three things can close it and they used to be checked nowhere:
+
+     - the row is already live on DailyMattr (their API has no delete, so a
+       second publish is a permanent duplicate)
+     - a previous attempt's outcome is unknown, so the post may be live
+     - the row is rejected, and publishing it would erase the rejection
+
+   Called on load, on role change, and after every publish attempt. The server
+   refuses all three as well and is the guard that actually counts; this is
+   here so QA finds out BEFORE a multi-minute encode and upload, and so the
+   button stops reading "Publish" on a story that is already out.
+
+   `announce` writes the reason to the status line, and defaults OFF because
+   most callers run at moments where that would be noise or worse: the finally
+   below runs immediately after a SUCCESSFUL publish, where the row is now
+   published and re-announcing it as an error would paint over the "Published,
+   ID 1379, marked approved" line QA needs to read. Opening a post is the one
+   moment the line is empty and the standing is news. */
+function syncPublishState({ announce = false } = {}) {
+  if (!dailymattrPublishBtn) return;
+
+  let reason = "";
+  let short = "";
+  /* Not gated on state.pixId. An unsaved poster has no library row to claim,
+     so the server cannot guard it — but this session knows perfectly well that
+     it just sent one, and refusing a second click here is the only thing
+     standing between QA and two identical live stories. */
+  if (state.publishedAt && state.publishedId) {
+    short = "Already published";
+    reason = `Already published to DailyMattr as ID ${state.publishedId}. It cannot be sent again — their API has no delete.`;
+  } else if (state.publishedAt || publishOutcomeUnknown) {
+    /* Sent, never confirmed. Deliberately shut rather than merely warned: the
+       one thing nobody can do from here is find out, and the retry that feels
+       harmless is the one that duplicates a live story. */
+    short = "Outcome unknown";
+    reason = "A publish of this post was sent and no confirmation came back, so it may already be live. Check the DailyMattr portal before publishing again.";
+  } else if (state.pixId && state.rejected) {
+    short = "Rejected";
+    reason = `Rejected by ${state.rejectedByName || "a reviewer"}. Withdraw the rejection in Review ("Undo reject") before publishing.`;
+  }
+
+  const blocked = Boolean(reason);
+  dailymattrPublishBtn.disabled = blocked;
+  dailymattrPublishBtn.textContent = blocked ? `${short} — cannot publish` : "Publish to DailyMattr";
+  dailymattrPublishBtn.title = reason;
+
+  /* The topbar button proxies this one. The 500ms mirror copies disabled and
+     hidden but not the label, and syncPrimaryAction owns "Publish"/"Submit" —
+     so the label is set here for the reviewer case only, leaving a writer's
+     "Submit" (which drives Save, not this button) alone. */
+  const primary = document.querySelector('.cms-topbar-actions .btn-primary');
+  if (primary && primary.dataset.proxy === "dailymattr-publish-btn") {
+    primary.textContent = blocked ? short : "Publish";
+    primary.title = reason || "Publish this pix to the web app";
+  }
+
+  // Say why the button is shut. A disabled control with no explanation reads
+  // as a broken page, and this one is shut for a reason QA has to act on.
+  if (announce && reason) setDailyMattrStatus(reason, "error");
+}
+
 /* Get the slide-2 MP4 for publishing, by the cheapest route that is still
    correct.
 
@@ -7128,6 +7330,15 @@ async function resolvePublishClipFromState(onStatus = () => {}) {
   return blob;
 }
 
+/* Assembly moves the SELECTION from page to page and waits on a multi-second
+   PNG encode at each stop (see the loop below). For those seconds live state
+   belongs to whichever page is being exported, and the idle poller has no way
+   to tell that from a person editing — so publishing a post with a second
+   Poster page could write that page's headline, tag and image into the post's
+   own columns, permanently if QA closed the tab on the "Published" dialog.
+   Publishing owns the row while it runs. */
+let publishInFlight = false;
+
 /* Returns true only when DailyMattr accepted the post; every other path falls
    out as undefined. Approve & Publish reads that, because it hands control back
    to the Review list where the publish panel's own status line is off screen.
@@ -7141,6 +7352,43 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
   }
   if (!state.headline.trim()) {
     setDailyMattrStatus("Build a poster first.", "error");
+    return;
+  }
+  /* The three states that make publishing wrong rather than merely
+     unnecessary. syncPublishState() has already disabled the button for each
+     of them, so this is the belt to that braces — the button can be re-enabled
+     by the proxy mirror, a stale render or a keyboard activation, and the cost
+     of getting through is a permanent duplicate on a public site. The server
+     refuses all three as well; this exists so QA is told before the encode
+     rather than after it. */
+  if (state.publishedAt) {
+    const message = state.publishedId
+      ? `This post is already live on DailyMattr as ID ${state.publishedId}. Publishing again would create a second copy, and their API has no delete.`
+      : "A publish of this post was started and never confirmed, so it may already be live. Check the DailyMattr portal before publishing again.";
+    setDailyMattrStatus(message, "error");
+    confirmAction({
+      notice: true,
+      title: state.publishedId ? "Already published" : "Publish outcome unknown",
+      body: message,
+      facts: state.publishedId
+        ? [`DailyMattr ID ${state.publishedId}`]
+        : ["No DailyMattr ID was recorded for that attempt — only their portal can say whether the story exists."],
+      confirmLabel: "Close",
+    });
+    return;
+  }
+  if (publishOutcomeUnknown) {
+    setDailyMattrStatus(
+      "The last publish was sent and no confirmation came back — this post may already be live. Check the DailyMattr portal before publishing again.",
+      "error",
+    );
+    return;
+  }
+  if (state.pixId && state.rejected) {
+    setDailyMattrStatus(
+      `This post was rejected by ${state.rejectedByName || "a reviewer"}. Withdraw the rejection in Review ("Undo reject") before publishing — publishing it would erase who turned it down and when.`,
+      "error",
+    );
     return;
   }
   if (!dailymattrMetaLoaded) {
@@ -7189,9 +7437,18 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
      onto its own page, so `state.video*` only holds it while that page is
      the selected one — and QA confirms this dialog from page 1. */
   const clip = primaryVideoContent();
+  /* Mirror videoClipKey()'s own gate — a source AND a real trim range — rather
+     than accepting a stored URL on its own. The two predicates used to
+     disagree: the dialog said "including the video" whenever storedVideoUrl
+     was set, while the assembly needs trimEnd > trimStart, which on a
+     just-reopened post is not true until the <video> fires loadedmetadata.
+     QA confirmed a count the publish could not deliver. The assembly now
+     aborts instead of skipping (see the loop below), so a disagreement is
+     loud either way — but it should not arise in the first place. */
   const hasVideo = Boolean(
-    clip.videoEl && clip.videoEl.readyState >= 2 && clip.videoEl.videoWidth > 0 && clip.trimEnd > clip.trimStart
-  ) || Boolean(clip.storedVideoUrl);
+    (clip.storedVideoUrl || clip.videoUrl || clip.videoFile)
+    && clip.trimEnd > clip.trimStart
+  );
   const extraCount = dailyMattrExtraFiles().length;
   /* Count the same way the assembly does — every card in the rail plus the
      attached files — or the dialog promises a number the publish will not
@@ -7215,10 +7472,20 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
   });
   if (!go) return;
 
+  /* Claimed before anything else, and cleared in the finally that also
+     re-enables the button: every early return in the body below is inside
+     that try, so there is no path out of here that leaves it set. Disabling
+     dailymattrPublishBtn is not enough on its own — considerAutosave() only
+     stands down for savePixBtn, which publishing never touches. */
+  publishInFlight = true;
   dailymattrPublishBtn.disabled = true;
-  const previousLabel = dailymattrPublishBtn.textContent;
   dailymattrPublishBtn.textContent = "Publishing…";
   setDailyMattrStatus("Rendering slide images…");
+  /* Divides the catch below into "nothing left the browser" and "we do not
+     know". Everything up to the fetch — rendering, encoding, assembling the
+     form — is local, so a throw there is provably harmless; after it, it is
+     not. */
+  let publishRequestSent = false;
 
   try {
 
@@ -7263,7 +7530,33 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
         if (card.mode === "video") {
           setDailyMattrStatus(`Preparing page ${n} (video)…`);
           const clip = await resolvePublishClip((msg) => setDailyMattrStatus(msg));
-          if (!clip) continue;                       // no clip on this page yet
+          /* Abort, do not skip. This was `continue`, and it was the only
+             failure in this loop that did not stop the publish — the oversize
+             branch just below and the failed-PNG branch further down both
+             return. So a post whose clip could not be prepared went live with
+             its images only, after a dialog that had just told QA the video
+             was included, and the success dialog reported nothing missing.
+             DailyMattr's API is write-only, so there is no adding it
+             afterwards: the story is permanently a partial.
+
+             Both surviving causes are invisible to QA and both are ordinary.
+             The clip key is null until the reopened <video> fires
+             loadedmetadata (state.trimEnd is 0 until then), and a stored clip
+             whose bucket URL has expired or 404s never fires it at all — so
+             that second one silently drops the video on EVERY publish of that
+             post. Neither is a reason to ship a partial story. */
+          if (!clip) {
+            const message = `Page ${n}'s video could not be prepared, so nothing was published. Open the Video page, wait for the clip to load, and try again — if it never loads, its stored copy is gone and the video must be re-added.`;
+            setDailyMattrStatus(message, "error");
+            confirmAction({
+              notice: true,
+              title: "Not published",
+              body: message,
+              facts: ["Nothing was sent — the post is unchanged and still publishable."],
+              confirmLabel: "Close",
+            });
+            return;
+          }
           if (clip.size > DAILYMATTR_MAX_MEDIA_BYTES) {
             const mb = (v) => (v / 1048576).toFixed(1);
             setDailyMattrStatus(
@@ -7318,6 +7611,11 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     });
 
     setDailyMattrStatus("Sending to DailyMattr…");
+    /* From here on the request is in the air. If anything below throws — an
+       aborted fetch, a dropped connection, the tab going offline mid-upload —
+       the server may already have forwarded the whole thing to DailyMattr, so
+       the catch must not report it as a clean failure. */
+    publishRequestSent = true;
     const response = await fetch(DAILYMATTR_PUBLISH_ENDPOINT, {
       method: "POST",
       credentials: "same-origin",
@@ -7327,20 +7625,79 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     if (!response.ok) {
       if (response.status === 401) return handleSignedOut();
       setDailyMattrStatus(payload.error || `Publish failed (${response.status}).`, "error");
+
+      /* Two very different failures used to read identically. The dialog said
+         "Nothing was sent — fix the problem and publish again" for every
+         non-200, including the case where DailyMattr had accepted the post and
+         only the answer went missing. QA did as instructed and the story went
+         live twice, permanently — their API has no delete.
+
+         The server now says which it was. `indeterminate` means the request
+         left it and no usable answer came back; nobody, on either side, can
+         tell whether the story exists. The only correct instruction is to go
+         and look, so this never invites a retry and the button stays shut for
+         the rest of the session. */
+      if (payload.indeterminate) {
+        publishOutcomeUnknown = true;
+        confirmAction({
+          notice: true,
+          title: "Publish outcome unknown",
+          body: payload.error
+            || "The post was sent to DailyMattr and no confirmation came back, so it may already be live.",
+          facts: [
+            "Do NOT publish again yet — a second attempt would create a second live story that cannot be deleted.",
+            "Open the DailyMattr portal and check whether this story is there.",
+            "If it is not there, reload this page and publish once more.",
+          ],
+          confirmLabel: "Close",
+        });
+        return;
+      }
+
+      /* Already published, or rejected: the server refused before sending
+         anything. Adopt what it told us about the row so the button and the
+         status line stop offering an action that cannot succeed — the client's
+         copy is stale precisely because someone else changed the row. */
+      if (payload.alreadyPublished) {
+        state.publishedAt = payload.publishedAt || new Date().toISOString();
+        state.publishedId = payload.publishedId || null;
+      }
+      if (payload.rejected) {
+        state.rejected = true;
+        state.rejectedByName = payload.rejectedByName || state.rejectedByName;
+      }
+
       /* A failure needs the dialog more than a success does: the post is NOT
          live, and a red line at the foot of the column is exactly the thing
          someone scrolls past before assuming it went out. */
       confirmAction({
         notice: true,
-        title: "Not published",
+        title: payload.alreadyPublished ? "Already published" : "Not published",
         body: payload.error || `DailyMattr refused the post (HTTP ${response.status}).`,
-        facts: ["Nothing was sent — fix the problem and publish again."],
+        facts: [payload.alreadyPublished || payload.rejected
+          ? "Nothing was sent this time."
+          : "Nothing was sent — fix the problem and publish again."],
         confirmLabel: "Close",
       });
       return;
     }
 
     const publishedId = payload.publishedId ? ` ID ${payload.publishedId}.` : "";
+
+    /* The row is now live, so record that here too — the button must close
+       immediately rather than only after the next reload. `publishRecord`
+       reports whether the server managed to write the id onto the row; the
+       claim itself is committed either way, so the guard holds regardless and
+       what a failure costs is only the id. */
+    state.publishedAt = payload.publishRecord?.publishedAt || new Date().toISOString();
+    state.publishedId = payload.publishRecord?.publishedId || payload.publishedId || null;
+    // Publishing approves, and approval takes a post out of draft server-side.
+    state.isDraft = false;
+    /* Carried in state for the same reason as publishedAt: the row has a
+       verdict now, and autosave refuses to rewrite a post that has one. The
+       publish flag alone would cover this tab, but the two travel together
+       everywhere else and a half-updated standing is how they drift apart. */
+    if (payload.approval?.ok) state.approved = true;
 
     /* Say what happened to the approval as well as the publish. The two can
        legitimately disagree — the story is live either way, but if it was not
@@ -7367,6 +7724,16 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     const facts = [];
     if (payload.publishedId) facts.push(`DailyMattr ID ${payload.publishedId}`);
     if (state.headline) facts.push(cleanHeadlineForPublish(state.headline));
+    /* What actually went, not what was promised. An irreversible action should
+       end with a receipt someone can reconcile against the live post — the
+       count and whether a clip was among it are the two things that were
+       silently wrong before the assembly learned to abort. */
+    const sentVideos = outboundMedia.filter(({ filename }) => /\.(mp4|mov)$/i.test(filename)).length;
+    facts.push(`${outboundMedia.length} media item${outboundMedia.length === 1 ? "" : "s"} sent`
+      + (sentVideos ? `, including ${sentVideos === 1 ? "the video" : `${sentVideos} videos`}` : ", no video"));
+    if (payload.publishRecord && payload.publishRecord.ok === false && payload.publishRecord.reason !== "post not saved") {
+      facts.push(`Warning: the DailyMattr ID could not be saved onto this post (${payload.publishRecord.reason}). Write it down.`);
+    }
     if (approvalNote.trim()) facts.push(approvalNote.trim());
     confirmAction({
       notice: true,
@@ -7381,10 +7748,38 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     if (payload.approval?.ok) loadReviewQueue();
     return true;
   } catch (err) {
-    setDailyMattrStatus(err.message || "Could not publish to DailyMattr.", "error");
+    /* The quietest path of all, and until now the one that showed no dialog.
+       If the request had already left the browser, this is the same
+       indeterminate state the server reports with `indeterminate` — an aborted
+       upload, a dropped connection, a tab put to sleep — and the server may
+       well have forwarded the whole post to DailyMattr before the socket
+       closed. Say so, and stop offering the button. */
+    if (publishRequestSent) {
+      publishOutcomeUnknown = true;
+      const message = "The connection dropped while this post was being sent, so it may already be live on DailyMattr. "
+        + "Check their portal before publishing again — a second attempt cannot be undone.";
+      setDailyMattrStatus(message, "error");
+      confirmAction({
+        notice: true,
+        title: "Publish outcome unknown",
+        body: message,
+        facts: [
+          err.message || "The upload failed part-way through.",
+          "Do NOT publish again until you have checked the DailyMattr portal.",
+        ],
+        confirmLabel: "Close",
+      });
+    } else {
+      setDailyMattrStatus(err.message || "Could not publish to DailyMattr.", "error");
+    }
   } finally {
-    dailymattrPublishBtn.disabled = false;
-    dailymattrPublishBtn.textContent = previousLabel;
+    publishInFlight = false;
+    /* Not `disabled = false` any more. syncPublishState() owns both the label
+       and the disabled flag, and it is the only thing that knows the post is
+       now published, or that the last attempt's outcome is unknown — putting
+       "Publish to DailyMattr" back on an enabled button in either of those
+       cases is precisely how a duplicate gets made. */
+    syncPublishState();
   }
 }
 
@@ -7821,11 +8216,16 @@ const PIX_SAVE_ENDPOINT = "/api/pix";
 let pixSaveInFlight = null;
 
 /**
- * Begin a new post: forget the row this session was editing, and forget the
- * provenance of the last story. Called when a scrape brings in a different
- * article and when a poster is built from hand-written text — both are new
- * posts, and without this the next save would land on the previous row and
- * pair a new headline with an old source URL.
+ * Begin a new post: forget the row this session was editing, forget the
+ * provenance of the last story, and — via resetPostModel() — forget its pages
+ * and everything on them. Called when a scrape brings in a different article
+ * and when a poster is built from hand-written text — both are new posts, and
+ * without this the next save would land on the previous row and pair a new
+ * headline with an old source URL.
+ *
+ * Deliberately not window.location.reload() like the New post button: both
+ * callers assign the new story's headline and text immediately after this
+ * returns, and a reload would throw away the scrape that was just fetched.
  */
 function startNewPix() {
   state.pixId = null;
@@ -7833,6 +8233,14 @@ function startNewPix() {
   // this a writer who submitted, then pressed New post, began the next
   // article already flagged as submitted.
   state.isDraft = true;
+  /* A new post has no history, and forgetting to say so is the dangerous
+     direction: the previous story's publish record would otherwise keep the
+     Publish button shut on a post that has never been sent anywhere. */
+  state.publishedAt = null;
+  state.publishedId = null;
+  state.approved = false;
+  state.rejected = false;
+  state.rejectedByName = "";
   state.article = null;
   state.storedImageFor = null;
   state.storedImageUrl = null;
@@ -7853,12 +8261,21 @@ function startNewPix() {
   state.scrapedTitle = "";
   state.imageQuery = "";
   state.sourceImageUrl = null;
+  /* The rail, the pages and everything they own. The scalar clears above are
+     the post's provenance; this is the post's content, and it lives on the
+     pages rather than on `state` — which is why the three lines above that
+     clear storedVideoFor/storedVideoUrl/renderedClip never actually dropped
+     the last story's clip. Runs before syncDailyMattrDraft({force}) below so
+     that draft is rebuilt from a blank post, not from the previous headline. */
+  resetPostModel();
   dailymattrDraftTouched.content = false;
   dailymattrDraftTouched.keywords = false;
   dailymattrDraftTouched.category = false;
   dailymattrDraftTouched.state = false;
   resetDailyMattrExtraMedia();
   syncDailyMattrDraft({ force: true });
+  publishOutcomeUnknown = false;
+  syncPublishState();
 }
 
 /**
@@ -7870,13 +8287,26 @@ function startNewPix() {
 /* `asDraft` is the whole difference between the two buttons. A draft is saved
    but not handed over: it stays out of QA's queue until it is submitted. Left
    undefined the post keeps whatever it already was, so autosave never quietly
-   promotes a draft into the queue. */
-async function savePixToLibrary({ asDraft } = {}) {
-  /* Submitting always applies. Marking something back down to a draft only
-     applies to a post that is still one — otherwise QA pressing Save draft on
-     a post they are reviewing would pull it out of their own queue. */
-  if (asDraft === false) state.isDraft = false;
-  else if (asDraft === true && state.isDraft) state.isDraft = true;
+   promotes a draft into the queue.
+
+   `auto` says this write came from the idle timer rather than from a press.
+   The server treats the two differently in one place — lifting the rejection
+   on a post its author has corrected, which has to be a deliberate handover
+   and not something a 2.5s timer does mid-sentence. */
+async function savePixToLibrary({ asDraft, auto = false } = {}) {
+  /* Resolve the intent for THIS write into a local and leave state.isDraft
+     alone until the server has accepted it. Writing it here, above the
+     guards, meant a submit refused for a missing category still flipped the
+     post to non-draft — permanently, because there is no un-submit — and the
+     next Save then created the row in QA's queue mid-sentence.
+
+     The demotion rule is unchanged and load-bearing: submitting always
+     applies, but asking for a draft only holds for a post that is still one.
+     Hence `!state.isDraft` rather than a flat `false` on the asDraft:true
+     branch — otherwise QA pressing Save on a post they are reviewing would
+     pull it out of their own queue, which is exactly what makes it safe for
+     the in-editor button to be hard-wired to "draft" for every role. */
+  const submitting = asDraft === false ? true : !state.isDraft;
   if (!state.user) {
     return { ok: false, error: "Sign in to save posts." };
   }
@@ -7899,7 +8329,7 @@ async function savePixToLibrary({ asDraft } = {}) {
      API is write-only. A scrape fills it in automatically, so the only way to
      arrive here empty is a hand-written post, which is exactly the case where
      the provenance is least obvious and most worth recording. */
-  if (!state.isDraft && !String(state.sourceUrl || "").trim()) {
+  if (submitting && !String(state.sourceUrl || "").trim()) {
     return { ok: false, error: "Add the source link before submitting.", needsSource: true };
   }
 
@@ -7907,17 +8337,42 @@ async function savePixToLibrary({ asDraft } = {}) {
   // them keeps the first response — which carries the new id — from racing
   // the second request into creating a duplicate row.
   const run = async () => {
+    /* Which post this write is FOR, fixed before the first await.
+
+       The upload below is not quick — several MB of pasted image, or a
+       server-side video encode measured in tens of seconds — and the editor
+       stays live throughout. Open another post from Review in that window and
+       the payload, assembled afterwards, picked up the NEW post's id and the
+       new post's fields: the save started for A landed on B, or, after
+       "New post", created a fresh row holding a mixture of the two.
+
+       `?? null` rather than a bare read: an unsaved post has no id, and the
+       undefined-to-defined transition is exactly the startNewPix case that
+       has to be caught too. */
+    const targetId = state.pixId ?? null;
     try {
       // Uploads first: the row stores URLs, and a data: URL has none.
       const mediaProblems = await ensureMediaUploaded((message) => {
         if (savePixLabel) savePixLabel.textContent = message;
       });
+      /* The payload cannot simply be built before the awaits — describeMainImage
+         and the design snapshot read the stored URLs that the upload has just
+         produced, so assembling first would record null for exactly the media
+         that was uploaded. Abort here instead, after the upload (its side
+         effects are still wanted if the writer comes back to this post) and
+         before anything is sent. */
+      if ((state.pixId ?? null) !== targetId) {
+        return { ok: false, error: "Not saved — another post was opened while this one was uploading." };
+      }
       if (savePixLabel) savePixLabel.textContent = "Saving…";
       const response = await fetch(PIX_SAVE_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify(collectPixPayload()),
+        // `autosave` rides alongside the columns rather than in them: it
+        // describes the request, not the post, and normalise() on the server
+        // only reads keys it maps to columns.
+        body: JSON.stringify({ ...collectPixPayload(submitting), autosave: auto }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -7927,8 +8382,29 @@ async function savePixToLibrary({ asDraft } = {}) {
         if (response.status === 401) handleSignedOut();
         return { ok: false, error: data.error || `Save failed (${response.status}).` };
       }
-      state.pixId = data.id || state.pixId;
-      markPixSaved();
+      /* Only now is the post's standing what the request claimed it was. A
+         refused or failed save leaves the session exactly as it found it.
+
+         Same ownership check as before the fetch, because the response is one
+         more await later: the row was written correctly either way, but if
+         the editor has moved on since, these three lines would stamp this
+         post's id, draft flag and saved-baseline onto a different one — and a
+         wrong baseline is the silent failure, because it tells the unsaved
+         dot that a post nobody has saved is already stored. */
+      if ((state.pixId ?? null) === targetId) {
+        state.isDraft = !submitting;
+        state.pixId = data.id || state.pixId;
+        /* The server lifted a rejection because this save was the author's
+           correction, so the post is back in QA's Awaiting queue. Carried into
+           state or the editor would keep describing it as rejected — the
+           Publish button reads state.rejected, and the writer would be told to
+           ask for a withdrawal that has already happened. */
+        if (data.resubmitted) {
+          state.rejected = false;
+          syncPublishState();
+        }
+        markPixSaved();
+      }
       // Only a new row moves the writer's tally; an update does not.
       if (data.created) refreshMyPixCount();
       console.log(`[pix] saved ${data.id}`);
@@ -7936,6 +8412,7 @@ async function savePixToLibrary({ asDraft } = {}) {
         ok: true,
         id: data.id,
         created: data.created,
+        resubmitted: Boolean(data.resubmitted),
         warning: mediaProblems.length ? mediaProblems.join("; ") : null,
       };
     } catch (err) {
@@ -7948,23 +8425,31 @@ async function savePixToLibrary({ asDraft } = {}) {
   return pixSaveInFlight;
 }
 
-function collectPixPayload() {
-  const article = state.article || {};
-  const image = describeMainImage();
+/* `submitting` is passed in rather than read off state.isDraft: the caller
+   decides what this particular write means, and a save that is later refused
+   must not have left a changed flag behind for the next one to pick up. */
+/* `view` is the base-page reading of `state` (see basePageView). Every field
+   below is taken off it rather than off `state` directly — not because all of
+   them are page-owned, but because a mixed convention is what let headline,
+   tag and mainImage quietly go back to the live selection. For anything the
+   pages do not own the two are the same object value anyway. */
+function collectPixPayload(submitting, view = basePageView()) {
+  const article = view.article || {};
+  const image = describeMainImage(view);
 
   return {
-    id: state.pixId || undefined,
-    isDraft: Boolean(state.isDraft),
+    id: view.pixId || undefined,
+    isDraft: !submitting,
 
     // The scrape
-    sourceUrl: state.sourceUrl || null,
-    categoryId: state.categoryId || null,
-    stateId: state.stateId || null,
-    scrapedTitle: state.scrapedTitle || null,
-    articleText: state.articleText || null,
-    detailText: state.detailText || null,
-    imageQuery: state.imageQuery || null,
-    sourceImageUrl: state.sourceImageUrl || null,
+    sourceUrl: view.sourceUrl || null,
+    categoryId: view.categoryId || null,
+    stateId: view.stateId || null,
+    scrapedTitle: view.scrapedTitle || null,
+    articleText: view.articleText || null,
+    detailText: view.detailText || null,
+    imageQuery: view.imageQuery || null,
+    sourceImageUrl: view.sourceImageUrl || null,
 
     // What the writer produced
     aiHeadline: article.headline || null,
@@ -7973,15 +8458,15 @@ function collectPixPayload() {
     aiFlags: Array.isArray(article.flags) ? article.flags : [],
 
     // What the poster shows
-    headline: state.headline || null,
-    detailBody: state.detailText || null,
+    headline: view.headline || null,
+    detailBody: view.detailText || null,
     mainImageUrl: image.url,
     mainImageSource: image.source,
-    aspectRatio: state.aspectRatio,
-    accentColor: state.accent,
-    tag: state.tag,
+    aspectRatio: view.aspectRatio,
+    accentColor: view.accent,
+    tag: view.tag,
 
-    design: collectDesignSnapshot(),
+    design: collectDesignSnapshot(view),
   };
 }
 
@@ -7989,14 +8474,17 @@ function collectPixPayload() {
    back off it. Remote images always travel through /api/image?url=…, so the
    original address is recoverable from the proxy query; a data: URL means a
    local upload or an AI enhance, which has no address to store. */
-function describeMainImage() {
-  const src = state.mainImage?.src || "";
+/* `view` must be a base-page reading (basePageView): mainImage is owned by
+   every page type that shows one, so reading it off live `state` describes
+   whichever page is selected rather than the post. */
+function describeMainImage(view) {
+  const src = view.mainImage?.src || "";
   if (!src) return { url: null, source: null };
   if (src.startsWith("data:")) {
     // An upload or an AI enhance. It has a URL only once it has been pushed
     // to storage — see ensureMediaUploaded, which Save runs first.
     return {
-      url: state.storedImageFor === src ? state.storedImageUrl : null,
+      url: view.storedImageFor === src ? view.storedImageUrl : null,
       source: "upload",
     };
   }
@@ -8017,7 +8505,7 @@ function describeMainImage() {
   const source =
     /pexels\.com$/i.test(host) || /pexels/i.test(host) ? "stock"
     : /fal\.(media|ai)$/i.test(host) || /fal\./i.test(host) ? "flux"
-    : url === state.sourceImageUrl ? "scraped"
+    : url === view.sourceImageUrl ? "scraped"
     : "search";
 
   return { url, source };
@@ -8027,29 +8515,33 @@ function describeMainImage() {
    flat, explicit list rather than a clone of `state`: the live objects in
    there (Image elements, the <video>, File handles) are not serialisable and
    would silently bloat or break the row. */
-function collectDesignSnapshot() {
+/* `view` must be a base-page reading (basePageView). The typography, framing
+   and filter fields here are all page-owned, so the same page-selection leak
+   that emptied main_image_url also stamped an added page's crop and font size
+   onto the post's design blob. */
+function collectDesignSnapshot(view) {
   return {
-    aspectRatio: state.aspectRatio,
-    accent: state.accent,
-    headlineStyle: state.headlineStyle,
-    fontSize: state.fontSize,
-    enhanceStrength: state.enhanceStrength,
-    imageOffset: { ...state.imageOffset },
-    imageZoom: state.imageZoom,
-    logo: { x: state.logoX, y: state.logoY, size: state.logoSize },
-    tag: state.tag,
-    showTimestamp: state.showTimestamp,
-    createdAt: state.createdAt instanceof Date && !isNaN(state.createdAt)
-      ? state.createdAt.toISOString()
+    aspectRatio: view.aspectRatio,
+    accent: view.accent,
+    headlineStyle: view.headlineStyle,
+    fontSize: view.fontSize,
+    enhanceStrength: view.enhanceStrength,
+    imageOffset: { ...view.imageOffset },
+    imageZoom: view.imageZoom,
+    logo: { x: view.logoX, y: view.logoY, size: view.logoSize },
+    tag: view.tag,
+    showTimestamp: view.showTimestamp,
+    createdAt: view.createdAt instanceof Date && !isNaN(view.createdAt)
+      ? view.createdAt.toISOString()
       : null,
-    keywords: state.keywords || "",
-    previewMode: state.previewMode,
+    keywords: view.keywords || "",
+    previewMode: view.previewMode,
     filters: {
-      preset: state.filterPreset,
-      brightness: state.filterBrightness,
-      contrast: state.filterContrast,
-      saturation: state.filterSaturation,
-      blur: state.filterBlur,
+      preset: view.filterPreset,
+      brightness: view.filterBrightness,
+      contrast: view.filterContrast,
+      saturation: view.filterSaturation,
+      blur: view.filterBlur,
     },
     /* The post's video. Read off the primary video page rather than live
        state: the clip belongs to that page now, and saving while page 1 is
@@ -8071,7 +8563,7 @@ function collectDesignSnapshot() {
         muted: Boolean(v.videoMuted),
         focus: { x: v.videoFocus?.x ?? 0.5, y: v.videoFocus?.y ?? 0.5 },
         caption: v.videoCaption || null,
-        captionSize: v.videoCaptionSize ?? state.videoCaptionSize,
+        captionSize: v.videoCaptionSize ?? view.videoCaptionSize,
       };
     })(),
     // Pages the writer added on top of the spine. The spine itself is the
@@ -8090,93 +8582,126 @@ function collectDesignSnapshot() {
    preview status line carries the reason whenever it did not. */
 const savePixBtn = document.getElementById("save-pix-btn");
 const savePixLabel = document.getElementById("save-pix-label");
+let saveResetTimer = null;
 
-if (savePixBtn) {
-  let resetTimer = null;
-
-  const showState = (label, className = "") => {
-    if (savePixLabel) savePixLabel.textContent = label;
+function showSaveState(label, className = "") {
+  if (!savePixBtn) return;
+  if (savePixLabel) savePixLabel.textContent = label;
+  savePixBtn.classList.remove("is-saved", "is-error");
+  if (className) savePixBtn.classList.add(className);
+  clearTimeout(saveResetTimer);
+  saveResetTimer = setTimeout(() => {
+    // Back to whatever this role's resting label is, not a hard-coded "Save".
+    if (savePixLabel) savePixLabel.textContent = saveButtonLabel();
     savePixBtn.classList.remove("is-saved", "is-error");
-    if (className) savePixBtn.classList.add(className);
-    clearTimeout(resetTimer);
-    resetTimer = setTimeout(() => {
-      if (savePixLabel) savePixLabel.textContent = "Save";
-      savePixBtn.classList.remove("is-saved", "is-error");
-    }, 3000);
-  };
+  }, 3000);
+}
 
-  savePixBtn.addEventListener("click", async () => {
-    savePixBtn.disabled = true;
-    if (savePixLabel) savePixLabel.textContent = "Saving…";
-    savePixBtn.classList.remove("is-saved", "is-error");
+/* The single save path, shared by the in-editor button and the topbar
+   proxies. `intent` is a parameter and nothing else: it used to be read back
+   off savePixBtn.dataset, where a "submit" left by one click outlived the
+   post that set it. The in-editor button always passes "draft"; only a proxy
+   carrying data-intent="submit" — the writer's topbar primary — can submit. */
+async function runSave(intent) {
+  if (!savePixBtn) return;
+  savePixBtn.disabled = true;
+  if (savePixLabel) savePixLabel.textContent = "Saving…";
+  savePixBtn.classList.remove("is-saved", "is-error");
 
-    // The Save button is the draft path; Submit goes through the proxy below.
-    const result = await savePixToLibrary({ asDraft: savePixBtn.dataset.intent !== "submit" });
+  const result = await savePixToLibrary({ asDraft: intent !== "submit" });
 
-    savePixBtn.disabled = false;
-    if (result?.ok) {
-      // "Updated" rather than "Saved" when this post is already in the
-      // library, so pressing Save twice does not look like it made two.
-      showState(result.created ? "Saved" : "Updated", "is-saved");
-      if (result.warning) {
-        setPostStatus(`Saved, but the ${result.warning}.`, "error");
-      } else {
-        /* Say where it went and how to move on. Writers were typing the next
-           story over a saved poster because nothing told them Save would keep
-           landing on the same row. */
-        setPostStatus(
-          result.created
-            ? "Saved and sent to QA for review. Press New post to start the next one."
-            : "Saved — the copy QA is reviewing has been updated. Press New post to start a different story.",
-          "success",
-        );
-      }
+  savePixBtn.disabled = false;
+  if (result?.ok) {
+    /* savePixToLibrary only commits state.isDraft once the server accepted,
+       so this is the row's real standing, not the intent that was asked for —
+       an asDraft:true save of a post QA already has stays submitted. */
+    const draft = Boolean(state.isDraft);
+    // "Updated" rather than "Saved" when this post is already in the
+    // library, so pressing Save twice does not look like it made two.
+    showSaveState(result.created ? "Saved" : "Updated", "is-saved");
+    if (result.warning) {
+      setPostStatus(`Saved, but the ${result.warning}.`, "error");
+    } else {
+      /* Say where it went and how to move on. Writers were typing the next
+         story over a saved poster because nothing told them Save would keep
+         landing on the same row. The draft wording matters as much: this line
+         claimed "the copy QA is reviewing has been updated" on every save,
+         including drafts QA has never been shown. */
+      setPostStatus(
+        /* A correction to a rejected post is its own outcome, and the most
+           useful thing this line can say: the post has left the Rejected tab
+           and is back in the queue, which is exactly what the writer was
+           trying to achieve and previously never happened. */
+        result.resubmitted
+          ? "Saved and back with QA — your correction returns the post to the review queue."
+          : draft
+            ? (result.created
+                ? "Draft saved. QA cannot see it until you press Submit."
+                : "Draft updated. QA cannot see it until you press Submit.")
+            : (result.created
+                ? "Saved and sent to QA for review. Press New post to start the next one."
+                : "Saved — the copy QA is reviewing has been updated. Press New post to start a different story."),
+        "success",
+      );
+    }
 
-      /* Writers get this as a dialog, not just a status line. Handing the
-         story over is the end of their work on it, and a line of text under
-         the preview was being missed — writers kept typing the next story
-         over the row they had just sent. QA sees no dialog: saving is not a
-         handoff for them, and a modal on every edit would be in the way. */
-      if (state.user?.role === "writer") {
-        const draft = Boolean(state.isDraft);
-        confirmAction({
-          notice: true,
-          title: draft ? "Draft saved" : (result.created ? "Sent to QA" : "Update sent to QA"),
-          body: draft
+    /* Writers get this as a dialog, not just a status line. Handing the story
+       over is the end of their work on it, and a line of text under the
+       preview was being missed — writers kept typing the next story over the
+       row they had just sent. QA sees no dialog: saving is not a handoff for
+       them, and a modal on every edit would be in the way. */
+    if (state.user?.role === "writer") {
+      confirmAction({
+        notice: true,
+        title: result.resubmitted
+          ? "Back with QA"
+          : draft ? "Draft saved" : (result.created ? "Sent to QA" : "Update sent to QA"),
+        body: result.resubmitted
+          ? "The rejection has been lifted and your corrected post is in the review queue again."
+          : draft
             ? "Kept in My posts. QA cannot see it until you press Submit."
             : (result.created
                 ? "Your article is saved and has moved to QA for review."
                 : "Your changes are saved. QA is reviewing the updated copy."),
-          facts: [
-            state.headline ? cleanHeadlineForPublish(state.headline) : "(untitled)",
-            draft ? "Press Submit when it is ready for review."
-                  : "Press New post to start the next story.",
-          ],
-          confirmLabel: "Got it",
-        });
-      }
-    } else {
-      showState("Not saved", "is-error");
-      setPostStatus(result?.error || "Could not save this post.", "error");
-      /* A missing source link gets a dialog rather than a status line: it is
-         the one failure here that is a step the person skipped rather than
-         something that went wrong, so it needs to say what to do and put them
-         in front of the field. */
-      if (result?.needsSource) {
-        await confirmAction({
-          notice: true,
-          title: "Source link required",
-          body: "Every pix needs the link it came from. Paste the article URL into Source Link.",
-          facts: [
-            "QA checks it on every post, and Review searches by it.",
-            "Scraping a link fills it in for you.",
-          ],
-          confirmLabel: "Add it now",
-        });
-        focusSourceLink();
-      }
+        facts: [
+          state.headline ? cleanHeadlineForPublish(state.headline) : "(untitled)",
+          result.resubmitted
+            ? "It is waiting for approval again — no need to ask anyone to reopen it."
+            : draft ? "Press Submit when it is ready for review."
+                    : "Press New post to start the next story.",
+        ],
+        confirmLabel: "Got it",
+      });
     }
-  });
+  } else {
+    showSaveState("Not saved", "is-error");
+    setPostStatus(result?.error || "Could not save this post.", "error");
+    /* A missing source link gets a dialog rather than a status line: it is
+       the one failure here that is a step the person skipped rather than
+       something that went wrong, so it needs to say what to do and put them
+       in front of the field. */
+    if (result?.needsSource) {
+      await confirmAction({
+        notice: true,
+        title: "Source link required",
+        body: "Every pix needs the link it came from. Paste the article URL into Source Link.",
+        facts: [
+          "QA checks it on every post, and Review searches by it.",
+          "Scraping a link fills it in for you.",
+        ],
+        confirmLabel: "Add it now",
+      });
+      focusSourceLink();
+    }
+  }
+}
+
+/* Hard-coded "draft", deliberately. This button is the writer's checkpoint,
+   not their handoff — Submit is the topbar primary. It is safe for a reviewer
+   too: savePixToLibrary honours asDraft:true only on a post that is already a
+   draft, so pressing Save on something in QA's queue cannot pull it out. */
+if (savePixBtn) {
+  savePixBtn.addEventListener("click", () => { runSave("draft"); });
 }
 
 /* ── Starting the next post ────────────────────────────────────────────────
@@ -8252,6 +8777,23 @@ async function openSavedPost(id) {
   }
 }
 
+/* ── Opening a row is not editing it ──
+   loadPixIntoEditor is async: it awaits the main image, and the restored clip
+   finishes later still, on `loadedmetadata`. The 800ms poller does not know
+   any of that. It saw the new post's id, a fingerprint that no longer matched
+   the PREVIOUS post's baseline, and — after ~3s of a half-restored editor —
+   wrote what it found: main_image_url = null over the post just opened, and,
+   because state.storedVideoFor is not stamped until the clip's metadata
+   arrives, a full re-encode and re-upload of a source URL that has usually
+   expired by then. Nobody had touched a key.
+
+   `editorLoading` closes the synchronous body. `editorLoadSeq` is what closes
+   the tails: a load's re-baseline only counts while that load is still the
+   current one, so a slow image or clip belonging to post A cannot declare
+   post B "saved" after the user has moved on. */
+let editorLoading = false;
+let editorLoadSeq = 0;
+
 /* Rebuild the editor from a stored row. The design snapshot carries anything
    that is not text or an image; missing keys fall back to what is already in
    state, so a row saved by an older version still opens. */
@@ -8259,92 +8801,127 @@ async function loadPixIntoEditor(post) {
   if (!post) return;
   const design = post.design || {};
 
-  resetDailyMattrExtraMedia();
+  /* Not markPixSaved(): that would record a half-restored post — no image,
+     trimEnd 0 — as the stored truth, which is a worse thing to leave behind
+     if the image fetch then fails. Null hits considerAutosave's existing
+     "no baseline yet" guard and blanks the unsaved dot for the duration, and
+     it structurally cannot leave a baseline belonging to the previous post. */
+  const loadToken = ++editorLoadSeq;
+  lastSavedFingerprint = null;
+  editorLoading = true;
+  try {
+    resetDailyMattrExtraMedia();
 
-  /* The publish line belongs to the post that was open, not to the panel.
-     Without this, "Published to DailyMattr" stayed on screen when the next
-     article was opened, so an untouched post read as already sent — the one
-     mistake this panel must never invite. */
-  setDailyMattrStatus("");
+    /* The publish line belongs to the post that was open, not to the panel.
+       Without this, "Published to DailyMattr" stayed on screen when the next
+       article was opened, so an untouched post read as already sent — the one
+       mistake this panel must never invite. */
+    setDailyMattrStatus("");
 
-  state.pixId = post.id;
-  state.isDraft = Boolean(post.is_draft);
-  state.headline = post.headline || post.ai_headline || post.scraped_title || "";
-  state.detailText = post.detail_body || post.detail_text || "";
-  state.articleText = post.article_text || "";
-  state.sourceUrl = post.source_url || "";
-  syncSourceUrlInput();
-  state.categoryId = post.category_id ? String(post.category_id) : "";
-  state.stateId = post.state_id ? String(post.state_id) : "";
-  syncSectionInputs();
-  state.scrapedTitle = post.scraped_title || "";
-  state.imageQuery = post.image_query || "";
-  state.sourceImageUrl = post.source_image_url || null;
-  state.article = (post.ai_headline || (post.ai_bullets || []).length)
-    ? {
-        headline: post.ai_headline || "",
-        bullets: post.ai_bullets || [],
-        tweet: post.ai_tweet || "",
-        flags: post.ai_flags || [],
+    state.pixId = post.id;
+    state.isDraft = Boolean(post.is_draft);
+    /* Carry the row's standing into the editor. Without it the publish panel
+       had no idea whether this post was already live or already turned down,
+       so the only thing that could refuse either was the server — after the
+       encode and the upload, as an error QA had no way to anticipate. */
+    state.publishedAt = post.published_at || null;
+    state.publishedId = post.published_id || null;
+    state.approved = Boolean(post.approved);
+    state.rejected = Boolean(post.rejected);
+    state.rejectedByName = post.rejected_by_name || "";
+    publishOutcomeUnknown = false;
+    state.headline = post.headline || post.ai_headline || post.scraped_title || "";
+    state.detailText = post.detail_body || post.detail_text || "";
+    state.articleText = post.article_text || "";
+    state.sourceUrl = post.source_url || "";
+    syncSourceUrlInput();
+    state.categoryId = post.category_id ? String(post.category_id) : "";
+    state.stateId = post.state_id ? String(post.state_id) : "";
+    syncSectionInputs();
+    state.scrapedTitle = post.scraped_title || "";
+    state.imageQuery = post.image_query || "";
+    state.sourceImageUrl = post.source_image_url || null;
+    state.article = (post.ai_headline || (post.ai_bullets || []).length)
+      ? {
+          headline: post.ai_headline || "",
+          bullets: post.ai_bullets || [],
+          tweet: post.ai_tweet || "",
+          flags: post.ai_flags || [],
+        }
+      : null;
+    state.ready = true;
+    dailymattrDraftTouched.content = false;
+    dailymattrDraftTouched.keywords = false;
+    dailymattrDraftTouched.category = false;
+    dailymattrDraftTouched.state = false;
+
+    applyDesignSnapshot(design, post);
+    syncDailyMattrDraft({ force: true });
+
+    // Text inputs
+    if (headlineEdit) headlineEdit.value = state.headline;
+    if (detailEdit) detailEdit.value = state.detailText;
+    if (writeHeadline) writeHeadline.value = state.headline;
+    if (writeDetail) writeDetail.value = state.detailText;
+    if (editPanel) editPanel.hidden = false;
+    if (imagePanel) imagePanel.hidden = false;
+
+    // The article tab reads from the DOM, so refill it too when there is one.
+    if (state.article) {
+      renderArticle({
+        headline: state.article.headline || state.headline,
+        bullets: state.article.bullets,
+        tweet: state.article.tweet,
+        flags: state.article.flags,
+      });
+    }
+
+    // A stored image is a URL; it goes back through the proxy exactly as it did
+    // the first time. An upload has no URL, so the poster opens without it.
+    // A stored video plays straight from the bucket.
+    /* A stored clip belongs to a Video page. Posts saved before video became
+       its own page carry no page list, so give them a page to land in. */
+    if (design.video?.storedUrl) {
+      const videoPage = ensureVideoPage();
+      if (videoPage) {
+        renumberPages();
+        setActivePage(videoPage.id);
+        restoreStoredVideo(design.video);
+        bindRestoredVideoToPage(videoPage, loadToken);
+        setActivePage("base");
+      } else {
+        setStatus("Opened, but this post is full — its video has no page to open into.", "error");
       }
-    : null;
-  state.ready = true;
-  dailymattrDraftTouched.content = false;
-  dailymattrDraftTouched.keywords = false;
-  dailymattrDraftTouched.category = false;
-  dailymattrDraftTouched.state = false;
-
-  applyDesignSnapshot(design, post);
-  syncDailyMattrDraft({ force: true });
-
-  // Text inputs
-  if (headlineEdit) headlineEdit.value = state.headline;
-  if (detailEdit) detailEdit.value = state.detailText;
-  if (writeHeadline) writeHeadline.value = state.headline;
-  if (writeDetail) writeDetail.value = state.detailText;
-  if (editPanel) editPanel.hidden = false;
-  if (imagePanel) imagePanel.hidden = false;
-
-  // The article tab reads from the DOM, so refill it too when there is one.
-  if (state.article) {
-    renderArticle({
-      headline: state.article.headline || state.headline,
-      bullets: state.article.bullets,
-      tweet: state.article.tweet,
-      flags: state.article.flags,
-    });
-  }
-
-  // A stored image is a URL; it goes back through the proxy exactly as it did
-  // the first time. An upload has no URL, so the poster opens without it.
-  // A stored video plays straight from the bucket.
-  /* A stored clip belongs to a Video page. Posts saved before video became
-     its own page carry no page list, so give them a page to land in. */
-  if (design.video?.storedUrl) {
-    const videoPage = ensureVideoPage();
-    if (videoPage) {
-      renumberPages();
-      setActivePage(videoPage.id);
-      restoreStoredVideo(design.video);
-      bindRestoredVideoToPage(videoPage);
-      setActivePage("base");
-    } else {
-      setStatus("Opened, but this post is full — its video has no page to open into.", "error");
     }
-  }
 
-  state.mainImage = null;
-  if (post.main_image_url) {
-    try {
-      state.mainImage = await imageFromUrl(`/api/image?url=${encodeURIComponent(post.main_image_url)}`);
-    } catch {
-      setStatus("Opened, but the image could not be reloaded.", "error");
+    state.mainImage = null;
+    if (post.main_image_url) {
+      try {
+        state.mainImage = await imageFromUrl(`/api/image?url=${encodeURIComponent(post.main_image_url)}`);
+      } catch {
+        setStatus("Opened, but the image could not be reloaded.", "error");
+      }
     }
-  }
 
-  renderPoster();
-  // What was just loaded is, by definition, what is stored.
-  markPixSaved();
+    renderPoster();
+    // What was just loaded is, by definition, what is stored — but only if
+    // this is still the load the editor is showing.
+    if (loadToken === editorLoadSeq) {
+      markPixSaved();
+      /* Same guard: a stale load must not put ITS post's publish state on the
+         button and the status line of the post now on screen. Announced here
+         and nowhere else — setDailyMattrStatus("") a few lines up has just
+         cleared the previous post's publish line, so this is the one place
+         where the standing is both news and unobstructed. */
+      syncPublishState({ announce: true });
+    }
+  } finally {
+    /* Guarded too: an older load unwinding must not declare the newer one
+       finished. And it must be a finally — applyDesignSnapshot and the
+       restores are synchronous and can throw, and a stuck flag would kill
+       autosave for the rest of the session. */
+    if (loadToken === editorLoadSeq) editorLoading = false;
+  }
 }
 
 function applyDesignSnapshot(design, post) {
@@ -8417,8 +8994,9 @@ function handleSignedOut() {
    One page, read two ways. The server scopes the list by role, so this file
    renders whatever it is handed:
 
-     writer — "My posts": their own, with Open and a read-only Pending /
-              Approved pill.
+     writer — "My posts": their own — drafts included, since nowhere else
+              lists them — with Open and a read-only Draft / Awaiting /
+              Approved / Rejected pill.
      qa     — "Review": everyone's, filterable by sign-off, with Open,
               Approve / Unapprove and Delete.
 
@@ -8434,7 +9012,25 @@ const reviewTabLabel = document.getElementById("review-tab-label");
 const reviewTitle = document.getElementById("review-title");
 const reviewDesc = document.getElementById("review-desc");
 
-let reviewFilter = "all";   // "all" | "pending" | "approved" — QA only
+/* "all" | "drafts" | "awaiting" | "approved" | "rejected". Not QA-only any
+   more: All and Drafts are offered to writers too, because a writer's own
+   drafts are listed nowhere else. The other three are the queue's states and
+   stay marked qa-only in the markup. */
+let reviewFilter = "all";
+
+/* Selecting a tab means two things — which rows to ask for, and which button
+   looks pressed — and they have to move together. The variable used to be
+   assigned directly in two places, one of which (the role clamp below) left
+   the buttons showing a tab that was no longer the one being listed. */
+function selectReviewFilter(name) {
+  reviewFilter = name;
+  if (!reviewFilters) return;
+  reviewFilters.querySelectorAll(".review-filter").forEach((t) => {
+    const active = t.dataset.filter === name;
+    t.classList.toggle("active", active);
+    t.setAttribute("aria-selected", active ? "true" : "false");
+  });
+}
 
 /* Title, tab label and blurb all follow the role. Called whenever a session
    resolves, so a writer signing in after QA never sees QA's wording. */
@@ -8450,7 +9046,13 @@ function syncReviewCopy() {
       ? "Every post the writers have saved. Open one to edit and publish it, or send it back with Reject."
       : "Everything you have saved. Open one to keep working on it — QA reviews them from their own view.";
   }
-  if (!isQa) reviewFilter = "all";
+  /* Reset only out of a tab this role cannot see. The old flat reset to "all"
+     ran on every session resolve, so with writers now offered Drafts it would
+     have thrown them straight back out of it. What it is actually for is a
+     role change in one tab — QA signing out and a writer signing in — where a
+     filter left behind would otherwise keep listing under a tab that has just
+     been hidden. */
+  if (!isQa && reviewFilter !== "all" && reviewFilter !== "drafts") selectReviewFilter("all");
 }
 
 function setReviewStatus(message, kind) {
@@ -8463,12 +9065,7 @@ if (reviewFilters) {
   reviewFilters.addEventListener("click", (event) => {
     const btn = event.target.closest(".review-filter");
     if (!btn) return;
-    reviewFilter = btn.dataset.filter;
-    reviewFilters.querySelectorAll(".review-filter").forEach((t) => {
-      const active = t === btn;
-      t.classList.toggle("active", active);
-      t.setAttribute("aria-selected", active ? "true" : "false");
-    });
+    selectReviewFilter(btn.dataset.filter);
     loadReviewQueue();
   });
 }
@@ -9017,9 +9614,13 @@ async function loadReviewQueue() {
           ? "Nothing rejected."
           : reviewFilter === "awaiting"
             ? "Nothing waiting — every saved post has a verdict."
-            : canReviewRole(state.user?.role)
-              ? "No posts saved yet."
-              : "You have not saved a post yet. Build one, then press Save.";
+            /* Drafts are the viewer's own, whoever is looking, so this line is
+               about them and not about the library. */
+            : reviewFilter === "drafts"
+              ? "No drafts of yours — everything you have saved has been submitted."
+              : canReviewRole(state.user?.role)
+                ? "No posts saved yet."
+                : "You have not saved a post yet. Build one, then press Save.";
       reviewList.appendChild(empty);
       setReviewStatus("");
       return;
@@ -9038,15 +9639,29 @@ async function loadReviewQueue() {
 
     const approvedCount = posts.filter((p) => p.approved).length;
     const rejectedCount = posts.filter((p) => p.rejected).length;
-    const awaitingCount = posts.length - approvedCount - rejectedCount;
+    /* Drafts are counted apart from "awaiting". The All list now includes the
+       viewer's own drafts, and folding them into the awaiting figure would
+       report unfinished work as sitting with QA — the same false statement the
+       row pill below avoids. */
+    const draftCount = posts.filter((p) => isStillDraft(p)).length;
+    const awaitingCount = posts.length - approvedCount - rejectedCount - draftCount;
     setReviewStatus(reviewFilter === "all"
       ? `${posts.length} post${posts.length === 1 ? "" : "s"} · ${approvedCount} approved · ${rejectedCount} rejected · ${awaitingCount} awaiting approval`
+        + (draftCount ? ` · ${draftCount} draft${draftCount === 1 ? "" : "s"} of yours` : "")
       : `${posts.length} post${posts.length === 1 ? "" : "s"}.`);
 
     posts.forEach((post) => reviewList.appendChild(renderReviewItem(post)));
   } catch (err) {
     setReviewStatus(err.message || "Could not load the queue.", "error");
   }
+}
+
+/* "Still unsubmitted", matching what the server lists: a row that carries a
+   verdict has left the drafts stage whatever its flag says, and the few rows
+   that predate approval clearing the flag must not be relabelled Draft after
+   QA has already signed them off. */
+function isStillDraft(post) {
+  return Boolean(post.is_draft) && !post.approved && !post.rejected;
 }
 
 function renderReviewItem(post) {
@@ -9084,9 +9699,13 @@ function renderReviewItem(post) {
   ].filter(Boolean).join(" · ");
 
   const pill = document.createElement("span");
+  /* Draft outranks the verdict, the same way the analytics list does it: an
+     unsubmitted post has no verdict to report, and "Awaiting approval" would
+     tell the writer their draft is with QA when QA cannot see it at all. */
+  const draft = isStillDraft(post);
   pill.className = "status-pill"
-    + (post.approved ? " is-approved" : post.rejected ? " is-rejected" : "");
-  pill.textContent = post.approved ? "Approved" : post.rejected ? "Rejected" : "Awaiting approval";
+    + (draft ? " is-draft" : post.approved ? " is-approved" : post.rejected ? " is-rejected" : "");
+  pill.textContent = draft ? "Draft" : post.approved ? "Approved" : post.rejected ? "Rejected" : "Awaiting approval";
 
   main.append(title, meta, document.createElement("br"), pill);
 
@@ -9215,27 +9834,35 @@ let lastSavedFingerprint = null;
 /* A cheap stand-in for the whole payload. Only the fields that end up in a
    column count — `design.savedAt` is a timestamp and would make every check
    look like a change. */
-function pixFingerprint() {
-  const article = state.article || {};
+/* Read off the same base-page view as collectPixPayload, and for the same
+   reason: this is what decides whether the post "changed", and merely
+   SELECTING another page changes live `state`. Reading `state` here made the
+   dirty dot light — and the idle autosave fire — on a page click, which is
+   how a blank added page's fields reached the row unattended. The two
+   readings must also agree with each other: markPixSaved() records this value
+   as "what is stored", so a fingerprint computed against a different page
+   than the payload would never match and autosave would re-fire forever. */
+function pixFingerprint(view = basePageView()) {
+  const article = view.article || {};
   return JSON.stringify([
-    state.headline,
-    state.detailText,
-    state.sourceUrl,
-    describeMainImage().url,
-    state.aspectRatio,
-    state.accent,
-    state.tag,
-    state.headlineStyle,
-    state.fontSize,
-    state.imageZoom,
-    state.imageOffset?.x,
-    state.imageOffset?.y,
-    state.logoX, state.logoY, state.logoSize,
-    state.filterPreset, state.filterBrightness, state.filterContrast,
-    state.filterSaturation, state.filterBlur,
-    state.showTimestamp,
+    view.headline,
+    view.detailText,
+    view.sourceUrl,
+    describeMainImage(view).url,
+    view.aspectRatio,
+    view.accent,
+    view.tag,
+    view.headlineStyle,
+    view.fontSize,
+    view.imageZoom,
+    view.imageOffset?.x,
+    view.imageOffset?.y,
+    view.logoX, view.logoY, view.logoSize,
+    view.filterPreset, view.filterBrightness, view.filterContrast,
+    view.filterSaturation, view.filterBlur,
+    view.showTimestamp,
     article.headline, (article.bullets || []).join("|"), article.tweet,
-    state.videoUrl, state.trimStart, state.trimEnd, state.videoCaption,
+    view.videoUrl, view.trimStart, view.trimEnd, view.videoCaption,
     // Added pages are part of the post, so editing one has to light the
     // unsaved dot the same way editing page 1 does.
     JSON.stringify(serializePages()),
@@ -9247,6 +9874,16 @@ function markPixSaved() {
   refreshSaveIndicator();
 }
 
+/* The button is wired to the draft path for everyone, so for a writer — whose
+   handoff is the separate topbar Submit — it has to say "draft" out loud. A
+   button labelled "Save" that had silently become a Submit is what let a
+   half-written article reach QA; the label now cannot disagree with what the
+   press does. Reviewers have no draft/submit split to explain, so they keep
+   the plain word. */
+function saveButtonLabel() {
+  return state.user && !canReviewRole(state.user.role) ? "Save draft" : "Save";
+}
+
 function refreshSaveIndicator() {
   if (!savePixBtn || !savePixLabel) return;
   // Mid-flight labels ("Saving…", "Saved", "Updated") own the button for a
@@ -9255,12 +9892,15 @@ function refreshSaveIndicator() {
 
   const nothingToSave = !state.headline && !state.sourceUrl;
   const dirty = !nothingToSave && lastSavedFingerprint !== null && pixFingerprint() !== lastSavedFingerprint;
+  const label = saveButtonLabel();
 
   savePixBtn.classList.toggle("is-dirty", dirty);
-  savePixLabel.textContent = dirty ? "Save •" : "Save";
+  savePixLabel.textContent = dirty ? `${label} •` : label;
   savePixBtn.title = dirty
     ? "This post has changes that are not in the library yet"
-    : "Save this post to the library";
+    : (label === "Save draft"
+        ? "Save a draft — QA cannot see it until you press Submit"
+        : "Save this post to the library");
 }
 
 /* Polled rather than wired into every control: the editor changes state from
@@ -9347,7 +9987,40 @@ function considerAutosave() {
   if (!state.user || !state.pixId || autosaveInFlight) return;
   // A manual save owns the button and the row while it runs.
   if (savePixBtn?.disabled) return;
+  /* So do the two other things that drive `state` themselves. Autosave can
+     only ever tell "the post changed" from a fingerprint, and both of these
+     change it for reasons that are not edits: an open is still restoring the
+     post it is about to declare saved, and a publish is stepping the
+     selection through every page to export it. Neither is a person typing. */
+  if (editorLoading || publishInFlight) return;
   if (lastSavedFingerprint === null) return;
+
+  /* ── Where autosave stops ──
+     It had no notion of workflow state at all: any row it could see, it kept
+     rewriting.
+
+     A post that is approved — or already on DailyMattr, whose API has no edit
+     and no delete — must not be changed by a timer. The row is the only record
+     of what QA signed off and of what went out; overwriting it 2.5s after
+     somebody scrolled past leaves "approved by <QA>" over text no reviewer read
+     and a library that disagrees with the public site. `publishOutcomeUnknown`
+     counts as published for the same reason it shuts the Publish button: the
+     story may be live and nothing here can find out.
+
+     For a writer, the line is earlier — anything that is not a draft. Once
+     work has been handed over, QA may be reading it right now, and a
+     background write pushes half-typed sentences under their eyes; that is the
+     incident this whole audit came from. It also makes the resubmission of a
+     rejected post an act rather than an accident: the server lifts a rejection
+     on an explicit save (see clearRejection), and this is why an idle timer
+     cannot do it for them.
+
+     Refusing is not the same as losing the edit. The unsaved dot stays lit and
+     the Save button still works — that is the point, an explicit press instead
+     of an ambient one. QA keeps the manual route on an approved post too; only
+     the author is locked out server-side, since only QA can reopen one. */
+  if (state.approved || state.publishedAt || publishOutcomeUnknown) return;
+  if (!canReviewRole(state.user.role) && !state.isDraft) return;
 
   const fingerprint = pixFingerprint();
   if (fingerprint === lastSavedFingerprint) {
@@ -9363,7 +10036,12 @@ function considerAutosave() {
   if (Date.now() - autosaveDirtySince < AUTOSAVE_IDLE_MS) return;
 
   autosaveInFlight = true;
-  savePixToLibrary()
+  /* Say the intent out loud rather than letting savePixToLibrary infer it. A
+     background write must only ever re-save the post as what it already is;
+     leaving the argument off made autosave inherit whatever the last resolved
+     intent happened to be, which is how one mis-set flag turned an idle timer
+     into a repeated submission to QA. */
+  savePixToLibrary({ asDraft: state.isDraft, auto: true })
     .then((result) => {
       if (result.ok) {
         setStatus("Saved automatically.", "success");
@@ -9439,7 +10117,14 @@ function dataUrlToBlob(dataUrl) {
 async function ensureMediaUploaded(onProgress = () => {}) {
   const problems = [];
 
-  const src = state.mainImage?.src || "";
+  /* The image to upload is the POST's, not the selected page's — otherwise
+     saving while an added page is selected uploaded that page's picture (or,
+     far more often, uploaded nothing at all because the new page has none)
+     and describeMainImage then found no stored URL for the real one. Only
+     this read moves to the view: storedImageFor/storedImageUrl below are not
+     page-owned, so they stay on `state` where describeMainImage reads them
+     back through the same view. */
+  const src = basePageView().mainImage?.src || "";
   if (src.startsWith("data:") && state.storedImageFor !== src) {
     onProgress("Uploading image…");
     try {
@@ -9555,6 +10240,27 @@ function restoreStoredVideo(video) {
     if (typeof syncTrimUI === "function") syncTrimUI();
     if (videoEditor) videoEditor.hidden = false;
     renderPoster();
+  }, { once: true });
+
+  /* The other outcome, which had no listener at all. When the bucket object
+     has been pruned, its signature has expired, or CORS blocks it,
+     loadedmetadata never fires — so trimEnd stays 0, videoClipKey() stays
+     null, and the clip is unavailable to the publish path from the moment the
+     post is opened. That used to surface as a story going out without its
+     video; it now surfaces as an abort at publish time, which is safe but
+     still several minutes of QA's work too late. Say it here, while there is
+     still time to re-add the clip. */
+  videoPreviewEl.addEventListener("error", () => {
+    /* One <video> element is shared by every page, so a listener left over
+       from an earlier restore must not report on a clip that has since been
+       swapped out — the message would name a problem the writer cannot see. */
+    const loaded = videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "";
+    if (loaded !== url) return;
+    setVideoStatus(
+      "The stored clip could not be loaded — it may have been removed from storage. Re-add the video before publishing.",
+      "error",
+    );
+    setStatus("Opened, but this post's stored video could not be loaded — re-add it before publishing.", "error");
   }, { once: true });
 }
 

@@ -1015,12 +1015,21 @@
       </header>
 
       <div class="review-toolbar">
-        <div class="review-filters qa-only" id="review-filters" role="tablist" aria-label="Filter">
+        <!-- qa-only moved off the bar and onto the three queue tabs. It used to
+             sit on the container, which hid every filter from writers — Drafts
+             included, i.e. the one tab that lists a writer's own unfinished
+             work, hidden from the only role that has any. Saving a draft was a
+             write-only hole: the dialog said "Kept in My posts" and My posts
+             never showed it.
+             Awaiting / Approved / Rejected stay reviewer-only: they are the
+             states of QA's queue, and a writer's own posts are already all
+             theirs under All. -->
+        <div class="review-filters" id="review-filters" role="tablist" aria-label="Filter">
           <button type="button" class="review-filter active" data-filter="all" role="tab" aria-selected="true">All</button>
-          <button type="button" class="review-filter" data-filter="awaiting" role="tab" aria-selected="false">Awaiting</button>
+          <button type="button" class="review-filter qa-only" data-filter="awaiting" role="tab" aria-selected="false">Awaiting</button>
           <button type="button" class="review-filter" data-filter="drafts" role="tab" aria-selected="false">Drafts</button>
-          <button type="button" class="review-filter" data-filter="approved" role="tab" aria-selected="false">Approved</button>
-          <button type="button" class="review-filter" data-filter="rejected" role="tab" aria-selected="false">Rejected</button>
+          <button type="button" class="review-filter qa-only" data-filter="approved" role="tab" aria-selected="false">Approved</button>
+          <button type="button" class="review-filter qa-only" data-filter="rejected" role="tab" aria-selected="false">Rejected</button>
         </div>
         <!-- Searches server-side, so it reaches past the 100-row page rather
              than filtering only what is already on screen. -->

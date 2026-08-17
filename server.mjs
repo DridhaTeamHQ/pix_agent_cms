@@ -163,10 +163,20 @@ if (twitterClient) {
 // hard error so a broken upscaler cannot quietly become a bill.
 const upscalerConfigured = Boolean(env("UPSCALER_URL"));
 const gptImageDisabled = /^(1|true|yes)$/i.test(env("DISABLE_GPT_IMAGE"));
+
+/* Read the quality actually in force rather than hardcoding a figure. It is
+   the difference between ~$0.016 and ~$0.25 a click, and a fixed number in a
+   log line goes stale the moment someone edits the variable — which is how
+   you end up reassured by a message that is quietly wrong. */
+function enhanceCostLabel() {
+  const q = (process.env.IMAGE_QUALITY || "low").toLowerCase();
+  const per = { low: "~$0.016", medium: "~$0.06", high: "~$0.25" }[q] || "cost unknown";
+  return `quality=${q}, ${per} each`;
+}
 if (gptImageDisabled) {
   console.log("\u2713 gpt-image fallback DISABLED — AI Enhance will only use the self-hosted upscaler");
 } else if (!upscalerConfigured) {
-  console.warn("\u26a0 No UPSCALER_URL — every AI Enhance will bill gpt-image (~$0.06 each).");
+  console.warn("\u26a0 No UPSCALER_URL — every AI Enhance will bill gpt-image (" + enhanceCostLabel() + ").");
 }
 
 const openaiApiKey = env("OPENAI_API_KEY");
@@ -3657,9 +3667,21 @@ async function handleUpscaleImage(req, res) {
     const sizeHint = (req.headers["x-image-orientation"] || "").toString();
     const size = sizeForRatio(posterRatio, sizeHint);
 
-    // Default medium: input_fidelity=high (kept) does the face preservation;
-    // quality mostly buys texture. high≈$0.25, medium≈$0.06, low≈$0.016.
-    const quality = (process.env.IMAGE_QUALITY || "medium").toLowerCase();
+    /* Default low. high≈$0.25, medium≈$0.06, low≈$0.016 — so this is roughly
+       a quarter of what medium cost, on the single biggest line item in the
+       app's running cost.
+
+       Safe to drop because of the line below it: input_fidelity=high is what
+       preserves faces and identity, and that is kept. `quality` buys texture
+       and fine detail on top of that. On a news photo destined to be scaled
+       into a 920px poster slot and then re-encoded by DailyMattr, that extra
+       texture does not survive the trip — we were paying for detail that was
+       thrown away downstream.
+
+       Raise it per-deployment with IMAGE_QUALITY=medium if a particular set
+       of images needs it. Note that variable is already set in Railway, and
+       an env value overrides this default. */
+    const quality = (process.env.IMAGE_QUALITY || "low").toLowerCase();
 
     const t0 = Date.now();
 

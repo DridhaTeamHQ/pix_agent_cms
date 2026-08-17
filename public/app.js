@@ -246,7 +246,7 @@ const state = {
   imageZoom: 100,
   headlineStyle: "half-purple",
   fontSize: 0, // 0 = auto
-  enhanceStrength: 70,      // percent of the AI upscale to keep
+  enhanceStrength: 20,      // percent of the AI upscale to keep
   logoX: 810,
   logoY: 80,
   logoSize: 110,
@@ -6058,7 +6058,7 @@ if (aiEnhanceBtn) {
           // roughly twice the fine detail the original had, which is what
           // reads as a painted face; mixing back toward a plain resample is
           // the dial for that.
-          "X-Enhance-Strength": String((state.enhanceStrength ?? 70) / 100),
+          "X-Enhance-Strength": String((state.enhanceStrength ?? 20) / 100),
         },
         body: blob,
       });
@@ -7613,9 +7613,9 @@ const enhanceStrengthHint = document.getElementById("enhance-strength-hint");
 if (enhanceStrengthInput) {
   const describe = (v) =>
     v >= 90 ? `${v}% — full model output, sharpest but most artificial.`
-    : v >= 60 ? `${v}% — lower this if faces look painted or plastic.`
+    : v >= 60 ? `${v}% — strong, and where faces start to look painted.`
     : v >= 25 ? `${v}% — mostly a clean resample, very natural.`
-    : `${v}% — essentially no AI enhancement.`;
+    : `${v}% — raise this only if the image still looks soft.`;
   enhanceStrengthInput.addEventListener("input", () => {
     state.enhanceStrength = Number(enhanceStrengthInput.value);
     if (enhanceStrengthHint) enhanceStrengthHint.textContent = describe(state.enhanceStrength);

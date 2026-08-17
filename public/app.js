@@ -287,6 +287,7 @@ const state = {
      these are swapped in and out by setActivePage; the page keeps the copy. */
   storyHeading: "",
   storyBody: "",
+  isDraft: false,
   createdAt: null,
   // Sent to DailyMattr with the post. Chosen here rather than inferred at
   // publish so the writer's wording survives.
@@ -5684,8 +5685,12 @@ function renderAnalyticsRecent() {
     main.append(title, meta);
 
     const pill = document.createElement("span");
-    pill.className = "status-pill" + (row.approved ? " is-approved" : "");
-    pill.textContent = row.approved ? "Approved" : "Pending";
+    /* Draft outranks the verdict in the label: an unsubmitted post has no
+       verdict to report, and calling it "Pending" would say it is waiting on
+       QA when QA cannot even see it. */
+    const isDraft = Boolean(row.is_draft);
+    pill.className = "status-pill" + (isDraft ? " is-draft" : row.approved ? " is-approved" : "");
+    pill.textContent = isDraft ? "Draft" : row.approved ? "Approved" : "Pending";
 
     item.append(main, pill);
     item.addEventListener("click", () => {
@@ -5832,7 +5837,14 @@ document.addEventListener("click", (e) => {
   const proxy = e.target.closest("[data-proxy]");
   if (!proxy) return;
   const target = document.getElementById(proxy.dataset.proxy);
-  if (target && !target.disabled) target.click();
+  if (!target || target.disabled) return;
+  /* Both header buttons drive the same save control, so the intent rides on
+     the element rather than being inferred — otherwise "Save draft" and
+     "Submit" would be indistinguishable by the time the handler runs. */
+  if (target.id === "save-pix-btn") {
+    target.dataset.intent = proxy.dataset.intent || "draft";
+  }
+  target.click();
 });
 
 setInterval(() => {
@@ -5881,6 +5893,7 @@ function syncPrimaryAction() {
   const reviewer = canReviewRole(state.user.role);
   primary.textContent = reviewer ? "Publish" : "Submit";
   primary.dataset.proxy = reviewer ? "dailymattr-publish-btn" : "save-pix-btn";
+  primary.dataset.intent = "submit";        // Submit hands the post to QA
   primary.title = reviewer
     ? "Publish this pix to the web app"
     : "Save and send to QA for review";
@@ -7846,7 +7859,12 @@ function startNewPix() {
  * Answers { ok, id?, error? } rather than throwing: the button has to be able
  * to tell the user precisely why a save did not happen.
  */
-async function savePixToLibrary() {
+/* `asDraft` is the whole difference between the two buttons. A draft is saved
+   but not handed over: it stays out of QA's queue until it is submitted. Left
+   undefined the post keeps whatever it already was, so autosave never quietly
+   promotes a draft into the queue. */
+async function savePixToLibrary({ asDraft } = {}) {
+  if (asDraft !== undefined) state.isDraft = Boolean(asDraft);
   if (!state.user) {
     return { ok: false, error: "Sign in to save posts." };
   }
@@ -7869,8 +7887,8 @@ async function savePixToLibrary() {
      API is write-only. A scrape fills it in automatically, so the only way to
      arrive here empty is a hand-written post, which is exactly the case where
      the provenance is least obvious and most worth recording. */
-  if (!String(state.sourceUrl || "").trim()) {
-    return { ok: false, error: "Add the source link before saving.", needsSource: true };
+  if (!state.isDraft && !String(state.sourceUrl || "").trim()) {
+    return { ok: false, error: "Add the source link before submitting.", needsSource: true };
   }
 
   // Impatient double-clicks are the one way two saves overlap. Serialising
@@ -7924,6 +7942,7 @@ function collectPixPayload() {
 
   return {
     id: state.pixId || undefined,
+    isDraft: Boolean(state.isDraft),
 
     // The scrape
     sourceUrl: state.sourceUrl || null,
@@ -8079,7 +8098,8 @@ if (savePixBtn) {
     if (savePixLabel) savePixLabel.textContent = "Saving…";
     savePixBtn.classList.remove("is-saved", "is-error");
 
-    const result = await savePixToLibrary();
+    // The Save button is the draft path; Submit goes through the proxy below.
+    const result = await savePixToLibrary({ asDraft: savePixBtn.dataset.intent !== "submit" });
 
     savePixBtn.disabled = false;
     if (result?.ok) {
@@ -8106,15 +8126,19 @@ if (savePixBtn) {
          over the row they had just sent. QA sees no dialog: saving is not a
          handoff for them, and a modal on every edit would be in the way. */
       if (state.user?.role === "writer") {
+        const draft = Boolean(state.isDraft);
         confirmAction({
           notice: true,
-          title: result.created ? "Sent to QA" : "Update sent to QA",
-          body: result.created
-            ? "Your article is saved and has moved to QA for review."
-            : "Your changes are saved. QA is reviewing the updated copy.",
+          title: draft ? "Draft saved" : (result.created ? "Sent to QA" : "Update sent to QA"),
+          body: draft
+            ? "Kept in My posts. QA cannot see it until you press Submit."
+            : (result.created
+                ? "Your article is saved and has moved to QA for review."
+                : "Your changes are saved. QA is reviewing the updated copy."),
           facts: [
             state.headline ? cleanHeadlineForPublish(state.headline) : "(untitled)",
-            "Press New post to start the next story.",
+            draft ? "Press Submit when it is ready for review."
+                  : "Press New post to start the next story.",
           ],
           confirmLabel: "Got it",
         });
@@ -8232,6 +8256,7 @@ async function loadPixIntoEditor(post) {
   setDailyMattrStatus("");
 
   state.pixId = post.id;
+  state.isDraft = Boolean(post.is_draft);
   state.headline = post.headline || post.ai_headline || post.scraped_title || "";
   state.detailText = post.detail_body || post.detail_text || "";
   state.articleText = post.article_text || "";

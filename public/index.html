@@ -175,7 +175,7 @@
             </span>
             <button type="button" class="btn-ghost" data-proxy="new-pix-btn">New post</button>
             <button type="button" class="btn-ghost qa-only" data-proxy="reject-pix-btn" hidden>Reject</button>
-            <button type="button" class="btn-ghost" data-proxy="save-pix-btn">Save draft</button>
+            <button type="button" class="btn-ghost" data-proxy="save-pix-btn" data-intent="draft">Save draft</button>
             <button type="button" class="btn-primary" data-proxy="dailymattr-publish-btn">Publish</button>
           </div>
           <span class="cms-date" id="cms-today"></span>
@@ -1018,6 +1018,7 @@
         <div class="review-filters qa-only" id="review-filters" role="tablist" aria-label="Filter">
           <button type="button" class="review-filter active" data-filter="all" role="tab" aria-selected="true">All</button>
           <button type="button" class="review-filter" data-filter="awaiting" role="tab" aria-selected="false">Awaiting</button>
+          <button type="button" class="review-filter" data-filter="drafts" role="tab" aria-selected="false">Drafts</button>
           <button type="button" class="review-filter" data-filter="approved" role="tab" aria-selected="false">Approved</button>
           <button type="button" class="review-filter" data-filter="rejected" role="tab" aria-selected="false">Rejected</button>
         </div>

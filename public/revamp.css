@@ -1442,9 +1442,8 @@ body.auth-blocked  .cms-layout { grid-template-columns: minmax(0, 1fr); }
 /* .btn-ghost, specifically. A writer's Submit proxies this SAME control, so
    an unqualified [data-proxy="save-pix-btn"] matched the primary button too
    and hid the only action they had. */
-body:not([data-role="qa"]):not([data-role="admin"]) .cms-topbar-actions .btn-ghost[data-proxy="save-pix-btn"] {
-  display: none;
-}
+/* Save draft is back for writers now that it means something Submit does not:
+   keep working on this without handing it to QA. */
 
 /* ═══ One accent, used plainly ══════════════════════════════════════════════
    Nothing here is a workaround: #4D6DE3 carries white on a fill and reads as
@@ -1590,3 +1589,11 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after { opacity: 1; transform: 
 /* Below the tablet breakpoint the rail is already an icon strip, and on
    mobile it is a bottom bar — a collapse control would fight both. */
 @media (max-width: 1000px) { .cms-nav-collapse { display: none; } }
+
+/* A draft is not a verdict — it is work that has not been handed over — so it
+   reads as neutral rather than as a state QA has acted on. */
+.status-pill.is-draft {
+  background: var(--surface-input);
+  color: var(--text-secondary);
+  border: 1px solid var(--hairline);
+}

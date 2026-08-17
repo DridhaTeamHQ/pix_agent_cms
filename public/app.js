@@ -5235,25 +5235,26 @@ function renderWriterRoster() {
       ? `${mode.desc} ${formatCount(rosterAwaitingTotal)} post${rosterAwaitingTotal === 1 ? "" : "s"} still awaiting approval.`
       : mode.desc;
   }
+  const accountRows = rows.filter((row) => row.user_login_id !== "__historical__");
   if (analyticsRosterCount) {
-    analyticsRosterCount.textContent = `${formatCount(rows.length)} ${mode.noun}${rows.length === 1 ? "" : "s"}`;
+    analyticsRosterCount.textContent = `${formatCount(accountRows.length)} ${mode.noun}${accountRows.length === 1 ? "" : "s"}`;
   }
+
+  const isQa = rosterMode === "qa";
+  analyticsRosterList.dataset.mode = isQa ? "qa" : "writers";
 
   if (!rows.length) {
     analyticsRosterList.innerHTML = `<div class="analytics-empty">${mode.empty}</div>`;
     return;
   }
 
-  const isQa = rosterMode === "qa";
-
   // A header row plus one row per person, all on the same grid track list, so
   // the counts line up into columns.
   const body = rows.map((row) => {
     const approved = Number(row.approved_count) || 0;
     const rejected = Number(row.rejected_count) || 0;
-    // Total sent and awaiting both belong to a writer's own output. A QA row
-    // counts verdicts recorded — it never sent anything and "not yet decided"
-    // belongs to nobody in particular — hence the dashes.
+    // Total sent and awaiting belong to a writer's output; QA rows instead use
+    // their approved and rejected verdicts to calculate total decisions.
     const sent = Number(row.sent_count) || 0;
     const awaiting = Number(row.pending_count) || 0;
     // Writers count posts created today; QA rows count verdicts recorded
@@ -5273,33 +5274,60 @@ function renderWriterRoster() {
     const trend = week > prevWeek ? "up" : week < prevWeek ? "down" : "flat";
     const trendMark = trend === "up" ? "↑" : trend === "down" ? "↓" : "";
     const weekTitle = `${week} this week vs ${prevWeek} the week before`;
-    const name = escapeRosterText(row.user_name || (isQa ? "Unknown QA" : "Unknown writer"));
+    const rawName = row.user_name || (isQa ? "Unknown QA" : "Unknown writer");
+    const name = escapeRosterText(rawName);
+    const username = escapeRosterText(row.username || "");
+    const identity = row.user_login_id === "__historical__"
+      ? username || "Historical records"
+      : row.active === false
+        ? `${username ? `@${username} · ` : ""}Inactive account`
+        : username ? `@${username}` : (sent || approved || rejected ? "Active account" : "No activity in this range");
+    const person = `
+      <span class="roster-person">
+        <span class="roster-avatar">${escapeRosterText(rosterInitials(rawName))}</span>
+        <span class="roster-person-copy">
+          <strong class="roster-name" title="${name}">${name}</strong>
+          <small>${identity}</small>
+        </span>
+      </span>`;
+
+    if (isQa) {
+      const decisions = approved + rejected;
+      return `
+        <div class="roster-row${row.active === false ? " is-historical" : ""}">
+          ${person}
+          <span class="roster-cell roster-today" title="Resets at 12:00 AM IST">${formatCount(today)}</span>
+          <span class="roster-cell roster-week is-${trend}" title="${weekTitle}">${formatCount(week)}${trendMark}</span>
+          <span class="roster-cell roster-approved">${formatCount(approved)}</span>
+          <span class="roster-cell roster-rejected">${formatCount(rejected)}</span>
+          <span class="roster-cell roster-sent">${formatCount(decisions)}</span>
+        </div>`;
+    }
+
     return `
-      <div class="roster-row">
-        <span class="roster-avatar">${escapeRosterText(rosterInitials(row.user_name))}</span>
-        <span class="roster-name" title="${name}">${name}</span>
+      <div class="roster-row${row.active === false ? " is-historical" : ""}">
+        ${person}
         <span class="roster-cell roster-today" title="Resets at 12:00 AM IST">${formatCount(today)}</span>
         <span class="roster-cell roster-week is-${trend}" title="${weekTitle}">${formatCount(week)}${trendMark}</span>
-        <span class="roster-cell roster-sent">${isQa ? "—" : formatCount(sent)}</span>
+        <span class="roster-cell roster-sent">${formatCount(sent)}</span>
         <span class="roster-cell roster-approved">${formatCount(approved)}</span>
         <span class="roster-cell roster-rejected">${formatCount(rejected)}</span>
-        <span class="roster-cell roster-awaiting">${isQa ? "—" : formatCount(awaiting)}</span>
-        <span class="roster-cell roster-rate">${isQa || rate === null ? "—" : `${rate}%`}</span>
-      </div>
-    `;
+        <span class="roster-cell roster-awaiting">${formatCount(awaiting)}</span>
+        <span class="roster-cell roster-rate">${rate === null ? "—" : `${rate}%`}</span>
+      </div>`;
   }).join("");
 
   analyticsRosterList.innerHTML = `
     <div class="roster-row roster-head-row">
-      <span></span>
       <span>${isQa ? "Reviewer" : "Writer"}</span>
       <span class="roster-cell" title="Resets at 12:00 AM IST">Today</span>
-      <span class="roster-cell">This week</span>
-      <span class="roster-cell">Total sent</span>
+      <span class="roster-cell">7 days</span>
+      ${isQa ? "" : '<span class="roster-cell">Total</span>'}
       <span class="roster-cell">Approved</span>
       <span class="roster-cell">Rejected</span>
-      <span class="roster-cell">Pending</span>
-      <span class="roster-cell">Approved %</span>
+      ${isQa
+        ? '<span class="roster-cell">Decisions</span>'
+        : '<span class="roster-cell">Pending</span><span class="roster-cell">Rate</span>'}
     </div>
     ${body}
   `;
@@ -5651,7 +5679,8 @@ function renderAnalyticsRecent() {
   for (const row of rows) {
     const item = document.createElement("button");
     item.type = "button";
-    item.className = "analytics-recent-row" + (row.approved ? " is-approved" : "");
+    const status = row.approved ? "approved" : row.rejected ? "rejected" : "pending";
+    item.className = `analytics-recent-row is-${status}`;
     item.title = "Open this post";
 
     const main = document.createElement("div");
@@ -5665,12 +5694,13 @@ function renderAnalyticsRecent() {
       row.user_name || "Unknown writer",
       formatLibraryDate(row.created_at),
       row.approved && row.approved_by_name ? `approved by ${row.approved_by_name}` : "",
+      row.rejected && row.rejected_by_name ? `rejected by ${row.rejected_by_name}` : "",
     ].filter(Boolean).join(" · ");
     main.append(title, meta);
 
     const pill = document.createElement("span");
-    pill.className = "status-pill" + (row.approved ? " is-approved" : "");
-    pill.textContent = row.approved ? "Approved" : "Pending";
+    pill.className = `status-pill${status === "pending" ? "" : ` is-${status}`}`;
+    pill.textContent = status[0].toUpperCase() + status.slice(1);
 
     item.append(main, pill);
     item.addEventListener("click", () => {
@@ -5746,27 +5776,13 @@ async function loadAnalytics({ force = false } = {}) {
     renderAnalyticsDaily(analytics.daily);
     renderAnalyticsMeta(analytics.summary, role);
 
-    /* "full" (admin) gets the team roster and the reviewer table; "basic"
-       (QA) gets their own line only. The server decides which it sent and
-       says so, rather than the client inferring it from the role — the two
-       could otherwise disagree and render a roster the payload does not
-       contain. */
+    /* Both QA and admin receive the canonical account roster. Never synthesize
+       a person from team totals: that is what previously mixed every writer
+       into one row on QA accounts. */
     if ((payload.scope || "full") === "full" && canReviewRole(role)) {
       setWriterRoster(analytics.writers || [], analytics.qas || [], analytics.summary?.pending_count || 0);
     } else {
-      setWriterRoster([{
-        user_name: state.user.displayName || state.user.username || "You",
-        sent_count: analytics.summary?.sent_count || 0,
-        approved_count: analytics.summary?.approved_count || 0,
-        rejected_count: analytics.summary?.rejected_count || 0,
-        pending_count: analytics.summary?.pending_count || 0,
-        today_count: analytics.daily?.sent_count || 0,
-      }], [{
-        user_name: "QA desk",
-        approved_count: analytics.summary?.approved_count || 0,
-        rejected_count: analytics.summary?.rejected_count || 0,
-        today_count: (analytics.daily?.approved_count || 0) + (analytics.daily?.rejected_count || 0),
-      }], analytics.summary?.pending_count || 0);
+      setWriterRoster([], [], analytics.summary?.pending_count || 0);
     }
 
     setAnalyticsStatus("");

@@ -707,6 +707,8 @@ async function refreshMyPixCount() {
       return;
     }
     const { counts } = await response.json();
+    // Kept so the review tiles can show today/this-week without refetching.
+    lastPixCounts = counts || null;
     if (!counts) {
       accountCount.hidden = true;
       return;
@@ -6130,6 +6132,12 @@ navCollapseBtn?.addEventListener("click", () =>
    has hit before, and it is not worth leaving for someone to re-derive. */
 const PIX_TAB_ID = (crypto.randomUUID?.() || String(Math.random()).slice(2));
 
+/* The most recent /api/pix/stats answer. Today and this week are counted
+   across the whole library by the server; the list on screen is capped at 200
+   rows, so deriving them from it would quietly under-report for anyone busy
+   enough to need the number. */
+let lastPixCounts = null;
+
 const pixCountChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("pix-counts") : null;
 
 pixCountChannel?.addEventListener("message", (e) => {
@@ -9715,6 +9723,46 @@ if (reviewSearchInput) {
   });
 }
 
+/* Today and this week come from the server's own count; the verdict figures
+   are derived from the rows on screen. Two sources, deliberately: the list is
+   capped at 200 and the day/week totals must be true regardless, while the
+   verdict split describes exactly what is listed below it and should agree
+   with what you can scroll to. */
+function renderReviewStats({ today, week, approved, rejected, awaiting, drafts, total, filtered }) {
+  const host = document.getElementById("review-list");
+  if (!host) return;
+  let strip = document.getElementById("review-stats");
+  if (!strip) {
+    strip = document.createElement("div");
+    strip.id = "review-stats";
+    strip.className = "review-stats";
+    host.parentNode.insertBefore(strip, host);
+  }
+
+  const mine = !canReviewRole(state.user?.role);
+  const tile = (label, value, tone = "") =>
+    value === undefined || value === null
+      ? ""
+      : `<div class="review-stat${tone ? " is-" + tone : ""}">
+           <span class="review-stat-value">${formatCount(value)}</span>
+           <span class="review-stat-label">${label}</span>
+         </div>`;
+
+  /* Under a filter the verdict tiles would restate the filter back at you —
+     "5 rejected" beside a list showing only rejected posts. Today and this
+     week still stand, because they do not describe the list. */
+  strip.innerHTML = [
+    tile(mine ? "Submitted today" : "Reviewed today", today),
+    tile("This week", week),
+    filtered ? "" : tile("Approved", approved, "approved"),
+    filtered ? "" : tile("Rejected", rejected, "rejected"),
+    filtered ? "" : tile("Awaiting QA", awaiting, "awaiting"),
+    filtered ? "" : (drafts ? tile("Drafts", drafts, "draft") : ""),
+    filtered ? tile("Shown", total) : "",
+  ].filter(Boolean).join("");
+  strip.hidden = !strip.innerHTML;
+}
+
 async function loadReviewQueue() {
   if (!reviewList || !state.user) return;
   setReviewStatus("Loading…");
@@ -9760,6 +9808,18 @@ async function loadReviewQueue() {
                 ? "No posts saved yet."
                 : "You have not saved a post yet. Build one, then press Save.";
       reviewList.appendChild(empty);
+      /* Redraw the tiles on the empty path too. Returning early left the
+         PREVIOUS filter's numbers sitting above an empty list — "3 approved"
+         over "no drafts of yours" — which reads as a contradiction rather
+         than as a stale panel. Today and this week still stand: they are
+         facts about the day, not about whatever is listed. */
+      renderReviewStats({
+        today: lastPixCounts?.written_today,
+        week: lastPixCounts?.written_week,
+        approved: 0, rejected: 0, awaiting: 0, drafts: 0,
+        total: 0,
+        filtered: reviewFilter !== "all",
+      });
       setReviewStatus("");
       return;
     }
@@ -9783,10 +9843,22 @@ async function loadReviewQueue() {
        row pill below avoids. */
     const draftCount = posts.filter((p) => isStillDraft(p)).length;
     const awaitingCount = posts.length - approvedCount - rejectedCount - draftCount;
-    setReviewStatus(reviewFilter === "all"
-      ? `${posts.length} post${posts.length === 1 ? "" : "s"} · ${approvedCount} approved · ${rejectedCount} rejected · ${awaitingCount} awaiting approval`
-        + (draftCount ? ` · ${draftCount} draft${draftCount === 1 ? "" : "s"} of yours` : "")
-      : `${posts.length} post${posts.length === 1 ? "" : "s"}.`);
+    /* Tiles rather than one run-on sentence. The old line packed five numbers
+       into a single row of small grey text, so the two a writer actually asks
+       for — how much today, how much this week — were not in it at all, and
+       the three that were had to be read like prose. Each figure now has its
+       own label and its own place. */
+    renderReviewStats({
+      today: lastPixCounts?.written_today,
+      week: lastPixCounts?.written_week,
+      approved: approvedCount,
+      rejected: rejectedCount,
+      awaiting: awaitingCount,
+      drafts: draftCount,
+      total: posts.length,
+      filtered: reviewFilter !== "all",
+    });
+    setReviewStatus("");
 
     posts.forEach((post) => reviewList.appendChild(renderReviewItem(post)));
   } catch (err) {

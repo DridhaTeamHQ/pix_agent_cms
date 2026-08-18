@@ -1616,3 +1616,56 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after { opacity: 1; transform: 
 .cms-media-strip .image-panel > .acc:has(#filter-presets) { order: 4; }
 .cms-media-strip .image-panel > #stock-images-section     { order: 5; }
 .cms-media-strip .image-panel > .panel-title              { order: 0; }
+
+/* ═══ Review stats ══════════════════════════════════════════════════════════
+   Five numbers used to share one line of small grey text, read as prose. Each
+   gets a tile now: the figure first at a size you can read across the room,
+   its label under it. Auto-fit rather than fixed columns so the row reflows
+   instead of scrolling when a writer has drafts and a reviewer does not. */
+
+.review-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-4) 0 var(--space-5);
+}
+
+.review-stats[hidden] { display: none; }
+
+.review-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  transition: border-color var(--fast) var(--ease-out),
+              transform var(--base) var(--ease-out);
+}
+
+.review-stat:hover { transform: translateY(-1px); border-color: var(--hairline); }
+
+.review-stat-value {
+  font-size: 1.45rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.review-stat-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Colour only where a verdict is being reported. Today and this week are
+   neutral — they are volume, not judgement, and tinting them would imply
+   something is good or bad about the number. */
+.review-stat.is-approved .review-stat-value { color: var(--green); }
+.review-stat.is-rejected .review-stat-value { color: var(--red); }
+.review-stat.is-awaiting .review-stat-value { color: var(--accent); }
+.review-stat.is-draft    .review-stat-value { color: var(--text-secondary); }

@@ -7360,6 +7360,10 @@ async function resolvePublishClipFromState(onStatus = () => {}) {
    own columns, permanently if QA closed the tab on the "Published" dialog.
    Publishing owns the row while it runs. */
 let publishInFlight = false;
+/* Set by the republish confirm, read when the form is built, cleared in the
+   publish finally. Deliberately module-scoped rather than part of `state`:
+   it describes one press, not the post. */
+let republishRequested = false;
 
 /* Returns true only when DailyMattr accepted the post; every other path falls
    out as undefined. Approve & Publish reads that, because it hands control back
@@ -7384,20 +7388,49 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
      refuses all three as well; this exists so QA is told before the encode
      rather than after it. */
   if (state.publishedAt) {
-    const message = state.publishedId
-      ? `This post is already live on DailyMattr as ID ${state.publishedId}. Publishing again would create a second copy, and their API has no delete.`
-      : "A publish of this post was started and never confirmed, so it may already be live. Check the DailyMattr portal before publishing again.";
-    setDailyMattrStatus(message, "error");
-    confirmAction({
-      notice: true,
-      title: state.publishedId ? "Already published" : "Publish outcome unknown",
-      body: message,
-      facts: state.publishedId
-        ? [`DailyMattr ID ${state.publishedId}`]
-        : ["No DailyMattr ID was recorded for that attempt — only their portal can say whether the story exists."],
-      confirmLabel: "Close",
+    /* Two different situations, and only one of them can be offered a way
+       forward.
+
+       KNOWN live (we hold an id): a correction has nowhere else to go, since
+       DailyMattr cannot edit an entry. So this is a real choice — send the
+       edited version as a NEW entry — rather than a wall. It is a confirm,
+       not a notice, and the wording has to be blunt: republishing does not
+       replace anything. The old story stays up until somebody removes it in
+       their portal by hand, and the dialog names the id to remove.
+
+       UNKNOWN (a publish was started and never confirmed): still a wall. We
+       cannot say whether the first attempt is live, so "publish another copy"
+       might mean one copy or two, and nobody can tell which afterwards. Their
+       portal is the only place that knows. */
+    if (!state.publishedId) {
+      const message = "A publish of this post was started and never confirmed, so it may already be live. Check the DailyMattr portal before publishing again.";
+      setDailyMattrStatus(message, "error");
+      confirmAction({
+        notice: true,
+        title: "Publish outcome unknown",
+        body: message,
+        facts: ["No DailyMattr ID was recorded for that attempt — only their portal can say whether the story exists."],
+        confirmLabel: "Close",
+      });
+      return;
+    }
+
+    const goAgain = await confirmAction({
+      title: "Publish a corrected copy?",
+      body: `This story is already live as ID ${state.publishedId}. DailyMattr cannot edit an entry, so the corrected version goes up as a SEPARATE new post with its own ID.`,
+      facts: [
+        `The existing copy (ID ${state.publishedId}) stays live until you delete it in the DailyMattr portal.`,
+        "Both versions will be on the site until you do.",
+        "Every ID this post has produced is kept, so you can find the old ones.",
+      ],
+      confirmLabel: "Publish as new",
+      danger: true,
     });
-    return;
+    if (!goAgain) {
+      setDailyMattrStatus("Not republished — the live copy is unchanged.", "");
+      return;
+    }
+    republishRequested = true;
   }
   if (publishOutcomeUnknown) {
     setDailyMattrStatus(
@@ -7521,6 +7554,10 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     // sending a story live IS the approval. Absent when the poster was never
     // saved, in which case there is no library row to mark.
     if (state.pixId) form.append("pix_id", state.pixId);
+    /* Sent only when QA has just answered the republish dialog, and cleared
+       the moment this attempt ends — a flag that outlived its confirmation
+       would turn the next ordinary publish into an unguarded one. */
+    if (republishRequested) form.append("republish", "true");
     /* Publish every page in the rail, in the order the reader will swipe
        them — not a fixed poster-plus-text pair.
 
@@ -7796,6 +7833,8 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     }
   } finally {
     publishInFlight = false;
+    // One press, one republish. Leaving it set would silently unguard the next.
+    republishRequested = false;
     /* Not `disabled = false` any more. syncPublishState() owns both the label
        and the disabled flag, and it is the only thing that knows the post is
        now published, or that the last attempt's outcome is unknown — putting

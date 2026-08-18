@@ -1611,7 +1611,17 @@ async function runDailyMattrPublish(req, res) {
   if (payload.pixId) {
     let claim;
     try {
-      claim = await claimPublish(payload.pixId, { byId: user.id });
+      /* `republish` lifts the already-published guard, and only that guard —
+         the rejection check below still applies, because a republish is a
+         correction and not a way around a verdict. It has to arrive as an
+         explicit field: the whole value of the claim is that an accidental
+         second send (a reload, a stray click, a retry after a timeout) is
+         refused, and that only survives if the deliberate case is a different
+         request rather than the same one tried twice. */
+      claim = await claimPublish(payload.pixId, {
+        byId: user.id,
+        republish: payload.republish === true,
+      });
     } catch (err) {
       /* The database being unreachable must NOT degrade into publishing
          unguarded. Everywhere else in this app storage is optional and a
@@ -1932,6 +1942,11 @@ function readDailyMattrPublish(req) {
         // Which library row this poster came from, so publishing can approve
         // it. Empty when QA built the poster without ever saving it.
         pixId: PIX_UUID_RE.test(String(fields.pix_id || "")) ? String(fields.pix_id) : "",
+        /* Deliberate second send of a story that is already live. Compared
+           against the exact string so a stray "false"/"0" cannot enable it —
+           this is the one field that unlocks putting a second copy on a site
+           we cannot delete from. */
+        republish: fields.republish === "true",
         files: files.sort((a, b) => a.page - b.page),
       });
     });

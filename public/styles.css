@@ -1155,6 +1155,10 @@ textarea::placeholder {
   font-weight: 500;
 }
 
+#story-opacity-control[hidden] {
+  display: none;
+}
+
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;

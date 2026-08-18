@@ -152,7 +152,7 @@ const detailEdit = document.getElementById("detail-edit");
 const imgOffsetX = document.getElementById("img-offset-x");
 const imgOffsetY = document.getElementById("img-offset-y");
 const storyOpacityControl = document.getElementById("story-opacity-control");
-const storyImageOpacityInput = document.getElementById("story-image-opacity");
+const storyOverlayOpacityInput = document.getElementById("story-overlay-opacity");
 const imgResetBtn = document.getElementById("img-reset-btn");
 const bgImageUpload = document.getElementById("bg-image-upload");
 const bgUploadZone = document.getElementById("bg-upload-zone");
@@ -289,7 +289,7 @@ const state = {
      these are swapped in and out by setActivePage; the page keeps the copy. */
   storyHeading: "",
   storyBody: "",
-  storyImageOpacity: 100,
+  storyOverlayOpacity: 100,
   /* Unfinished until the writer says otherwise. Defaulting to false meant a
      brand-new post was born already marked "submitted", so anything that
      saved it — a mis-click, autosave once a row existed — handed work in
@@ -1407,9 +1407,9 @@ document.getElementById("story-body-edit")?.addEventListener("input", (e) => {
   renderPoster();
 });
 
-storyImageOpacityInput?.addEventListener("input", (event) => {
+storyOverlayOpacityInput?.addEventListener("input", (event) => {
   if (activePage()?.type !== "story") return;
-  state.storyImageOpacity = clamp(Number(event.target.value), 0, 100);
+  state.storyOverlayOpacity = clamp(Number(event.target.value), 0, 100);
   renderPoster();
 });
 
@@ -1432,8 +1432,8 @@ imgResetBtn.addEventListener("click", () => {
   imgOffsetY.value = 0;
   imgZoom.value = 100;
   if (activePage()?.type === "story") {
-    state.storyImageOpacity = 100;
-    syncControl(storyImageOpacityInput, 100);
+    state.storyOverlayOpacity = 100;
+    syncControl(storyOverlayOpacityInput, 100);
   }
 
   // Filters reset
@@ -2443,7 +2443,7 @@ const TEXT_PAGE_FIELDS   = [...IMAGE_PAGE_FIELDS];
    a text page takes a SLICE of the post's single paragraph, so its words are
    decided by how many text pages there are. A story page is written directly,
    which is what you want when each slide makes its own point. */
-const STORY_PAGE_FIELDS  = [...IMAGE_PAGE_FIELDS, "storyHeading", "storyBody", "storyImageOpacity"];
+const STORY_PAGE_FIELDS  = [...IMAGE_PAGE_FIELDS, "storyHeading", "storyBody", "storyOverlayOpacity"];
 /* A video page owns its upload and its last encode as well as its clip:
    two video pages that shared `storedVideoUrl` would publish each other's
    footage. */
@@ -2748,7 +2748,7 @@ function blankPageContent(type) {
     detailText: "",
     storyHeading: "",
     storyBody: "",
-    storyImageOpacity: 100,
+    storyOverlayOpacity: 100,
     videoEl: null,
     videoSrc: "",
     videoUrl: "",
@@ -2859,7 +2859,7 @@ function serializePages() {
       // rather than being derived from the post's paragraph on open.
       entry.storyHeading = c.storyHeading || "";
       entry.storyBody = c.storyBody || "";
-      entry.imageOpacity = c.storyImageOpacity ?? 100;
+      entry.overlayOpacity = c.storyOverlayOpacity ?? 100;
     }
     if (page.type === "poster") {
       entry.headline = c.headline || "";
@@ -2920,7 +2920,9 @@ function restorePages(list) {
     if (entry.type === "story") {
       content.storyHeading = entry.storyHeading || "";
       content.storyBody = entry.storyBody || "";
-      content.storyImageOpacity = clamp(numberOr(entry.imageOpacity, 100), 0, 100);
+      // `imageOpacity` was briefly written by the first version of this
+      // control. Reuse its value for the gradient, but never fade the image.
+      content.storyOverlayOpacity = clamp(numberOr(entry.overlayOpacity, numberOr(entry.imageOpacity, 100)), 0, 100);
     }
     if (entry.type === "poster") {
       content.headline = entry.headline || "";
@@ -3213,7 +3215,7 @@ function syncEditorFromState() {
   if (bodyEl && bodyEl.value !== (state.storyBody || "")) bodyEl.value = state.storyBody || "";
   const storySelected = activePage()?.type === "story";
   if (storyOpacityControl) storyOpacityControl.hidden = !storySelected;
-  syncControl(storyImageOpacityInput, clamp(numberOr(state.storyImageOpacity, 100), 0, 100));
+  syncControl(storyOverlayOpacityInput, clamp(numberOr(state.storyOverlayOpacity, 100), 0, 100));
   syncControl(imgOffsetX, state.imageOffset?.x ?? 0);
   syncControl(imgOffsetY, state.imageOffset?.y ?? 0);
   syncControl(imgZoom, state.imageZoom);
@@ -3848,19 +3850,18 @@ function drawStoryScreen() {
 
   // "none": a story slide shows its picture sharp. The gradient below is what
   // makes the copy readable, not a blur across the whole frame.
-  ctx.save();
-  ctx.globalAlpha = clamp(numberOr(state.storyImageOpacity, 100) / 100, 0, 1);
   drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s, "none");
-  ctx.restore();
 
   // Clear at the top so the picture is the picture; solid at the bottom so
   // the copy sits on ink rather than on whatever the photo happens to be.
+  const overlayOpacity = clamp(numberOr(state.storyOverlayOpacity, 100) / 100, 0, 1);
+  const shade = (alpha) => `rgba(0, 0, 0, ${(alpha * overlayOpacity).toFixed(3)})`;
   const dim = ctx.createLinearGradient(0, 0, 0, H);
-  dim.addColorStop(0, "rgba(0, 0, 0, 0.12)");
-  dim.addColorStop(0.42, "rgba(0, 0, 0, 0.30)");
-  dim.addColorStop(0.58, "rgba(0, 0, 0, 0.86)");
-  dim.addColorStop(0.72, "rgba(0, 0, 0, 0.96)");
-  dim.addColorStop(1, "rgba(0, 0, 0, 0.99)");
+  dim.addColorStop(0, shade(0.12));
+  dim.addColorStop(0.42, shade(0.30));
+  dim.addColorStop(0.58, shade(0.86));
+  dim.addColorStop(0.72, shade(0.96));
+  dim.addColorStop(1, shade(0.99));
   ctx.fillStyle = dim;
   ctx.fillRect(0, 0, W, H);
 

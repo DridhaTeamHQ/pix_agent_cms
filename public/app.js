@@ -9769,6 +9769,45 @@ function renderReviewItem(post) {
     del.textContent = "Delete";
     del.addEventListener("click", () => deleteReviewPost(post, li));
 
+    /* Reopen, and ONLY on a post that is already approved. The row stays
+       Open / Reject / Delete for everything in the queue — approving is still
+       not something done from a list.
+
+       This exists because locking an author out of an approved post created a
+       dead end: the server tells them "ask QA to reopen it before editing",
+       and until now there was nothing for QA to press. An instruction that
+       names a control which does not exist is worse than no instruction.
+
+       Withdrawing the approval is a verdict change, not an edit, so it goes
+       through the same setPostVerdict path as Reject and lands the post back
+       in Awaiting. */
+    if (post.approved) {
+      const reopen = document.createElement("button");
+      reopen.type = "button";
+      reopen.className = "btn-ghost";
+      reopen.textContent = "Reopen";
+      reopen.title = post.published_at
+        ? "Withdraw the approval so the writer can edit — the copy already on DailyMattr will not change"
+        : "Withdraw the approval and put this back in the queue so the writer can edit it";
+      reopen.addEventListener("click", async () => {
+        /* A published post is the one case worth a confirmation: reopening
+           does not and cannot retract the live story, and someone reaching
+           for this button may believe it does. */
+        if (post.published_at) {
+          const ok = await confirmAction({
+            title: "Reopen a published post?",
+            body: "The writer will be able to edit it again. The copy already on DailyMattr will NOT change — their API has no edit and no delete.",
+            facts: ["Editing here will make the library disagree with the public site."],
+            confirmLabel: "Reopen anyway",
+            danger: true,
+          });
+          if (!ok) return;
+        }
+        setPostVerdict(post, "awaiting", reopen);
+      });
+      actions.append(reopen);
+    }
+
     actions.append(reject, del);
   }
   li.append(main, actions);

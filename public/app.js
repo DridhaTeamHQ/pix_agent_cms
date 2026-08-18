@@ -9724,12 +9724,24 @@ if (reviewSearchInput) {
   });
 }
 
-/* Today and this week come from the server's own count; the verdict figures
-   are derived from the rows on screen. Two sources, deliberately: the list is
-   capped at 200 and the day/week totals must be true regardless, while the
-   verdict split describes exactly what is listed below it and should agree
-   with what you can scroll to. */
-function renderReviewStats({ today, week, approved, rejected, awaiting, drafts, total, filtered }) {
+/* ── Review stats ──
+
+   The counts object goes in whole and THIS function decides which fields to
+   show. The previous shape let the caller pick — it passed written_today and
+   the renderer labelled it "Reviewed today" — so a reviewer saw their writing
+   count under a reviewing label: 0 beside a chip reading 42. A label and the
+   number under it were being chosen in two different places, which is a shape
+   that can always drift. One place now.
+
+   A reviewer gets three numbers because they do three distinct things, and
+   the difference between them is the point: 57 approved, 21 rejected and 42
+   published in a day are all true at once and none substitutes for another.
+   A writer gets one, because they do one.
+
+   Day and week figures come from the server, which counts the whole library;
+   the verdict split is derived from the rows on screen and describes exactly
+   what is listed below. */
+function renderReviewStats({ counts, approved, rejected, awaiting, drafts, total, filtered }) {
   const host = document.getElementById("review-list");
   if (!host) return;
   let strip = document.getElementById("review-stats");
@@ -9740,21 +9752,46 @@ function renderReviewStats({ today, week, approved, rejected, awaiting, drafts, 
     host.parentNode.insertBefore(strip, host);
   }
 
-  const mine = !canReviewRole(state.user?.role);
-  const tile = (label, value, tone = "") =>
+  /* First paint can beat the counts request — the view opens, the list loads,
+     and lastPixCounts is still null, so the personal tiles would render empty
+     and stay that way until something else refreshed them. Ask, then redraw
+     once. Guarded so the redraw cannot ask again and loop. */
+  if (!lastPixCounts && state.user && !renderReviewStats._awaiting) {
+    renderReviewStats._awaiting = true;
+    refreshMyPixCount().finally(() => {
+      renderReviewStats._awaiting = false;
+      if (document.body.classList.contains("view-review")) loadReviewQueue();
+    });
+  }
+
+  const reviewer = canReviewRole(state.user?.role);
+  const tile = (label, value, tone = "", title = "") =>
     value === undefined || value === null
       ? ""
-      : `<div class="review-stat${tone ? " is-" + tone : ""}">
+      : `<div class="review-stat${tone ? " is-" + tone : ""}"${title ? ` title="${title}"` : ""}>
            <span class="review-stat-value">${formatCount(value)}</span>
            <span class="review-stat-label">${label}</span>
          </div>`;
 
+  const own = reviewer
+    ? [
+        tile("Reviewed today", counts?.reviewed_today, "",
+             "Posts you approved or rejected today. A post you did both to counts once."),
+        tile("Published today", counts?.published_today, "published",
+             "Sent to DailyMattr by you today"),
+        tile("Reviewed this week", counts?.reviewed_week),
+      ]
+    : [
+        tile("Submitted today", counts?.written_today, "",
+             "Posts you handed to QA today. Drafts are not counted."),
+        tile("Submitted this week", counts?.written_week),
+      ];
+
   /* Under a filter the verdict tiles would restate the filter back at you —
-     "5 rejected" beside a list showing only rejected posts. Today and this
-     week still stand, because they do not describe the list. */
+     "5 rejected" beside a list showing only rejected posts. The personal
+     figures stay: they describe the day, not the list. */
   strip.innerHTML = [
-    tile(mine ? "Submitted today" : "Reviewed today", today),
-    tile("This week", week),
+    ...own,
     filtered ? "" : tile("Approved", approved, "approved"),
     filtered ? "" : tile("Rejected", rejected, "rejected"),
     filtered ? "" : tile("Awaiting QA", awaiting, "awaiting"),
@@ -9815,8 +9852,7 @@ async function loadReviewQueue() {
          than as a stale panel. Today and this week still stand: they are
          facts about the day, not about whatever is listed. */
       renderReviewStats({
-        today: lastPixCounts?.written_today,
-        week: lastPixCounts?.written_week,
+        counts: lastPixCounts,
         approved: 0, rejected: 0, awaiting: 0, drafts: 0,
         total: 0,
         filtered: reviewFilter !== "all",
@@ -9850,8 +9886,7 @@ async function loadReviewQueue() {
        the three that were had to be read like prose. Each figure now has its
        own label and its own place. */
     renderReviewStats({
-      today: lastPixCounts?.written_today,
-      week: lastPixCounts?.written_week,
+      counts: lastPixCounts,
       approved: approvedCount,
       rejected: rejectedCount,
       awaiting: awaitingCount,

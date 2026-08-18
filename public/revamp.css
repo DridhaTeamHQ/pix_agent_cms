@@ -1669,3 +1669,8 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after { opacity: 1; transform: 
 .review-stat.is-rejected .review-stat-value { color: var(--red); }
 .review-stat.is-awaiting .review-stat-value { color: var(--accent); }
 .review-stat.is-draft    .review-stat-value { color: var(--text-secondary); }
+
+/* Publishing is the act that leaves the building, so it reads as the accent
+   rather than as another verdict colour — approved/rejected are judgements
+   about a post, published is what happened to it. */
+.review-stat.is-published .review-stat-value { color: var(--accent); }

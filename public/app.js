@@ -739,6 +739,12 @@ async function refreshMyPixCount() {
       ? `${today} published today · ${week} in the last 7 days · ${total} since the publish ledger began`
         + `
 ${counts.reviewed_total} reviewed in total (approved or rejected — full history)`
+        /* Only when they write. A reviewer who never does should not be shown
+           a zero they have to work out the meaning of. */
+        + (Number(counts.written_total)
+            ? `
+${counts.written_today} written by you today · ${counts.written_total} in total`
+            : "")
       : `${today} submitted today · ${week} in the last 7 days · ${total} all time`;
     // Pulse only on an actual change, so it reads as "that went up" rather
     // than as an animation that fires on every poll.
@@ -9773,13 +9779,24 @@ function renderReviewStats({ counts, approved, rejected, awaiting, drafts, total
            <span class="review-stat-label">${label}</span>
          </div>`;
 
+  /* Several people hold both roles — they review the queue AND write their own
+     stories. Showing a reviewer only their verdicts meant that half of their
+     day simply had no number anywhere on their screen, while the same work
+     done by a writer was counted. The tile appears when they have actually
+     written something, so a reviewer who never writes is not given a
+     permanent zero to explain. */
+  const alsoWrites = reviewer && (Number(counts?.written_week) || Number(counts?.written_total));
+
   const own = reviewer
     ? [
         tile("Reviewed today", counts?.reviewed_today, "",
              "Posts you approved or rejected today. A post you did both to counts once."),
         tile("Published today", counts?.published_today, "published",
              "Sent to DailyMattr by you today"),
+        alsoWrites ? tile("Written today", counts?.written_today, "",
+             "Posts you wrote yourself today — counted the same way a writer's are") : "",
         tile("Reviewed this week", counts?.reviewed_week),
+        alsoWrites ? tile("Written this week", counts?.written_week) : "",
       ]
     : [
         tile("Submitted today", counts?.written_today, "",

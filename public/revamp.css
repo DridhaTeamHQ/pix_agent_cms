@@ -1597,3 +1597,22 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after { opacity: 1; transform: 
   color: var(--text-secondary);
   border: 1px solid var(--hairline);
 }
+
+/* ═══ Adjustments moves up beside the upload ════════════════════════════════
+   The strip is two columns, so source order put Custom Upload | AI Enhance on
+   the top row and Adjustments | Filters underneath — leaving zoom and pan
+   below the fold of a 400px column, under two tall boxes.
+
+   Adjustments belongs next to Custom Upload: zoom and pan are what you reach
+   for immediately after dropping an image in, to frame it. AI Enhance is the
+   occasional, paid step and drops to the second row with Filters.
+
+   Targeted by content rather than by position — :has() on a control each
+   section owns — so re-ordering the markup later cannot silently scramble
+   this the way nth-child would. */
+.cms-media-strip .image-panel > .acc:has(#bg-upload-zone) { order: 1; }
+.cms-media-strip .image-panel > .acc:has(#img-zoom)       { order: 2; }
+.cms-media-strip .image-panel > .acc:has(#ai-enhance-btn) { order: 3; }
+.cms-media-strip .image-panel > .acc:has(#filter-presets) { order: 4; }
+.cms-media-strip .image-panel > #stock-images-section     { order: 5; }
+.cms-media-strip .image-panel > .panel-title              { order: 0; }

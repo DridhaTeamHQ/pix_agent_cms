@@ -6083,6 +6083,57 @@ setNavCollapsed(localStorage.getItem("pix-nav-collapsed") === "1");
 navCollapseBtn?.addEventListener("click", () =>
   setNavCollapsed(!document.body.classList.contains("nav-collapsed")));
 
+/* ── Keeping the tally true across tabs ──
+
+   The count is a fact about the database, not about this tab, and writers
+   work in several at once — scrape in one, write in another, keep a third on
+   My posts. An event-driven refresh only ever knew about saves made HERE, so
+   every other tab drifted and stayed drifted until someone reloaded it. It
+   also went stale on its own overnight: the "today" figure is relative to the
+   IST day, so a tab left open past midnight kept yesterday's number.
+
+   Three signals, cheapest first:
+
+   1. Same-browser tabs tell each other directly. BroadcastChannel makes a
+      save in one tab land in the others within a frame, so the common case —
+      two tabs, one person — needs no polling at all.
+   2. Coming back to a tab re-reads. This is when a stale number is actually
+      SEEN, and it also covers what a broadcast cannot: a second browser, a
+      phone, or a colleague's verdict on your post.
+   3. A slow poll underneath, for a tab sitting visible and untouched — a
+      writer watching their own count while a reviewer works through the
+      queue. 60s, because this is an ornament, not a live feed. */
+/* Identifies this tab so a broadcast can be told apart from its own echo.
+   crypto.randomUUID is not available on http:// origins in some browsers,
+   hence the fallback — the value only has to be unique among open tabs.
+
+   Declared BEFORE the listener that reads it. The callback is deferred so the
+   other order would run correctly, but a `const` referenced above its own
+   declaration is exactly the shape of the temporal-dead-zone crash this file
+   has hit before, and it is not worth leaving for someone to re-derive. */
+const PIX_TAB_ID = (crypto.randomUUID?.() || String(Math.random()).slice(2));
+
+const pixCountChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("pix-counts") : null;
+
+pixCountChannel?.addEventListener("message", (e) => {
+  // Ignore our own echo; a save here already refreshed directly.
+  if (e.data?.tab !== PIX_TAB_ID) refreshMyPixCount();
+});
+
+function announceCountChange() {
+  try { pixCountChannel?.postMessage({ tab: PIX_TAB_ID, at: Date.now() }); } catch {}
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshMyPixCount();
+});
+window.addEventListener("focus", () => refreshMyPixCount());
+
+setInterval(() => {
+  // A hidden tab is not being read, and a signed-out one has nothing to count.
+  if (document.visibilityState === "visible" && state.user) refreshMyPixCount();
+}, 60_000);
+
 const cmsToday = document.getElementById("cms-today");
 if (cmsToday) {
   cmsToday.textContent = new Date().toLocaleDateString("en-GB", {
@@ -8466,8 +8517,17 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
         }
         markPixSaved();
       }
-      // Only a new row moves the writer's tally; an update does not.
-      if (data.created) refreshMyPixCount();
+      /* Every save, not only the ones that create a row.
+
+         "Only a new row moves the tally" was true before drafts existed. It
+         is now exactly backwards: a draft CREATES a row but is not counted,
+         and submitting it is an UPDATE — so the single moment the number
+         actually changes was the one moment nothing refreshed it, and a
+         writer watched their count sit still all day. Approving and rejecting
+         move it too, and neither is a create. A count query is cheap; being
+         wrong about someone's day's work is not. */
+      refreshMyPixCount();
+      announceCountChange();
       console.log(`[pix] saved ${data.id}`);
       return {
         ok: true,
@@ -9881,6 +9941,7 @@ async function setPostVerdict(post, verdict, button) {
     // Approved filter the post has just left the list it is sitting in.
     loadReviewQueue();
     refreshMyPixCount();   // a verdict is a review, so the reviewer's tally moved
+    announceCountChange();  // ...and the author's, in whichever tab they have open
   } catch (err) {
     setReviewStatus(err.message || "Could not update the verdict.", "error");
     button.textContent = previous;

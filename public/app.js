@@ -712,22 +712,32 @@ async function refreshMyPixCount() {
       return;
     }
     const reviewer = canReviewRole(state.user.role);
-    const today = reviewer ? counts.reviewed_today : counts.written_today;
-    const week  = reviewer ? counts.reviewed_week  : counts.written_week;
-    const total = reviewer ? counts.reviewed_total : counts.written_total;
+    /* A reviewer is measured by what they PUBLISHED, not by verdicts given.
+       Approving and publishing are different acts — a reviewer can clear a
+       queue and send none of it — and "how many did I publish" is the
+       question they actually ask about their own day. Reviewed stays in the
+       tooltip: it is the bigger number and the one with full history, whereas
+       published is only accurate from the ledger forward. */
+    const today = reviewer ? counts.published_today : counts.written_today;
+    const week  = reviewer ? counts.published_week  : counts.written_week;
+    const total = reviewer ? counts.published_total : counts.written_total;
     /* "submitted", not "written": the tally counts posts that were handed
        over, and drafts are deliberately outside it — they are unfinished work,
        and counting them made the chip read one higher than anything the writer
        could point at in a list. Their drafts are still theirs to find, under
        My posts. */
-    const noun = reviewer ? "reviewed" : "submitted";
+    const noun = reviewer ? "published" : "submitted";
     /* Both numbers, because they answer different questions: today is "am I
        on track", the week is "how am I doing". These count POSTS, not saves —
        reopening a pix and editing it never moves them, which is the whole
        point of a per-writer tally. */
     accountCount.innerHTML =
       `<strong>${today}</strong>&nbsp;today <span class="nav-count-sep">·</span> <strong>${week}</strong>&nbsp;this week`;
-    accountCount.title = `${today} ${noun} today · ${week} in the last 7 days · ${total} all time`;
+    accountCount.title = reviewer
+      ? `${today} published today · ${week} in the last 7 days · ${total} since the publish ledger began`
+        + `
+${counts.reviewed_total} reviewed in total (approved or rejected — full history)`
+      : `${today} submitted today · ${week} in the last 7 days · ${total} all time`;
     // Pulse only on an actual change, so it reads as "that went up" rather
     // than as an animation that fires on every poll.
     if (accountCount.dataset.week !== String(week) && accountCount.dataset.week !== undefined) {
@@ -5442,7 +5452,14 @@ function renderWriterRoster() {
         <span class="roster-name" title="${name}">${name}</span>
         <span class="roster-cell roster-today" title="Resets at 12:00 AM IST">${formatCount(today)}</span>
         <span class="roster-cell roster-week is-${trend}" title="${weekTitle}">${formatCount(week)}${trendMark}</span>
-        <span class="roster-cell roster-sent">${isQa ? "—" : formatCount(sent)}</span>
+        <!-- Writers are measured by what they handed over, reviewers by what
+             they actually put on the public site. Approving and publishing are
+             different acts — a reviewer can clear a queue and send none of it —
+             and this column was an em dash for reviewers because there was
+             nothing to put in it until the ledger existed. -->
+        <span class="roster-cell roster-sent"${isQa ? ' title="From the publish ledger — earlier publishes only left an approval behind"' : ""}>${
+          isQa ? formatCount(Number(row.published_count) || 0) : formatCount(sent)
+        }</span>
         <span class="roster-cell roster-approved">${formatCount(approved)}</span>
         <span class="roster-cell roster-rejected">${formatCount(rejected)}</span>
         <span class="roster-cell roster-awaiting">${isQa ? "—" : formatCount(awaiting)}</span>
@@ -5457,7 +5474,7 @@ function renderWriterRoster() {
       <span>${isQa ? "Reviewer" : "Writer"}</span>
       <span class="roster-cell" title="Resets at 12:00 AM IST">Today</span>
       <span class="roster-cell">This week</span>
-      <span class="roster-cell">Total sent</span>
+      <span class="roster-cell">${isQa ? "Published" : "Total sent"}</span>
       <span class="roster-cell">Approved</span>
       <span class="roster-cell">Rejected</span>
       <span class="roster-cell">Pending</span>

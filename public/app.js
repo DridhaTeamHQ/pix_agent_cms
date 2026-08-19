@@ -9151,6 +9151,27 @@ function formatLibraryDate(value) {
   return date.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
+/* The date a row should show is the date it is being SORTED by.
+
+   Every row showed updated_at (falling back to created_at) whatever list it
+   was in. On the Published tab that is the wrong clock twice over: the rows
+   arrive newest-published-first, but each one prints the day it was last
+   edited — so a story written last week and published this morning sits at the
+   top under last week's date, and the column reads as though the ordering is
+   broken when it is the label that is lying.
+
+   Answers { at, label }. The label is dropped on All, where created_at needs
+   no explaining and a prefix on every row would only add noise. */
+function reviewRowStamp(post) {
+  if (reviewFilter === "published") return { at: post.published_at, label: "published" };
+  if (reviewFilter === "approved") return { at: post.approved_at, label: "approved" };
+  if (reviewFilter === "rejected") return { at: post.rejected_at, label: "rejected" };
+  if (reviewFilter === "awaiting" || reviewFilter === "drafts") {
+    return { at: post.updated_at || post.created_at, label: "edited" };
+  }
+  return { at: post.created_at, label: "" };
+}
+
 function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
 }
@@ -10226,7 +10247,16 @@ function renderReviewItem(post) {
   meta.className = "review-item-meta";
   meta.textContent = [
     post.user_name || "unknown",
-    formatLibraryDate(post.updated_at || post.created_at),
+    /* Falls back to the row's own dates when the sorted-by timestamp is
+       missing — a post approved before approved_at existed still has to show
+       something, and an empty gap in the middle of the meta line reads as a
+       rendering fault rather than as missing history. */
+    (() => {
+      const stamp = reviewRowStamp(post);
+      const when = formatLibraryDate(stamp.at) || formatLibraryDate(post.updated_at || post.created_at);
+      if (!when) return "";
+      return stamp.label && stamp.at ? `${stamp.label} ${when}` : when;
+    })(),
     hostOf(post.source_url),
     post.approved && post.approved_by_name ? `approved by ${post.approved_by_name}` : "",
     post.rejected && post.rejected_by_name ? `rejected by ${post.rejected_by_name}` : "",

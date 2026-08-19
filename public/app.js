@@ -2507,6 +2507,7 @@ basePage.cards = Array.from(document.querySelectorAll('.preview-card[data-page="
    card has to be movable on its own. Page numbers are slot positions, so
    reordering renumbers by construction — there is nothing to keep in step. */
 const slotOrder = [...basePage.cards];
+let currentModalCard = null;
 
 function cardForElement(el) { return slotOrder.find((card) => card.el === el) || null; }
 
@@ -2517,11 +2518,19 @@ function fieldsForPage(page) {
   return PAGE_TYPES[page.type]?.fields || [];
 }
 
-const CARD_LABELS = { pix: "Poster", text: "Text", story: "Story", video: "Video" };
-function cardLabel(card) { return CARD_LABELS[card.mode] || "Page"; }
+const CARD_LABELS = { pix: "Poster", text: "Text", story: "Story", video: "Video", x: "For X" };
+function cardLabel(card) {
+  if (!card) return "Page";
+  if (card.isX || card.mode === "x") return "For X";
+  return CARD_LABELS[card.mode] || "Page";
+}
 
 // Where a card sits in the rail, 1-based — what the writer sees on it.
-function cardNumber(card) { return slotOrder.indexOf(card) + 1; }
+function cardNumber(card) {
+  if (!card) return "1";
+  if (card.isX || card.mode === "x") return "𝕏";
+  return slotOrder.indexOf(card) + 1;
+}
 
 function getPage(id) { return pages.find((p) => p.id === id) || basePage; }
 function activePage() { return getPage(activePageId); }
@@ -2683,16 +2692,8 @@ function syncSliceLabels() {
   for (const card of slotOrder) {
     const label = card.el.querySelector(".preview-card-slice");
     if (!label) continue;
-    const range = card.sliceRange;
-    if (card.mode !== "text" || !card.detailSlice) {
-      label.hidden = true;
-      label.textContent = "";
-      continue;
-    }
-    label.hidden = false;
-    label.textContent = !range
-      ? "No points left for this page"
-      : (range[0] === range[1] ? `Point ${range[0]}` : `Points ${range[0]}–${range[1]}`);
+    label.hidden = true;
+    label.textContent = "";
   }
 }
 
@@ -2728,6 +2729,7 @@ function renderPoster() {
     paintCardInto(xPreviewCanvas, "x");
   } finally {
     applyPageFields(live);
+    if (currentModalCard) updateScreenPreviewModal();
   }
 }
 
@@ -2793,7 +2795,7 @@ function createPage(type, content) {
   fig.dataset.page = id;
   fig.dataset.previewMode = spec.mode;
   fig.innerHTML = `
-          <figcaption class="preview-card-label">
+          <figcaption class="preview-card-label" title="Click to view full screen">
             <button type="button" class="preview-card-grip" data-grip
                     aria-label="Move this page — drag, or use the left and right arrow keys"
                     title="Drag to reorder (or focus and press &larr; &rarr;)">&#10287;</button>
@@ -7032,6 +7034,31 @@ if (previewRail) {
       return;
     }
 
+    // Clicking the header label (POSTER, TEXT, FOR X, number, etc.) opens the enlarged preview modal
+    const anyCardEl = e.target.closest(".preview-card");
+    const labelEl = e.target.closest(".preview-card-label");
+    if (labelEl && anyCardEl) {
+      if (anyCardEl.dataset.previewMode === "x" || anyCardEl.classList.contains("preview-card-pinned")) {
+        const xCard = {
+          el: anyCardEl,
+          mode: "x",
+          canvas: xPreviewCanvas || anyCardEl.querySelector("canvas"),
+          page: basePage,
+          detailSlice: null,
+          sliceRange: null,
+          isX: true,
+        };
+        openScreenPreviewModal(xCard);
+        return;
+      }
+      const pageCard = cardForElement(anyCardEl);
+      if (pageCard) {
+        if (anyCardEl.dataset.page) setActivePage(anyCardEl.dataset.page);
+        openScreenPreviewModal(pageCard);
+        return;
+      }
+    }
+
     /* Selecting first is what makes the per-card exports correct: every
        export path reads live state, so the page has to be live before the
        render starts. Clicking Download on page 4 therefore selects page 4,
@@ -7255,6 +7282,150 @@ document.getElementById("page-context-back")?.addEventListener("click", () => {
 
 // First paint of the counter, the add tile and the selection ring.
 renumberPages();
+
+/* ═══ Screen Zoom Preview Modal ═══ */
+function openScreenPreviewModal(card) {
+  if (!card) return;
+  currentModalCard = card;
+  const modal = document.getElementById("screen-preview-modal");
+  if (!modal) return;
+  if (typeof modal.showModal === "function") {
+    if (!modal.open) modal.showModal();
+  } else {
+    modal.setAttribute("open", "");
+  }
+  updateScreenPreviewModal();
+}
+
+function updateScreenPreviewModal() {
+  if (!currentModalCard) return;
+  const modal = document.getElementById("screen-preview-modal");
+  if (!modal) return;
+
+  const numEl = document.getElementById("screen-preview-modal-num");
+  const typeEl = document.getElementById("screen-preview-modal-type");
+  const modalCanvas = document.getElementById("screen-preview-modal-canvas");
+  const canvasWrap = modal.querySelector(".screen-preview-canvas-wrap");
+  const headerEl = modal.querySelector(".screen-preview-modal-header");
+
+  const num = cardNumber(currentModalCard);
+  const label = cardLabel(currentModalCard).toUpperCase();
+  const ratio = state.aspectRatio || "9:16";
+  if (numEl) numEl.textContent = num;
+  if (typeEl) typeEl.textContent = `${label} · ${ratio}`;
+
+  const srcCanvas = currentModalCard.canvas;
+  if (srcCanvas && modalCanvas) {
+    modalCanvas.width = srcCanvas.width;
+    modalCanvas.height = srcCanvas.height;
+
+    const ratioStr = `${srcCanvas.width} / ${srcCanvas.height}`;
+    if (canvasWrap) {
+      canvasWrap.style.aspectRatio = ratioStr;
+    }
+    modalCanvas.style.aspectRatio = ratioStr;
+
+    const mCtx = modalCanvas.getContext("2d");
+    mCtx.clearRect(0, 0, modalCanvas.width, modalCanvas.height);
+    mCtx.drawImage(srcCanvas, 0, 0);
+
+    requestAnimationFrame(() => {
+      const rect = modalCanvas.getBoundingClientRect();
+      if (rect.width && headerEl) {
+        headerEl.style.maxWidth = `${Math.max(rect.width, 360)}px`;
+      }
+    });
+  }
+}
+
+function closeScreenPreviewModal() {
+  const modal = document.getElementById("screen-preview-modal");
+  if (!modal) return;
+  if (typeof modal.close === "function" && modal.open) {
+    modal.close();
+  } else {
+    modal.removeAttribute("open");
+  }
+  currentModalCard = null;
+}
+
+function stepModalCard(delta) {
+  if (!currentModalCard) return;
+  const allCards = [...slotOrder];
+  const xFig = document.querySelector('.preview-card[data-preview-mode="x"]');
+  if (xFig && xPreviewCanvas) {
+    allCards.push({
+      el: xFig,
+      mode: "x",
+      canvas: xPreviewCanvas,
+      page: basePage,
+      detailSlice: null,
+      sliceRange: null,
+      isX: true,
+    });
+  }
+  if (!allCards.length) return;
+  let idx = allCards.findIndex((c) => c.canvas === currentModalCard?.canvas || (c.isX && currentModalCard?.isX));
+  if (idx < 0) idx = 0;
+  const nextIdx = (idx + delta + allCards.length) % allCards.length;
+  currentModalCard = allCards[nextIdx];
+  if (currentModalCard?.el?.dataset?.page) {
+    setActivePage(currentModalCard.page?.id || currentModalCard.el.dataset.page);
+  }
+  updateScreenPreviewModal();
+}
+
+(() => {
+  const modal = document.getElementById("screen-preview-modal");
+  const closeBtn = document.getElementById("screen-preview-modal-close");
+  const prevBtn = document.getElementById("screen-preview-prev-btn");
+  const nextBtn = document.getElementById("screen-preview-next-btn");
+  const dlBtn = document.getElementById("screen-preview-download-btn");
+
+  closeBtn?.addEventListener("click", () => closeScreenPreviewModal());
+  prevBtn?.addEventListener("click", () => stepModalCard(-1));
+  nextBtn?.addEventListener("click", () => stepModalCard(1));
+
+  dlBtn?.addEventListener("click", async () => {
+    if (!currentModalCard) return;
+    const mode = currentModalCard.mode;
+    if (mode === "x") {
+      downloadXPreview();
+    } else if (mode === "video") {
+      if (!state.videoUrl && !state.videoFile) {
+        setStatus("Load a video into this page first — open the Video panel.", "error");
+        return;
+      }
+      exportVideoClip();
+    } else {
+      state._detailSlice = currentModalCard.detailSlice || null;
+      try {
+        const r = await downloadSlide(mode);
+        setStatus(r ? `Page downloaded (${r.width}×${r.height}).` : "Export failed.", r ? "success" : "error");
+      } finally {
+        state._detailSlice = null;
+      }
+    }
+  });
+
+  // Clicking the dark backdrop closes the modal
+  modal?.addEventListener("click", (e) => {
+    if (e.target === modal) closeScreenPreviewModal();
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (!modal || (!modal.open && !modal.hasAttribute("open"))) return;
+    if (e.key === "Escape") {
+      closeScreenPreviewModal();
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      stepModalCard(-1);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      stepModalCard(1);
+    }
+  });
+})();
 
 
 /* ── Rail navigation ──

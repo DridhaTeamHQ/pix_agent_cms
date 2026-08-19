@@ -10106,7 +10106,16 @@ async function loadReviewQueue() {
   const params = new URLSearchParams({ limit: String(PAGE_LIMIT) });
   // `status` rather than `approved`: the queue has three states now, and a
   // boolean cannot say "rejected".
-  if (reviewFilter !== "all") params.set("status", reviewFilter);
+  /* "mine" is a scope, not a status — it narrows WHOSE posts are listed rather
+     than which stage they are at, so it travels as `user` and leaves `status`
+     unset. The server has taken ?user= all along (the analytics Writers screen
+     uses it); the review list simply never asked, which is why a reviewer who
+     also writes could not find their own work in a library of everyone's. */
+  if (reviewFilter === "mine") {
+    if (state.user?.id) params.set("user", String(state.user.id));
+  } else if (reviewFilter !== "all") {
+    params.set("status", reviewFilter);
+  }
   const term = (reviewSearchInput?.value || "").trim();
   if (term) params.set("q", term);
 
@@ -10123,7 +10132,9 @@ async function loadReviewQueue() {
     if (!posts.length) {
       const empty = document.createElement("li");
       empty.className = "review-empty";
-      empty.textContent = reviewFilter === "published"
+      empty.textContent = reviewFilter === "mine"
+        ? "You have not written a post yet. Build one, then press Save."
+        : reviewFilter === "published"
         ? "Nothing has been published to DailyMattr yet."
         : reviewFilter === "approved"
         ? "Nothing approved yet."

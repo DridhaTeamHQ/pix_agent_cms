@@ -1034,6 +1034,11 @@
              theirs under All. -->
         <div class="review-filters" id="review-filters" role="tablist" aria-label="Filter">
           <button type="button" class="review-filter active" data-filter="all" role="tab" aria-selected="true">All</button>
+          <!-- Reviewer-only, and the counterpart to a writer's whole view. A
+               writer's list IS their own posts; the moment someone is QA the
+               same screen becomes everyone's, so a reviewer who also writes
+               had 500+ rows and no way to find the handful that are theirs. -->
+          <button type="button" class="review-filter qa-only" data-filter="mine" role="tab" aria-selected="false">Mine</button>
           <button type="button" class="review-filter qa-only" data-filter="awaiting" role="tab" aria-selected="false">Awaiting</button>
           <button type="button" class="review-filter" data-filter="drafts" role="tab" aria-selected="false">Drafts</button>
           <button type="button" class="review-filter qa-only" data-filter="approved" role="tab" aria-selected="false">Approved</button>

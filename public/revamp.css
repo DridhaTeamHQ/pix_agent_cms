@@ -2386,3 +2386,17 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
   color: #dc2626;
   border-color: rgba(220, 38, 38, 0.3);
 }
+
+/* The filter group was five tabs in a fixed inline-flex row that neither wraps
+   nor scrolls. Published makes six, and six do not fit beside the search box
+   on a laptop or inside the column on a phone — the last tab is exactly the
+   one that would be clipped off the end, which for a control nobody has seen
+   before is indistinguishable from it never having shipped.
+
+   Wrap rather than scroll: a wrapped second row is visible without being
+   discovered, and a horizontal scroll area with no scrollbar is how the tab
+   would stay hidden from the person looking for it. */
+.review-filters {
+  flex-wrap: wrap;
+  max-width: 100%;
+}

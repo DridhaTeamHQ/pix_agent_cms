@@ -2359,3 +2359,30 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
 .review-stat.is-published .review-stat-value {
   color: var(--accent);
 }
+
+/* ═══ Published is a state, not a verdict ═══════════════════════════════════
+   Publishing auto-approves, so every published post also carries the approved
+   flag and the queue drew the two identically — a live story was
+   indistinguishable from one merely signed off, which is why a correction had
+   nowhere to start. It takes the accent for the same reason the tile does:
+   approved and rejected are judgements about a post, published is what
+   happened to it. */
+.review-item.is-published {
+  border-color: var(--accent-glow);
+  background: var(--accent-soft);
+}
+
+.status-pill.is-published {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-glow);
+}
+
+/* More than one copy of this story is on the public site and only the newest
+   carries the correction. That is a mess someone has to clear up by hand, so
+   it reads as a warning rather than as another piece of status. */
+.status-pill.is-superseded {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.3);
+}

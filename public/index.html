@@ -1038,6 +1038,11 @@
           <button type="button" class="review-filter" data-filter="drafts" role="tab" aria-selected="false">Drafts</button>
           <button type="button" class="review-filter qa-only" data-filter="approved" role="tab" aria-selected="false">Approved</button>
           <button type="button" class="review-filter qa-only" data-filter="rejected" role="tab" aria-selected="false">Rejected</button>
+          <!-- Published is where a correction starts: DailyMattr cannot edit an
+               entry, so fixing a live story means reopening the exact post that
+               went out and sending a corrected copy. Without this tab those
+               posts were only findable by scrolling Approved. -->
+          <button type="button" class="review-filter qa-only" data-filter="published" role="tab" aria-selected="false">Published</button>
         </div>
         <!-- Searches server-side, so it reaches past the 100-row page rather
              than filtering only what is already on screen. -->

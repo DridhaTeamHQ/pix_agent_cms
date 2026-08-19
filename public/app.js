@@ -336,6 +336,12 @@ const state = {
      anyone can look up. */
   publishedAt: null,
   publishedId: null,
+  /* The ids of earlier copies of this story that are still on the public site.
+     Kept because a correction does not replace anything — it adds a second
+     entry — so the only way to finish the job is to delete the superseded ones
+     by hand in DailyMattr's portal, and that needs their ids. They were being
+     recorded in published_history all along and shown nowhere. */
+  publishedHistory: [],
   /* QA's sign-off. Read here so the editor knows the post's review is settled:
      an approved post is one DailyMattr has, or is about to be given, and a
      rewrite underneath it leaves the approval stamp pointing at text no
@@ -7502,6 +7508,15 @@ let publishOutcomeUnknown = false;
    published and re-announcing it as an error would paint over the "Published,
    ID 1379, marked approved" line QA needs to read. Opening a post is the one
    moment the line is empty and the standing is news. */
+/* The ids of copies this post has already put on the public site and then
+   superseded, oldest first. Not the current one — that is state.publishedId —
+   because the two call for different things: the current copy is the story, the
+   superseded ones are litter that has to be deleted by hand. */
+function supersededPublishedIds() {
+  const history = Array.isArray(state.publishedHistory) ? state.publishedHistory : [];
+  return history.map((entry) => (entry && entry.id != null ? String(entry.id) : "")).filter(Boolean);
+}
+
 function syncPublishState({ announce = false } = {}) {
   if (!dailymattrPublishBtn) return;
 
@@ -7526,7 +7541,14 @@ function syncPublishState({ announce = false } = {}) {
   if (state.publishedAt && state.publishedId && !publishOutcomeUnknown) {
     correction = true;
     short = "Republish";
-    reason = `Already live as ID ${state.publishedId}. Publishing again sends a CORRECTED COPY as a new entry — the existing one stays up until you delete it in the DailyMattr portal.`;
+    const older = supersededPublishedIds();
+    reason = `Already live as ID ${state.publishedId}. Publishing again sends a CORRECTED COPY as a new entry — the existing one stays up until you delete it in the DailyMattr portal.`
+      /* Named, not counted. Somebody has to go and delete these, and a bare
+         "2 earlier copies" sends them hunting through the portal for ids the
+         app already knows. */
+      + (older.length
+          ? ` Earlier ${older.length === 1 ? "copy" : "copies"} still on the site unless already removed: ${older.join(", ")}.`
+          : "");
   } else if (state.publishedAt || publishOutcomeUnknown) {
     /* Sent, never confirmed. Deliberately shut rather than merely warned: the
        one thing nobody can do from here is find out, and the retry that feels
@@ -7720,7 +7742,13 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
       facts: [
         `The existing copy (ID ${state.publishedId}) stays live until you delete it in the DailyMattr portal.`,
         "Both versions will be on the site until you do.",
-        "Every ID this post has produced is kept, so you can find the old ones.",
+        /* The old line promised the ids were "kept, so you can find the old
+           ones" without ever showing them — they were in published_history and
+           readable nowhere. Listed here instead, because this dialog is the
+           moment the list grows by one. */
+        supersededPublishedIds().length
+          ? `Already superseded, and still up unless removed: ${supersededPublishedIds().join(", ")}.`
+          : "Every ID this post produces is kept, so the older ones stay findable.",
       ],
       confirmLabel: "Publish as new",
       danger: true,
@@ -8040,6 +8068,10 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
        what a failure costs is only the id. */
     state.publishedAt = payload.publishRecord?.publishedAt || new Date().toISOString();
     state.publishedId = payload.publishRecord?.publishedId || payload.publishedId || null;
+    /* `??`, not `||`: an empty array is the truthful answer for a first
+       publish, and falling through to the old value on it would leave a
+       corrected post still listing the copy it just superseded as current. */
+    state.publishedHistory = payload.publishRecord?.publishedHistory ?? state.publishedHistory;
     // Publishing approves, and approval takes a post out of draft server-side.
     state.isDraft = false;
     /* Carried in state for the same reason as publishedAt: the row has a
@@ -8587,6 +8619,7 @@ function startNewPix() {
      Publish button shut on a post that has never been sent anywhere. */
   state.publishedAt = null;
   state.publishedId = null;
+  state.publishedHistory = [];
   state.approved = false;
   state.rejected = false;
   state.rejectedByName = "";
@@ -9189,6 +9222,7 @@ async function loadPixIntoEditor(post) {
        encode and the upload, as an error QA had no way to anticipate. */
     state.publishedAt = post.published_at || null;
     state.publishedId = post.published_id || null;
+    state.publishedHistory = Array.isArray(post.published_history) ? post.published_history : [];
     state.approved = Boolean(post.approved);
     state.rejected = Boolean(post.rejected);
     state.rejectedByName = post.rejected_by_name || "";
@@ -9375,10 +9409,14 @@ const reviewTabLabel = document.getElementById("review-tab-label");
 const reviewTitle = document.getElementById("review-title");
 const reviewDesc = document.getElementById("review-desc");
 
-/* "all" | "drafts" | "awaiting" | "approved" | "rejected". Not QA-only any
-   more: All and Drafts are offered to writers too, because a writer's own
-   drafts are listed nowhere else. The other three are the queue's states and
-   stay marked qa-only in the markup. */
+/* "all" | "drafts" | "awaiting" | "approved" | "rejected" | "published". Not
+   QA-only any more: All and Drafts are offered to writers too, because a
+   writer's own drafts are listed nowhere else. The rest are the queue's states
+   and stay marked qa-only in the markup.
+
+   "published" is the odd one and belongs to QA alone: it is not a verdict but
+   the record of what has left the building, and it exists because a correction
+   has to begin by reopening the exact post that went out. */
 let reviewFilter = "all";
 
 /* Selecting a tab means two things — which rows to ask for, and which button
@@ -9957,7 +9995,7 @@ if (reviewSearchInput) {
    Day and week figures come from the server, which counts the whole library;
    the verdict split is derived from the rows on screen and describes exactly
    what is listed below. */
-function renderReviewStats({ counts, approved, rejected, awaiting, drafts, total, filtered }) {
+function renderReviewStats({ counts, approved, rejected, awaiting, drafts, published, total, filtered }) {
   const host = document.getElementById("review-list");
   if (!host) return;
   let strip = document.getElementById("review-stats");
@@ -10022,6 +10060,11 @@ function renderReviewStats({ counts, approved, rejected, awaiting, drafts, total
     filtered ? "" : tile("Approved", approved, "approved"),
     filtered ? "" : tile("Rejected", rejected, "rejected"),
     filtered ? "" : tile("Awaiting QA", awaiting, "awaiting"),
+    /* Only when there is one. A permanent zero here would read as "publishing
+       is broken" on a library that simply has not sent anything yet, and the
+       tile is a way in to the Published tab rather than a target. */
+    filtered ? "" : (published ? tile("Published", published, "published",
+         "On DailyMattr. Open one to send a corrected copy — their API has no edit.") : ""),
     filtered ? "" : (drafts ? tile("Drafts", drafts, "draft") : ""),
     filtered ? tile("Shown", total) : "",
   ].filter(Boolean).join("");
@@ -10059,7 +10102,9 @@ async function loadReviewQueue() {
     if (!posts.length) {
       const empty = document.createElement("li");
       empty.className = "review-empty";
-      empty.textContent = reviewFilter === "approved"
+      empty.textContent = reviewFilter === "published"
+        ? "Nothing has been published to DailyMattr yet."
+        : reviewFilter === "approved"
         ? "Nothing approved yet."
         : reviewFilter === "rejected"
           ? "Nothing rejected."
@@ -10080,7 +10125,7 @@ async function loadReviewQueue() {
          facts about the day, not about whatever is listed. */
       renderReviewStats({
         counts: lastPixCounts,
-        approved: 0, rejected: 0, awaiting: 0, drafts: 0,
+        approved: 0, rejected: 0, awaiting: 0, drafts: 0, published: 0,
         total: 0,
         filtered: reviewFilter !== "all",
       });
@@ -10101,6 +10146,7 @@ async function loadReviewQueue() {
 
     const approvedCount = posts.filter((p) => p.approved).length;
     const rejectedCount = posts.filter((p) => p.rejected).length;
+    const publishedCount = posts.filter((p) => p.published_at).length;
     /* Drafts are counted apart from "awaiting". The All list now includes the
        viewer's own drafts, and folding them into the awaiting figure would
        report unfinished work as sitting with QA — the same false statement the
@@ -10118,6 +10164,7 @@ async function loadReviewQueue() {
       rejected: rejectedCount,
       awaiting: awaitingCount,
       drafts: draftCount,
+      published: publishedCount,
       total: posts.length,
       filtered: reviewFilter !== "all",
     });
@@ -10137,10 +10184,24 @@ function isStillDraft(post) {
   return Boolean(post.is_draft) && !post.approved && !post.rejected;
 }
 
+/* Every DailyMattr id this post has ever produced, newest first: the copy that
+   is live now, then the superseded ones still sitting on the public site
+   because their API has no delete. Tolerant of a malformed column — this is
+   list decoration, and a bad row must not take the whole queue down with it. */
+function publishedCopies(post) {
+  const history = Array.isArray(post.published_history) ? post.published_history : [];
+  const past = history.map((entry) => (entry && entry.id != null ? String(entry.id) : "")).filter(Boolean);
+  return post.published_id ? [String(post.published_id), ...past.reverse()] : past.reverse();
+}
+
 function renderReviewItem(post) {
   const li = document.createElement("li");
+  /* Published outranks approved for the row's colour for the same reason it
+     does for the pill: publishing auto-approves, so every published post is
+     also an approved one, and drawing them alike is what made a live story
+     impossible to pick out of the Approved list. */
   li.className = "review-item"
-    + (post.approved ? " is-approved" : post.rejected ? " is-rejected" : "");
+    + (post.published_at ? " is-published" : post.approved ? " is-approved" : post.rejected ? " is-rejected" : "");
 
   // The stored image is a URL, so the thumbnail is the real poster image
   // rather than a re-render — cheap, and enough to recognise a post by.
@@ -10169,6 +10230,12 @@ function renderReviewItem(post) {
     hostOf(post.source_url),
     post.approved && post.approved_by_name ? `approved by ${post.approved_by_name}` : "",
     post.rejected && post.rejected_by_name ? `rejected by ${post.rejected_by_name}` : "",
+    /* The handle for finding this story in DailyMattr's portal, which is the
+       only place it can be deleted from. Named in the list rather than only
+       inside the editor because that is where somebody clearing up after a
+       correction is working. */
+    post.published_at && post.published_id ? `DailyMattr ${post.published_id}` : "",
+    post.published_at && !post.published_id ? "publish unconfirmed" : "",
   ].filter(Boolean).join(" · ");
 
   const pill = document.createElement("span");
@@ -10176,11 +10243,31 @@ function renderReviewItem(post) {
      unsubmitted post has no verdict to report, and "Awaiting approval" would
      tell the writer their draft is with QA when QA cannot see it at all. */
   const draft = isStillDraft(post);
+  /* Published outranks approved. It is the more specific fact and the one that
+     changes what QA can do next: an approved post can still be edited freely,
+     a published one can only be corrected by sending a second copy. */
+  const published = Boolean(post.published_at);
   pill.className = "status-pill"
-    + (draft ? " is-draft" : post.approved ? " is-approved" : post.rejected ? " is-rejected" : "");
-  pill.textContent = draft ? "Draft" : post.approved ? "Approved" : post.rejected ? "Rejected" : "Awaiting approval";
+    + (draft ? " is-draft" : published ? " is-published" : post.approved ? " is-approved" : post.rejected ? " is-rejected" : "");
+  pill.textContent = draft ? "Draft"
+    : published ? "Published"
+      : post.approved ? "Approved" : post.rejected ? "Rejected" : "Awaiting approval";
 
   main.append(title, meta, document.createElement("br"), pill);
+
+  /* A post that has been sent more than once has more than one copy on the
+     public site, and only one of them is the current text. The count is the
+     warning; the ids are in the title so whoever is tidying up can read them
+     without opening the post. */
+  const copies = publishedCopies(post);
+  if (copies.length > 1) {
+    const superseded = document.createElement("span");
+    superseded.className = "status-pill is-superseded";
+    superseded.textContent = `${copies.length} copies live`;
+    superseded.title = `Every ID this post has produced, newest first: ${copies.join(", ")}. `
+      + "Only the newest is the corrected text — the rest stay on the site until they are deleted in the DailyMattr portal.";
+    main.append(document.createTextNode(" "), superseded);
+  }
 
   const actions = document.createElement("div");
   actions.className = "review-item-actions";

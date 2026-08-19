@@ -1792,7 +1792,14 @@ async function runDailyMattrPublish(req, res) {
          may not be live when we watched them accept it. */
       const row = await recordPublishedId(payload.pixId, result.publishedId ?? PUBLISH_ID_MISSING);
       publishRecord = row
-        ? { ok: true, publishedId: row.published_id, publishedAt: row.published_at }
+        ? {
+            ok: true,
+            publishedId: row.published_id,
+            publishedAt: row.published_at,
+            // The superseded copies still on the public site, so a republish
+            // can name what is left to delete without waiting for a reload.
+            publishedHistory: row.published_history || [],
+          }
         : { ok: false, reason: "post not found" };
     } catch (err) {
       console.error(

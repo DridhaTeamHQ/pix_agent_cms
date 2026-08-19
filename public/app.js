@@ -7507,13 +7507,26 @@ function syncPublishState({ announce = false } = {}) {
 
   let reason = "";
   let short = "";
+  /* A published post with a known ID is not shut — it is the CORRECTION case.
+     It used to be blocked here, which made the whole republish path dead code:
+     publishToDailyMattr() opens a "Publish a corrected copy?" confirm for
+     exactly this state and the server accepts `republish` for it, but neither
+     could ever be reached because this function disabled the only button that
+     calls them (and the topbar proxy refuses a disabled target). A typo in a
+     live story was therefore permanent, which is the opposite of what the
+     guard was for: it exists to stop an ACCIDENTAL second send — a reload, a
+     stray click, a retry after a timeout — and that job is done by the confirm
+     dialog, which names the live ID and says the old copy stays up. So the
+     button stays live and says what pressing it will do. */
+  let correction = false;
   /* Not gated on state.pixId. An unsaved poster has no library row to claim,
      so the server cannot guard it — but this session knows perfectly well that
      it just sent one, and refusing a second click here is the only thing
      standing between QA and two identical live stories. */
-  if (state.publishedAt && state.publishedId) {
-    short = "Already published";
-    reason = `Already published to DailyMattr as ID ${state.publishedId}. It cannot be sent again — their API has no delete.`;
+  if (state.publishedAt && state.publishedId && !publishOutcomeUnknown) {
+    correction = true;
+    short = "Republish";
+    reason = `Already live as ID ${state.publishedId}. Publishing again sends a CORRECTED COPY as a new entry — the existing one stays up until you delete it in the DailyMattr portal.`;
   } else if (state.publishedAt || publishOutcomeUnknown) {
     /* Sent, never confirmed. Deliberately shut rather than merely warned: the
        one thing nobody can do from here is find out, and the retry that feels
@@ -7525,9 +7538,11 @@ function syncPublishState({ announce = false } = {}) {
     reason = `Rejected by ${state.rejectedByName || "a reviewer"}. Withdraw the rejection in Review ("Undo reject") before publishing.`;
   }
 
-  const blocked = Boolean(reason);
+  const blocked = Boolean(reason) && !correction;
   dailymattrPublishBtn.disabled = blocked;
-  dailymattrPublishBtn.textContent = blocked ? `${short} — cannot publish` : "Publish to DailyMattr";
+  dailymattrPublishBtn.textContent = blocked
+    ? `${short} — cannot publish`
+    : (correction ? "Republish a corrected copy" : "Publish to DailyMattr");
   dailymattrPublishBtn.title = reason;
 
   /* The topbar button proxies this one. The 500ms mirror copies disabled and
@@ -7536,13 +7551,17 @@ function syncPublishState({ announce = false } = {}) {
      "Submit" (which drives Save, not this button) alone. */
   const primary = document.querySelector('.cms-topbar-actions .btn-primary');
   if (primary && primary.dataset.proxy === "dailymattr-publish-btn") {
-    primary.textContent = blocked ? short : "Publish";
+    primary.textContent = blocked ? short : (correction ? "Republish" : "Publish");
     primary.title = reason || "Publish this pix to the web app";
   }
 
-  // Say why the button is shut. A disabled control with no explanation reads
-  // as a broken page, and this one is shut for a reason QA has to act on.
-  if (announce && reason) setDailyMattrStatus(reason, "error");
+  /* Say why the button is shut. A disabled control with no explanation reads
+     as a broken page, and this one is shut for a reason QA has to act on.
+
+     The correction case is not an error — the button still works — so it is
+     announced without the error styling, or opening a published post would
+     paint a red line over a post that is doing nothing wrong. */
+  if (announce && reason) setDailyMattrStatus(reason, correction ? "" : "error");
 }
 
 /* Get the slide-2 MP4 for publishing, by the cheapest route that is still
@@ -7614,10 +7633,6 @@ async function resolvePublishClipFromState(onStatus = () => {}) {
    own columns, permanently if QA closed the tab on the "Published" dialog.
    Publishing owns the row while it runs. */
 let publishInFlight = false;
-/* Set by the republish confirm, read when the form is built, cleared in the
-   publish finally. Deliberately module-scoped rather than part of `state`:
-   it describes one press, not the post. */
-let republishRequested = false;
 
 /* Returns true only when DailyMattr accepted the post; every other path falls
    out as undefined. Approve & Publish reads that, because it hands control back
@@ -7626,6 +7641,15 @@ let republishRequested = false;
    `skipConfirm` is for callers that have already shown their own confirmation —
    not a way to publish without one. */
 async function publishToDailyMattr({ skipConfirm = false } = {}) {
+  /* Local, not module-scoped. It describes one press — set by the republish
+     confirm, read when the form is built — and as a module variable every
+     early return between those two points (a missing category, an unloaded
+     meta list, a media validation refusal) leaked it into the next press,
+     because only the finally cleared it and none of those returns reach one.
+     A leaked `true` is the worst possible value to leak: it is the field that
+     lifts the already-published guard, so the following ordinary publish would
+     have gone out unguarded. Scoped to the call, that cannot happen. */
+  let republishRequested = false;
   if (!state.user) {
     setDailyMattrStatus("Sign in to publish.", "error");
     return;
@@ -7634,13 +7658,34 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     setDailyMattrStatus("Build a poster first.", "error");
     return;
   }
-  /* The three states that make publishing wrong rather than merely
-     unnecessary. syncPublishState() has already disabled the button for each
-     of them, so this is the belt to that braces — the button can be re-enabled
-     by the proxy mirror, a stale render or a keyboard activation, and the cost
-     of getting through is a permanent duplicate on a public site. The server
-     refuses all three as well; this exists so QA is told before the encode
-     rather than after it. */
+  /* The states that make publishing wrong rather than merely unnecessary.
+     syncPublishState() has already disabled the button for each of them, so
+     this is the belt to that braces — the button can be re-enabled by the
+     proxy mirror, a stale render or a keyboard activation, and the cost of
+     getting through is a permanent duplicate on a public site. The server
+     refuses them as well; this exists so QA is told before the encode rather
+     than after it.
+
+     The walls come FIRST, before the republish confirm below. A post can be
+     both published and rejected — QA can reject one it already sent — and
+     asked in the other order that post got the "publish a corrected copy?"
+     dialog, was answered yes, and was then refused anyway by the rejection
+     wall. A confirmation collected for an action that cannot happen is how
+     people learn to click through them. */
+  if (publishOutcomeUnknown) {
+    setDailyMattrStatus(
+      "The last publish was sent and no confirmation came back — this post may already be live. Check the DailyMattr portal before publishing again.",
+      "error",
+    );
+    return;
+  }
+  if (state.pixId && state.rejected) {
+    setDailyMattrStatus(
+      `This post was rejected by ${state.rejectedByName || "a reviewer"}. Withdraw the rejection in Review ("Undo reject") before publishing — publishing it would erase who turned it down and when.`,
+      "error",
+    );
+    return;
+  }
   if (state.publishedAt) {
     /* Two different situations, and only one of them can be offered a way
        forward.
@@ -7685,20 +7730,6 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
       return;
     }
     republishRequested = true;
-  }
-  if (publishOutcomeUnknown) {
-    setDailyMattrStatus(
-      "The last publish was sent and no confirmation came back — this post may already be live. Check the DailyMattr portal before publishing again.",
-      "error",
-    );
-    return;
-  }
-  if (state.pixId && state.rejected) {
-    setDailyMattrStatus(
-      `This post was rejected by ${state.rejectedByName || "a reviewer"}. Withdraw the rejection in Review ("Undo reject") before publishing — publishing it would erase who turned it down and when.`,
-      "error",
-    );
-    return;
   }
   if (!dailymattrMetaLoaded) {
     await loadDailyMattrMeta({ force: true });
@@ -7769,7 +7800,12 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
   /* Approve & Publish has already shown this same warning and collected the
      category, so a second identical dialog would only train QA to click
      through it. This skips the duplicate, never the confirmation. */
-  const go = skipConfirm ? true : await confirmAction({
+  /* `republishRequested` counts as a confirmation. The republish dialog above
+     is the stronger of the two — it names the live ID, says the old copy stays
+     up, and its button reads "Publish as new" — so following it with the
+     generic "Publish to DailyMattr?" would ask a weaker version of a question
+     just answered, and a second dialog is exactly where people stop reading. */
+  const go = (skipConfirm || republishRequested) ? true : await confirmAction({
     title: "Publish to DailyMattr?",
     body: "This goes live on shortlyindia.com straight away. It cannot be undone from here — a mistake has to be removed from their portal by hand.",
     facts: [
@@ -8087,8 +8123,6 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     }
   } finally {
     publishInFlight = false;
-    // One press, one republish. Leaving it set would silently unguard the next.
-    republishRequested = false;
     /* Not `disabled = false` any more. syncPublishState() owns both the label
        and the disabled flag, and it is the only thing that knows the post is
        now published, or that the last attempt's outcome is unknown — putting
@@ -8707,7 +8741,12 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
          wrong baseline is the silent failure, because it tells the unsaved
          dot that a post nobody has saved is already stored. */
       if ((state.pixId ?? null) === targetId) {
-        state.isDraft = !submitting;
+        /* The server's answer, not the intent. They differ on a post that has
+           already been handed over: an asDraft save cannot un-submit one (see
+           handleSave), so believing the intent here would leave the editor
+           calling a submitted post a draft — and the next line of feedback,
+           the pill and the autosave gate all read this flag. */
+        state.isDraft = data.isDraft ?? !submitting;
         state.pixId = data.id || state.pixId;
         /* The server lifted a rejection because this save was the author's
            correction, so the post is back in QA's Awaiting queue. Carried into

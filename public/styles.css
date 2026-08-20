@@ -4905,13 +4905,18 @@ textarea:focus {
   transition: var(--transition);
 }
 
-.preview-add-btn:hover:not(:disabled) {
+.preview-add-btn:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--accent);
   color: var(--accent-dim);
   background: var(--accent-soft);
 }
 
-.preview-add-btn:disabled {
+/* Full, but still clickable. A truly `disabled` button swallows the click
+   entirely, so the one moment a writer most needs an explanation — pressing
+   plus on a full rail — was the one moment nothing could answer them. It
+   looks the same; it just gets to say why now. */
+.preview-add-btn:disabled,
+.preview-add-btn[aria-disabled="true"] {
   opacity: 0.4;
   cursor: default;
 }

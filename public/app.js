@@ -2927,7 +2927,23 @@ function serializePages() {
   });
 }
 
-function restorePages(list) {
+/* `spine` is the list of base cards the post was SAVED with. It has to be
+   applied HERE rather than afterwards, because the loop below spends the
+   MAX_PAGES budget as it goes.
+
+   Without it: a writer who removes the Text slide to make room can build a
+   poster plus four story pages, and it saves correctly — spine ["pix"] and
+   four page entries. On reopen this function reseeded the rail with EVERY
+   base card, so the budget started at 2 instead of the 1 that was saved, and
+   the `canAddPage()` guard in the loop broke out one entry early. The last
+   slide was dropped, in silence. restoreSpineCards() then removed the Text
+   card a moment later — freeing the very slot the page had just been refused.
+
+   Worse than losing it on screen: the next save serialises the three pages
+   that survived over the four that were stored, so the fifth slide's heading,
+   body and picture leave the database too. Autosave did that without anyone
+   pressing a thing. */
+function restorePages(list, spine) {
   for (const page of extraPages()) {
     if (page.parkedVideo) {
       page.parkedVideo.removeAttribute("src");
@@ -2937,7 +2953,19 @@ function restorePages(list) {
   }
   pages.length = 1;
   slotOrder.length = 0;
-  slotOrder.push(...basePage.cards);
+  /* A post saved before the spine was recorded has no list; both cards is the
+     arrangement it was saved under, so that is what it reopens with. */
+  const wantedSpine = Array.isArray(spine) ? spine : null;
+  for (const card of basePage.cards) {
+    if (wantedSpine && !wantedSpine.includes(card.mode)) {
+      /* renumberPages() only re-inserts cards that are IN slotOrder — it
+         never takes one out — so a card left in the DOM here would sit in the
+         rail as a ghost that no page owns. */
+      card.el?.remove();
+      continue;
+    }
+    slotOrder.push(card);
+  }
   activePageId = "base";
   playerOwner = null;
 
@@ -2957,7 +2985,13 @@ function restorePages(list) {
       content.fontSize = numberOr(entry.fontSize, 0);
       if (entry.headlineStyle) content.headlineStyle = entry.headlineStyle;
     }
-    if (entry.type === "poster" || entry.type === "text") {
+    /* Story pages belong here too. serializePages() writes imageZoom,
+       imageOffset and filters for "poster", "text" AND "story", but this side
+       only ever read them back for the first two — so a story slide that had
+       been zoomed in on a face, nudged into place or given a filter reopened
+       at 100% and dead centre, and the next save wrote those defaults back
+       over the framing the writer had chosen. */
+    if (entry.type === "poster" || entry.type === "text" || entry.type === "story") {
       content.imageZoom = numberOr(entry.imageZoom, 100);
       content.imageOffset = {
         x: numberOr(entry.imageOffset?.x, 0),
@@ -3190,10 +3224,18 @@ function renumberPages() {
   }
   const addBtn = document.getElementById("preview-add-btn");
   if (addBtn) {
-    addBtn.disabled = !canAddPage();
-    addBtn.title = canAddPage()
+    /* aria-disabled, not disabled. A disabled button does not fire a click at
+       all, so pressing plus on a full rail produced silence — no menu, no
+       message, nothing — and the writer concluded the editor was broken
+       rather than that they had run out of slides. It still reads as disabled
+       to assistive tech and still looks dimmed; the difference is that the
+       handler now runs and can explain itself. */
+    const room = canAddPage();
+    addBtn.disabled = false;
+    addBtn.setAttribute("aria-disabled", room ? "false" : "true");
+    addBtn.title = room
       ? "Add another page"
-      : `${MAX_PAGES} pages is the limit — remove one to add another.`;
+      : `${MAX_PAGES} slides is the limit — the poster and the Text slide count too. Remove one to add another.`;
   }
   const hint = document.getElementById("preview-add-hint");
   if (hint) hint.textContent = canAddPage() ? `${MAX_PAGES - used} left` : "Full";
@@ -7292,7 +7334,26 @@ function moveSlot(card, toIndex) {
 
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (!canAddPage()) return;
+    /* A full rail used to make this button do nothing whatsoever — no menu,
+       no message, no explanation — so a writer building a five-slide carousel
+       clicked the plus and watched nothing happen, which reads as the editor
+       being broken rather than as a limit being reached.
+
+       The limit counts SLIDES, and the post's own Text slide is one of them.
+       That is the part nobody can be expected to guess: a fresh post already
+       holds two slides (the poster and the text page) before a single page is
+       added, so only three can ever be added while both are in the rail. Say
+       so, and say what to do about it. */
+    if (!canAddPage()) {
+      const hasTextSlide = spineCardsInRail().includes("text");
+      setStatus(
+        hasTextSlide
+          ? `This post already has all ${MAX_PAGES} slides — the poster and the Text slide count towards them. Remove the Text slide to make room for another page.`
+          : `This post already has all ${MAX_PAGES} slides. Remove one to add another.`,
+        "error"
+      );
+      return;
+    }
     setMenuOpen(menu.hidden);
   });
 
@@ -8943,7 +9004,12 @@ function describeMainImage(view) {
     : url === view.sourceImageUrl ? "scraped"
     : "search";
 
-  return { url, source };
+  /* Our own copy wins over the address it came from. ensureMediaUploaded now
+     stores remote pictures too, and pointing the post at that copy is what
+     stops a published story losing its image because a news site reorganised
+     its CDN. `source` still records where it originally came from. */
+  const stored = view.storedImageFor === src ? view.storedImageUrl : null;
+  return { url: stored || url, source };
 }
 
 /* Everything the canvas reads that is not text or an image. Deliberately a
@@ -9454,7 +9520,12 @@ function applyDesignSnapshot(design, post) {
 
   // Rebuild the added pages, then hand the editor back to page 1 — which is
   // what the writer is looking at when a post opens.
-  restorePages(design.pages);
+  /* The spine goes IN, rather than being applied after the fact: restorePages
+     spends the 5-slide budget as it rebuilds, so it has to start from the
+     arrangement the post was saved with or it drops the last page. */
+  restorePages(design.pages, design.spine);
+  // Still called: it is the path that puts a spine card BACK, and the one
+  // that handles a legacy post with no spine recorded at all.
   restoreSpineCards(design.spine);
   setActivePage("base", { force: true });
 }
@@ -10814,6 +10885,63 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: contentType });
 }
 
+/* `/api/image?url=X` is how every remote picture is loaded — the proxy is what
+   makes it same-origin and therefore drawable onto a canvas. Getting X back out
+   matters because the thing worth storing is the picture's real address, not
+   our proxy's. */
+function unwrapProxiedImageUrl(src) {
+  const text = String(src || "");
+  if (!/[?&]url=/.test(text)) return text;
+  const encoded = (text.match(/[?&]url=([^&]+)/) || [])[1];
+  if (!encoded) return text;
+  try { return decodeURIComponent(encoded); } catch { return text; }
+}
+
+/* A picture we have already uploaded. Re-uploading one of these on every save
+   would fill the bucket with identical copies of the same file. */
+function isStoredMediaUrl(url) {
+  return /\/storage\/v1\/object\/public\//.test(String(url || ""));
+}
+
+/**
+ * The bytes behind whatever the canvas is currently painting.
+ *
+ * A data: URL carries its own bytes. Everything else is a remote address, and
+ * the ONLY way a writer ever produced a data: URL was by dragging a file in —
+ * a suggested image, a stock image, the scraped article image and a pasted
+ * link all arrive as URLs. ensureMediaUploaded used to skip those outright, so
+ * a slide illustrated by any means except drag-and-drop was saved with no
+ * picture at all: the text survived, the image did not, and QA opened the
+ * carousel to find empty slides. Fetching through the same proxy that loaded
+ * the image keeps this same-origin and reuses its cache.
+ */
+async function blobForImageSrc(src) {
+  const text = String(src || "");
+  if (text.startsWith("data:")) return dataUrlToBlob(text);
+  if (!text) throw new Error("no image source");
+  const raw = unwrapProxiedImageUrl(text);
+  const proxied = `/api/image?url=${encodeURIComponent(raw)}`;
+  const res = await fetch(proxied, { credentials: "same-origin" });
+  if (!res.ok) throw new Error(`source unreachable (${res.status})`);
+  const blob = await res.blob();
+  if (!blob.size) throw new Error("source returned an empty file");
+  return blob;
+}
+
+/* One slide's picture, stored and recorded. Returns the URL it settled on, or
+   null when there is nothing to store. Shared by the post's own image and by
+   every added page so the two can never drift apart again. */
+async function storeImageForSlide(src, filename) {
+  const text = String(src || "");
+  if (!text) return null;
+  /* Already ours — record the address rather than uploading a second copy.
+     This is also what makes reopening a saved post and saving it again free:
+     the image comes back as a proxy around the stored URL. */
+  const raw = unwrapProxiedImageUrl(text);
+  if (isStoredMediaUrl(raw)) return raw;
+  return await uploadMediaBlob(await blobForImageSrc(text), filename);
+}
+
 /**
  * Make sure everything the poster shows has a URL, uploading what does not.
  *
@@ -10840,10 +10968,14 @@ async function ensureMediaUploaded(onProgress = () => {}) {
   syncActivePageContent();
   if (!basePage.content) basePage.content = {};
   const src = basePageView().mainImage?.src || "";
-  if (src.startsWith("data:") && basePage.content.storedImageFor !== src) {
+  /* Every source, not only a dragged-in file. The old test was
+     `src.startsWith("data:")`, which quietly meant "only pictures the writer
+     dragged in get stored" — a suggested, stock, scraped or pasted image is a
+     URL and was skipped, so the post saved with no picture. */
+  if (src && basePage.content.storedImageFor !== src) {
     onProgress("Uploading image…");
     try {
-      const url = await uploadMediaBlob(dataUrlToBlob(src), "poster-image");
+      const url = await storeImageForSlide(src, "poster-image");
       /* Onto the base page, and onto `state` only when the base page is the
          one selected. Now that these are page-owned, writing them to `state`
          while an added page is open would file the POST's picture under that
@@ -10883,11 +11015,17 @@ async function ensureMediaUploaded(onProgress = () => {}) {
   for (const page of extraPages()) {
     const content = page.content || (page.content = {});
     const pageSrc = content.mainImage?.src || "";
-    if (!pageSrc.startsWith("data:")) continue;
+    /* Same correction as the post's image above, and this is the one the
+       carousel complaint was actually about: a writer illustrating slide 3
+       from the suggested-image strip produced a URL, not a data: URL, so the
+       slide was skipped here, `imageUrl` was never written by
+       serializePages(), and the reviewer opened a slide with words and no
+       picture. */
+    if (!pageSrc) continue;
     if (content.storedImageFor === pageSrc) continue;
     onProgress(`Uploading page ${cardNumber(page.cards[0]) || ""} image…`);
     try {
-      const url = await uploadMediaBlob(dataUrlToBlob(pageSrc), "page-image");
+      const url = await storeImageForSlide(pageSrc, "page-image");
       // Same hazard as above: re-read rather than trust the pre-await handle.
       const fresh = page.content || (page.content = {});
       fresh.storedImageFor = pageSrc;

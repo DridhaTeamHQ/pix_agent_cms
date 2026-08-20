@@ -8848,6 +8848,7 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
         created: data.created,
         resubmitted: Boolean(data.resubmitted),
         warning: mediaProblems.length ? mediaProblems.join("; ") : null,
+        videoStoreFailure,
       };
     } catch (err) {
       console.warn("[pix] not saved:", err.message);
@@ -9055,7 +9056,35 @@ async function runSave(intent) {
     showSaveState(result.created ? "Saved" : "Updated", "is-saved");
     if (result.warning) {
       setPostStatus(`Saved, but the ${result.warning}.`, "error");
-    } else {
+    }
+
+    /* A clip that failed to store gets a dialog, not a line of red text.
+
+       This is the ONLY moment it can still be recovered. An uploaded video
+       lives in the tab as a File; the row keeps a URL, and if the encode
+       failed there is no URL to keep. Reload or reopen the post and the File
+       is gone for good — videoClipKey() then finds no source, resolvePublishClip
+       returns null, and publishing refuses with "the video could not be
+       prepared" long after anyone could do anything about it. Four of the five
+       saved video posts in the library are already in that state.
+
+       So: say it now, while the file is still in memory and pressing Save
+       again is a real fix. */
+    if (result.videoStoreFailure) {
+      await confirmAction({
+        notice: true,
+        title: "The video was not saved",
+        body: "Everything else was saved, but the clip could not be prepared — so this post cannot be published with its video.",
+        facts: [
+          result.videoStoreFailure,
+          "Press Save again now. The file is still loaded in this tab.",
+          "Do NOT reload or open another post first — an uploaded video cannot be recovered after that, and would have to be added again.",
+        ],
+        confirmLabel: "Got it",
+      });
+    }
+
+    if (!result.warning) {
       /* Say where it went and how to move on. Writers were typing the next
          story over a saved poster because nothing told them Save would keep
          landing on the same row. The draft wording matters as much: this line
@@ -10793,8 +10822,13 @@ function dataUrlToBlob(dataUrl) {
  * the save still goes ahead, minus that URL, because losing the text as well
  * would make a storage outage twice as expensive.
  */
+/* Set when the clip could not be stored on THIS save. Read by the caller so
+   it can raise a dialog rather than a status line — see runSave. */
+let videoStoreFailure = null;
+
 async function ensureMediaUploaded(onProgress = () => {}) {
   const problems = [];
+  videoStoreFailure = null;
 
   /* The image to upload is the POST's, not the selected page's — otherwise
      saving while an added page is selected uploaded that page's picture (or,
@@ -10877,7 +10911,38 @@ async function ensureMediaUploaded(onProgress = () => {}) {
   // clip between start and end is the thing that gets published.
   await withPrimaryVideo(async () => {
     const clipKey = videoClipKey();
-    if (!clipKey || state.storedVideoFor === clipKey) return;
+
+    /* Already stored and unchanged — nothing to do, and nothing to report. */
+    if (clipKey && state.storedVideoFor === clipKey) return;
+
+    /* No key, but there IS a video page. This used to `return` alongside the
+       line above, which is the quietest failure in the whole save path: the
+       clip is not uploaded, nothing is pushed to `problems`, the save reports
+       success, and the row is written with a trim range but no storedUrl.
+       That is the exact fingerprint of four of the five video posts in the
+       library — trim saved, clip absent — and it only becomes visible at
+       publish time, by which point an uploaded File is long gone and the
+       video cannot be recovered at all.
+
+       videoClipKey() returns null for two reasons and both are worth naming
+       rather than swallowing: no source it can identify, or a trim range that
+       is not yet a range because the element has not reported its duration. */
+    if (!clipKey) {
+      const page = primaryVideoPage();
+      const hasVideoPage = Boolean(page);
+      if (!hasVideoPage) return;      // genuinely no video on this post
+
+      const why = !(state.trimEnd > state.trimStart)
+        ? "its trim range is empty — the clip may still be loading"
+        : "its source is gone — an uploaded file does not survive a reload";
+      console.error("[pix] clip skipped, no key:", {
+        why, trimStart: state.trimStart, trimEnd: state.trimEnd,
+        hasFile: !!state.videoFile, videoUrl: state.videoUrl, stored: state.storedVideoUrl,
+      });
+      problems.push(`video not stored (${why})`);
+      videoStoreFailure = why;
+      return;
+    }
     try {
       let blob = state.renderedClip?.key === clipKey ? state.renderedClip.blob : null;
       if (!blob) {
@@ -10890,7 +10955,11 @@ async function ensureMediaUploaded(onProgress = () => {}) {
       state.storedVideoFor = clipKey;
       state.storedVideoUrl = url;
     } catch (err) {
+      /* Logged in full as well as reported: the message reaching the user is
+         one line, but diagnosing an encode failure needs the whole thing. */
+      console.error("[pix] clip not stored:", err);
       problems.push(`video not stored (${err.message})`);
+      videoStoreFailure = err.message || "the clip could not be prepared";
     }
   });
 

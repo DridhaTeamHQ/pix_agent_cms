@@ -284,6 +284,22 @@ const PUBLIC_API_ROUTES = new Set([
   "/api/auth/me",
 ]);
 
+/* ── Routes only a reviewer may spend money on ──
+   AI Enhance bills gpt-image per call, and it used to be offered to everyone
+   who could open the editor. That meant the bill was driven by how many posts
+   were WRITTEN, when the only enhanced image that ever reaches DailyMattr is
+   one on a post that was approved — every enhance on a story that was later
+   rejected, or rewritten, or enhanced twice while the writer compared results,
+   was paid for and thrown away.
+
+   Moving it behind the review gate ties the spend to what actually ships.
+   Enforced here and not only by hiding the button: the button is a courtesy,
+   this is the control. A writer's session posting straight to the endpoint —
+   by habit, by a stale tab, or by curl — is refused. */
+const REVIEWER_ONLY_API_ROUTES = new Set([
+  "/api/upscale-image",
+]);
+
 const server = http.createServer(async (req, res) => {
   /* Compare the path alone. Most of these routes carry their arguments in the
      query string and are matched with startsWith() below (/api/image?url=…,
@@ -294,6 +310,14 @@ const server = http.createServer(async (req, res) => {
     const user = await currentUser(req);
     if (!user) {
       sendJson(res, 401, { error: "Sign in to use Pix." });
+      return;
+    }
+    // 403, not 401: the session is fine, the role is not. Reporting this as
+    // "sign in" would send a writer round the login screen forever.
+    if (REVIEWER_ONLY_API_ROUTES.has(apiPath) && !canReview(user.role)) {
+      sendJson(res, 403, {
+        error: "AI Enhance is done by QA at review time — save the post with the image as it is.",
+      });
       return;
     }
   }

@@ -2248,14 +2248,22 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
   border: 1px solid var(--hairline);
 }
 
-/* ═══ Adjustments moves up beside the upload ════════════════════════════════
-   The strip is two columns, so source order put Custom Upload | AI Enhance on
-   the top row and Adjustments | Filters underneath — leaving zoom and pan
+/* ═══ AI Enhance sits on the top row ════════════════════════════════════════
+   The strip is two columns, so source order alone would leave the second row
    below the fold of a 400px column, under two tall boxes.
 
-   Adjustments belongs next to Custom Upload: zoom and pan are what you reach
-   for immediately after dropping an image in, to frame it. AI Enhance is the
-   occasional, paid step and drops to the second row with Filters.
+   AI Enhance used to be put down there, on the reasoning that it was the
+   occasional paid step while zoom and pan were what you reach for straight
+   after dropping an image in. That reasoning belonged to a build where every
+   writer could enhance. Now only QA can, and for QA it is not the occasional
+   step — it is the whole job on the image: look at what the writer sent,
+   decide whether it needs enhancing, enhance it, publish. Burying the one
+   control they came for under a fold is backwards, so it moves up beside
+   Custom Upload and Adjustments takes the second row.
+
+   Writers never see the AI Enhance box at all (.qa-only), and a hidden box
+   takes no grid cell — so their strip still reads Custom Upload | Adjustments
+   over Filters, exactly as before.
 
    Targeted by content rather than by position — :has() on a control each
    section owns — so re-ordering the markup later cannot silently scramble
@@ -2264,11 +2272,11 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
   order: 1;
 }
 
-.cms-media-strip .image-panel>.acc:has(#img-zoom) {
+.cms-media-strip .image-panel>.acc:has(#ai-enhance-btn) {
   order: 2;
 }
 
-.cms-media-strip .image-panel>.acc:has(#ai-enhance-btn) {
+.cms-media-strip .image-panel>.acc:has(#img-zoom) {
   order: 3;
 }
 

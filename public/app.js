@@ -2441,7 +2441,14 @@ const MAX_PAGES = 5;
 // paints a blurred copy of it, so two text pages with one shared image
 // could not look different from each other.
 const IMAGE_PAGE_FIELDS = [
-  "mainImage", "imageOffset", "imageZoom",
+  /* storedImageUrl/storedImageFor are page-owned for the same reason
+     mainImage is: each slide has its own picture and therefore its own
+     uploaded copy. They were plain `state` values when only the post had an
+     image, and leaving them there broke the moment pages got their own —
+     syncActivePageContent() REPLACES page.content with a fresh capture of the
+     declared fields, so a URL written onto the selected page's content was
+     discarded by the next sync. Undeclared meant unsaved. */
+  "mainImage", "storedImageUrl", "storedImageFor", "imageOffset", "imageZoom",
   "filterPreset", "filterBrightness", "filterContrast", "filterSaturation", "filterBlur",
   "sourceImageUrl", "productImageAnalysis",
 ];
@@ -2859,10 +2866,12 @@ function addPage(type) {
 }
 
 /* ── Saving the page list ──
-   Only what survives a round trip: text, tags and framing. An added page's
-   image is a File or an <img> in memory — the save pipeline uploads page
-   1's image only, so a reopened post rebuilds its added pages empty of
-   media rather than pointing at something that is not there. */
+   Text, tags, framing AND the page's own image. The image used to be left
+   out: it lives in the tab as a data: URL, only the post's picture was ever
+   uploaded, and a URL cannot be stored for a file that was never sent — so a
+   reopened post rebuilt its added pages empty of media. ensureMediaUploaded
+   now uploads each page's picture first and leaves the URL on page.content,
+   which is what `imageUrl` below carries. */
 function serializePages() {
   syncActivePageContent();
   return extraPages().map((page) => {
@@ -2883,7 +2892,11 @@ function serializePages() {
     }
     // No text: a text page shows a slice of the post's paragraph, and the
     // slice is derived from the page order on open.
-    if (page.type === "poster" || page.type === "text") {
+    /* The page's own picture, for every type that shows one. Without this the
+       row remembered how a slide was framed but not what it framed. */
+    if (c.storedImageUrl) entry.imageUrl = c.storedImageUrl;
+
+    if (page.type === "poster" || page.type === "text" || page.type === "story") {
       entry.imageZoom = c.imageZoom ?? 100;
       entry.imageOffset = { x: c.imageOffset?.x ?? 0, y: c.imageOffset?.y ?? 0 };
       entry.filters = {
@@ -2971,7 +2984,32 @@ function restorePages(list) {
       content.videoCaption = entry.video?.caption || "";
       content.videoCaptionSize = numberOr(entry.video?.captionSize, state.videoCaptionSize);
     }
-    createPage(entry.type, content);
+    /* The picture comes back through the proxy, exactly as page 1's does.
+
+       Deliberately not awaited: restorePages is called from a synchronous
+       rebuild and a post with four slides would otherwise block the editor on
+       four sequential network fetches before drawing anything. Each page
+       paints as its own image lands, and renderPoster is called per arrival
+       rather than once at the end so the rail fills in progressively instead
+       of staying blank until the slowest one finishes. A failure leaves that
+       page without its picture, which is what happened to every page before
+       this existed — no worse, and the rest still open. */
+    const page = createPage(entry.type, content);
+    if (entry.imageUrl && page) {
+      page.content.storedImageUrl = entry.imageUrl;
+      imageFromUrl(`/api/image?url=${encodeURIComponent(entry.imageUrl)}`)
+        .then((img) => {
+          if (!page.content) return;
+          page.content.mainImage = img;
+          page.content.storedImageFor = img?.src || entry.imageUrl;
+          /* If this page is the one on screen, its content was copied into
+             `state` before the image arrived, so the canvas is still drawing
+             the empty version. Push it across before repainting. */
+          if (activePage() === page) state.mainImage = img;
+          renderPoster();
+        })
+        .catch(() => {});
+    }
   }
 
   renumberPages();
@@ -10765,15 +10803,72 @@ async function ensureMediaUploaded(onProgress = () => {}) {
      this read moves to the view: storedImageFor/storedImageUrl below are not
      page-owned, so they stay on `state` where describeMainImage reads them
      back through the same view. */
+  syncActivePageContent();
+  if (!basePage.content) basePage.content = {};
   const src = basePageView().mainImage?.src || "";
-  if (src.startsWith("data:") && state.storedImageFor !== src) {
+  if (src.startsWith("data:") && basePage.content.storedImageFor !== src) {
     onProgress("Uploading image…");
     try {
       const url = await uploadMediaBlob(dataUrlToBlob(src), "poster-image");
-      state.storedImageFor = src;
-      state.storedImageUrl = url;
+      /* Onto the base page, and onto `state` only when the base page is the
+         one selected. Now that these are page-owned, writing them to `state`
+         while an added page is open would file the POST's picture under that
+         page and lose the post's own. */
+      /* Re-read basePage.content AFTER the await instead of writing through a
+         reference taken before it. syncActivePageContent() REPLACES the object
+         (`basePage.content = { ...old, ...capture }`), and the 800ms render
+         poll calls it — so an upload lasting more than one tick left the
+         pre-await reference orphaned and the URL was written onto an object
+         nothing would ever read again. The post's picture then saved as null
+         while every page's saved fine, because the pages were not selected and
+         their objects were never rebuilt. */
+      if (!basePage.content) basePage.content = {};
+      basePage.content.storedImageFor = src;
+      basePage.content.storedImageUrl = url;
+      if (activePage() === basePage) {
+        state.storedImageFor = src;
+        state.storedImageUrl = url;
+      }
     } catch (err) {
       problems.push(`image not stored (${err.message})`);
+    }
+  }
+
+  /* Every added page's picture too — this is what makes a carousel survive.
+
+     Only the post's own image was ever uploaded, so a writer could paste a
+     picture into slide 2, save, and watch it vanish on reopen; QA then opened
+     the post and found the carousel empty, because the pages were rebuilt
+     from text and framing with no media to hang it on. The pages themselves
+     were saved all along. The images were simply never sent anywhere.
+
+     Written to page.content, not to `state`: the selected page's fields are
+     swapped in and out of state as the rail is clicked, so a URL parked there
+     would follow the selection instead of the page it belongs to. */
+  syncActivePageContent();
+  for (const page of extraPages()) {
+    const content = page.content || (page.content = {});
+    const pageSrc = content.mainImage?.src || "";
+    if (!pageSrc.startsWith("data:")) continue;
+    if (content.storedImageFor === pageSrc) continue;
+    onProgress(`Uploading page ${cardNumber(page.cards[0]) || ""} image…`);
+    try {
+      const url = await uploadMediaBlob(dataUrlToBlob(pageSrc), "page-image");
+      // Same hazard as above: re-read rather than trust the pre-await handle.
+      const fresh = page.content || (page.content = {});
+      fresh.storedImageFor = pageSrc;
+      fresh.storedImageUrl = url;
+      /* The selected page's values live in `state`, and the next
+         syncActivePageContent() rebuilds its content from there — so writing
+         only to content would be undone for whichever page is on screen.
+         That is precisely why the last slide a writer touched was the one
+         that lost its picture. */
+      if (activePage() === page) {
+        state.storedImageFor = pageSrc;
+        state.storedImageUrl = url;
+      }
+    } catch (err) {
+      problems.push(`page image not stored (${err.message})`);
     }
   }
 

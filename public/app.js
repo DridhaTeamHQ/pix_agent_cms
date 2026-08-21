@@ -11381,6 +11381,31 @@ function restoreStoredVideo(video) {
     state.storedVideoFor = videoClipKey();
     if (typeof syncTrimUI === "function") syncTrimUI();
     if (videoEditor) videoEditor.hidden = false;
+
+    /* Decode a frame before painting, or the card paints black.
+
+       readyState 4 does NOT mean there is a frame to draw. A <video> that has
+       just had its src set, has never played, and sits at currentTime 0 has
+       nothing decoded yet — drawImage then draws nothing and the video card
+       comes out solid black, while duration, readyState, currentSrc and the
+       clip key are all perfectly correct. That is precisely what QA was
+       looking at: the clip was stored, fetchable and loaded, and the slide
+       showed a black rectangle, so the video appeared not to be there at all.
+
+       A seek forces the decode. It has to be a seek to somewhere the element
+       is NOT already sitting, because assigning currentTime the value it
+       already holds fires no event and decodes nothing — which is why
+       trimStart 0, the normal case for an already-trimmed stored clip, was the
+       one that stayed black. `seeked` is the moment there is something to
+       draw, so that is when it repaints. */
+    videoPreviewEl.addEventListener("seeked", () => renderPoster(), { once: true });
+    try {
+      const start = numberOr(state.trimStart, 0);
+      videoPreviewEl.currentTime = start > 0
+        ? start
+        : Math.min(0.05, (state.trimEnd || 1) / 2);
+    } catch { /* the render below still runs; worst case is the old behaviour */ }
+
     renderPoster();
   }, { once: true });
 

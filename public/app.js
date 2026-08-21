@@ -30,7 +30,14 @@ function scaleForLongEdge(target) {
  * multiplied by the chosen scale before cropping the trailing black gap.
  * Returns { blob, width, height } or null if every tier failed.
  */
-async function renderExportBlob(cropOpts = null, targetLongEdges = EXPORT_LONG_EDGES) {
+/* `encode` picks the file format. PNG is right for a download — it is exact,
+   and a writer saving a poster wants the original pixels. It is the wrong
+   thing to put on the wire: a 2078×3840 poster PNG is 12 MB, and five of them
+   is a 42 MB upload that DailyMattr answers with a bare "Validation Error".
+   See the compression ladder near DAILYMATTR_COMPRESSION_LADDER. */
+async function renderExportBlob(cropOpts = null, targetLongEdges = EXPORT_LONG_EDGES, encode = null) {
+  const type = encode?.type || "image/png";
+  const quality = encode?.quality;
   for (const target of targetLongEdges) {
     const scale = scaleForLongEdge(target);
     let out;
@@ -47,7 +54,7 @@ async function renderExportBlob(cropOpts = null, targetLongEdges = EXPORT_LONG_E
     }
     // toBlob returns null (or throws) when the canvas is too large to encode.
     const blob = await new Promise((resolve) => {
-      try { out.toBlob(resolve, "image/png"); } catch { resolve(null); }
+      try { out.toBlob(resolve, type, quality); } catch { resolve(null); }
     });
     if (blob && blob.size > 2000) {
       return { blob, width: out.width, height: out.height };
@@ -624,6 +631,93 @@ const DAILYMATTR_META_ENDPOINT = "/api/dailymattr/meta";
 const DAILYMATTR_PUBLISH_ENDPOINT = "/api/dailymattr/publish";
 const PIX_ANALYTICS_ENDPOINT = "/api/pix-analytics";
 const DAILYMATTR_EXPORT_LONG_EDGES = [3840, 2560];
+/* ── Compression for publishing ──
+   Published slides go as JPEG, and go through a budget, not a fixed setting.
+
+   A slide is a photograph with type over it, which is the case PNG is worst
+   at: it stores every pixel losslessly and cannot use any of the redundancy a
+   photo is full of. Measured on a real five-slide carousel, the poster alone
+   came to 12.12 MB and the whole post to 42.32 MB. DailyMattr answers that
+   with a bare "Validation Error" naming no field, so the size never appeared
+   anywhere QA could see it — and a two-slide post went through while the same
+   story as a carousel did not.
+
+   A fixed quality would only move the guess: a busy photograph compresses far
+   worse than a flat one, so the honest thing is to aim at a size and stop as
+   soon as it is met. The ladder drops quality first, because at this
+   resolution that is invisible, and only then drops resolution. The first rung
+   already lands around 1 MB for a typical slide, so the usual cost of this is
+   exactly one render — the rest is there for the slide that needs it.
+
+   Downloads are untouched: a writer saving a poster still gets the exact PNG
+   at full resolution. This applies only to what goes over the wire. */
+function mbLabel(bytes) {
+  return `${(Number(bytes || 0) / 1048576).toFixed(1)} MB`;
+}
+
+const DAILYMATTR_SLIDE_BUDGET_BYTES = 3 * 1024 * 1024;
+const DAILYMATTR_POST_BUDGET_BYTES = 20 * 1024 * 1024;
+const DAILYMATTR_COMPRESSION_LADDER = [
+  { longEdges: [3840], quality: 0.92 },
+  { longEdges: [3840], quality: 0.82 },
+  { longEdges: [2560], quality: 0.85 },
+  { longEdges: [2560], quality: 0.72 },
+  { longEdges: [1920], quality: 0.8 },
+  { longEdges: [1920], quality: 0.65 },
+];
+
+/* Render a slide small enough to send, and say what it took.
+
+   Returns the first rung that fits the budget. If nothing fits — a slide that
+   is somehow enormous at 1920 — it returns the smallest it managed rather than
+   nothing, because a slightly-over slide that the caller can weigh against the
+   whole-post budget beats a failed publish with no explanation. */
+async function exportSlideForPublish(mode, maxBytes = DAILYMATTR_SLIDE_BUDGET_BYTES) {
+  let smallest = null;
+  for (let rung = 0; rung < DAILYMATTR_COMPRESSION_LADDER.length; rung += 1) {
+    const { longEdges, quality } = DAILYMATTR_COMPRESSION_LADDER[rung];
+    const shot = await exportSlidePng(mode, longEdges, { type: "image/jpeg", quality });
+    if (!shot?.blob) continue;
+    if (!smallest || shot.blob.size < smallest.blob.size) smallest = { ...shot, rung, quality };
+    if (shot.blob.size <= maxBytes) return { ...shot, rung, quality, withinBudget: true };
+  }
+  return smallest ? { ...smallest, withinBudget: false } : null;
+}
+
+/* An image QA attached by hand, squeezed the same way. A phone photo dropped
+   into an extra slot is routinely 8-12 MB, which is the same failure arriving
+   by a different door. Videos are passed through untouched — re-encoding one
+   in the browser costs more than it saves, and the trim range already bounds
+   it. */
+async function compressAttachedImage(file, maxBytes = DAILYMATTR_SLIDE_BUDGET_BYTES) {
+  if (!file || !/^image\//i.test(file.type) || file.size <= maxBytes) return file;
+  let bitmap = null;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    return file;   // undecodable here; let the server and DailyMattr judge it
+  }
+  try {
+    for (const { longEdges, quality } of DAILYMATTR_COMPRESSION_LADDER) {
+      const longest = Math.max(bitmap.width, bitmap.height);
+      const scale = Math.min(1, longEdges[0] / longest);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => {
+        try { canvas.toBlob(resolve, "image/jpeg", quality); } catch { resolve(null); }
+      });
+      if (blob && blob.size <= maxBytes) {
+        const name = String(file.name || "attachment").replace(/\.[^.]+$/, "") + ".jpg";
+        return new File([blob], name, { type: "image/jpeg" });
+      }
+    }
+    return file;
+  } finally {
+    bitmap.close?.();
+  }
+}
 // Must match MAX_DAILYMATTR_MEDIA_BYTES on the server. Checked on the client
 // too so an oversized clip fails in a second with a useful message, rather
 // than after uploading tens of megabytes only to be cut off by busboy.
@@ -7059,7 +7153,7 @@ syncTrimUI();
    once shipped the Text slide — the mode was ambient state rather than
    something the action declared. Here the button names its slide. */
 
-async function exportSlidePng(mode, targetLongEdges = EXPORT_LONG_EDGES) {
+async function exportSlidePng(mode, targetLongEdges = EXPORT_LONG_EDGES, encode = null) {
   const prev = {
     mode: state.previewMode,
     downloading: state.isDownloading,
@@ -7073,7 +7167,7 @@ async function exportSlidePng(mode, targetLongEdges = EXPORT_LONG_EDGES) {
 
   let result = null;
   try {
-    result = await renderExportBlob(null, targetLongEdges);
+    result = await renderExportBlob(null, targetLongEdges, encode);
   } catch (err) {
     console.error(`${mode} export failed:`, err);
   } finally {
@@ -8051,7 +8145,7 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
         state._detailSlice = card.detailSlice || null;
         let shot = null;
         try {
-          shot = await exportSlidePng(card.mode, DAILYMATTR_EXPORT_LONG_EDGES);
+          shot = await exportSlideForPublish(card.mode);
         } finally {
           state._detailSlice = null;
         }
@@ -8059,7 +8153,12 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
           setDailyMattrStatus(`Could not render page ${n}.`, "error");
           return;
         }
-        outboundMedia.push({ blob: shot.blob, filename: `${slug}-p${n}.png` });
+        // Extension follows the encoder — a JPEG named .png is refused by a
+        // validator that checks the two against each other.
+        outboundMedia.push({
+          blob: shot.blob,
+          filename: `${slug}-p${n}${shot.blob.type === "image/jpeg" ? ".jpg" : ".png"}`,
+        });
       }
     } finally {
       setActivePage(restorePageId, { force: true });
@@ -8070,9 +8169,15 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
       return;
     }
 
-    dailyMattrExtraFiles().forEach(({ file }) => {
-      outboundMedia.push({ blob: file, filename: file.name });
-    });
+    for (const { file } of dailyMattrExtraFiles()) {
+      const squeezed = await compressAttachedImage(file);
+      if (squeezed !== file) {
+        setDailyMattrStatus(
+          `Compressed ${file.name} from ${mbLabel(file.size)} to ${mbLabel(squeezed.size)}…`,
+        );
+      }
+      outboundMedia.push({ blob: squeezed, filename: squeezed.name || file.name });
+    }
     if (outboundMedia.length > DAILYMATTR_MAX_MEDIA_ITEMS) {
       setDailyMattrStatus(
         `This post has ${outboundMedia.length} media files and DailyMattr accepts ${DAILYMATTR_MAX_MEDIA_ITEMS}. Remove one and try again.`,
@@ -8080,6 +8185,37 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
       );
       return;
     }
+    /* The whole-post weight, checked before anything leaves the browser.
+
+       DailyMattr's refusal for an oversized post is "Validation Error" and
+       nothing else — no field, no size, no limit — so left to them this fails
+       with the one message QA cannot act on. Checked here it fails with the
+       numbers, and only after compression has already had its go, so this
+       fires for a genuinely huge post rather than for a normal one. */
+    const totalBytes = outboundMedia.reduce((sum, m) => sum + (m.blob?.size || 0), 0);
+    if (totalBytes > DAILYMATTR_POST_BUDGET_BYTES) {
+      const heaviest = [...outboundMedia]
+        .sort((a, b) => (b.blob?.size || 0) - (a.blob?.size || 0))
+        .slice(0, 3)
+        .map((m, i) => `${i + 1}. ${m.filename} — ${mbLabel(m.blob.size)}`);
+      const message = `This post is ${mbLabel(totalBytes)} of media, over the ${mbLabel(DAILYMATTR_POST_BUDGET_BYTES)} DailyMattr accepts.`;
+      setDailyMattrStatus(message, "error");
+      confirmAction({
+        notice: true,
+        title: "Too large to publish",
+        body: message,
+        facts: [
+          "Nothing was sent — the post is unchanged.",
+          "The heaviest items:",
+          ...heaviest,
+          "Remove a slide, or replace the heaviest picture with a smaller one.",
+        ],
+        confirmLabel: "Close",
+      });
+      return;
+    }
+    console.info(`[pix] publishing ${outboundMedia.length} media, ${mbLabel(totalBytes)} total`);
+
     // Numbered by position, so the pages are always 1..N with no gaps no
     // matter which of the optional items are present.
     outboundMedia.forEach(({ blob, filename }, index) => {
@@ -8146,13 +8282,26 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
       /* A failure needs the dialog more than a success does: the post is NOT
          live, and a red line at the foot of the column is exactly the thing
          someone scrolls past before assuming it went out. */
+      /* What was actually wrong, one line per field, above the generic
+         reassurance. This dialog used to carry a single sentence and the fact
+         "Nothing was sent — fix the problem and publish again", which told QA
+         to fix something the dialog had never named: the per-field refusals
+         from DailyMattr were parsed away long before they reached here, so a
+         carousel rejected over one bad slide read exactly like a carousel
+         rejected for any other reason. */
+      const refusals = Array.isArray(payload.details) ? payload.details.filter(Boolean) : [];
       confirmAction({
         notice: true,
         title: payload.alreadyPublished ? "Already published" : "Not published",
-        body: payload.error || `DailyMattr refused the post (HTTP ${response.status}).`,
-        facts: [payload.alreadyPublished || payload.rejected
-          ? "Nothing was sent this time."
-          : "Nothing was sent — fix the problem and publish again."],
+        body: (refusals.length ? payload.summary : "")
+          || payload.error
+          || `DailyMattr refused the post (HTTP ${response.status}).`,
+        facts: [
+          ...(refusals.length ? ["DailyMattr refused it because:", ...refusals] : []),
+          payload.alreadyPublished || payload.rejected
+            ? "Nothing was sent this time."
+            : "Nothing was sent — the post is unchanged and still publishable.",
+        ],
         confirmLabel: "Close",
       });
       return;

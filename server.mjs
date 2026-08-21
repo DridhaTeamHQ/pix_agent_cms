@@ -1773,6 +1773,15 @@ async function runDailyMattrPublish(req, res) {
       if (claimed) await releasePublishClaim(payload.pixId).catch(() => {});
       sendJson(res, 502, {
         error: err.message || "Could not publish to DailyMattr.",
+        /* The per-field refusals, listed rather than run together into the
+           sentence above. Without these the dialog could only say that the
+           post was refused, never which slide or which field caused it, and
+           "fix the problem and publish again" is not an instruction anyone
+           can follow when the problem was never named. */
+        details: Array.isArray(err.details) && err.details.length ? err.details.slice(0, 8) : undefined,
+        // The headline without the field lines glued on, so a dialog that
+        // lists them as rows does not also print them inside its sentence.
+        summary: err.summary || undefined,
         indeterminate: false,
       });
       return;

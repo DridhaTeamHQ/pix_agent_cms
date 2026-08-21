@@ -2562,6 +2562,10 @@ const STORY_PAGE_FIELDS  = [...IMAGE_PAGE_FIELDS, "storyHeading", "storyBody", "
    footage. */
 const VIDEO_PAGE_FIELDS  = [
   "videoEl", "videoSrc", "videoUrl", "videoFile", "videoMeta", "videoSourceKind",
+  /* The name of the file the writer chose. The File itself does not survive a
+     reload, so without this a reviewer opening the post has no way to see WHAT
+     was added — only that something was. */
+  "videoFileName",
   "trimStart", "trimEnd", "videoMuted", "videoFocus", "videoCaption", "videoCaptionSize",
   "storedVideoUrl", "storedVideoFor", "renderedClip",
 ];
@@ -6833,6 +6837,7 @@ function loadLocalVideoFile(file) {
   state.videoUrl = "";
   state.videoMeta = null;
   state.videoSourceKind = "file";
+  state.videoFileName = file.name;
   if (videoFileLabel) videoFileLabel.textContent = file.name;
 
   const objectUrl = URL.createObjectURL(file);
@@ -6972,14 +6977,9 @@ if (videoSourceTabs) {
   videoSourceTabs.addEventListener("click", (e) => {
     const btn = e.target.closest(".video-source-tab");
     if (!btn) return;
-    const kind = btn.dataset.videoSource === "file" ? "file" : "link";
-    videoSourceTabs.querySelectorAll(".video-source-tab").forEach((t) => {
-      const active = t === btn;
-      t.classList.toggle("active", active);
-      t.setAttribute("aria-selected", active ? "true" : "false");
-    });
-    document.getElementById("video-source-link").hidden = kind !== "link";
-    document.getElementById("video-source-file").hidden = kind !== "file";
+    // Same two lines the restore path needs, so the tabs cannot end up
+    // meaning one thing when clicked and another when reopened.
+    selectVideoSourceTab(btn.dataset.videoSource);
   });
 }
 
@@ -9227,6 +9227,8 @@ function collectDesignSnapshot(view) {
         storedUrl: v.storedVideoUrl || null,
         storedTrimmed: Boolean(v.storedVideoUrl),
         title: v.videoMeta?.title || null,
+        // What the writer actually added, so a reviewer can see it later.
+        fileName: v.videoFileName || v.videoFile?.name || null,
         trimStart: v.trimStart ?? 0,
         trimEnd: v.trimEnd ?? 0,
         muted: Boolean(v.videoMuted),
@@ -11338,6 +11340,52 @@ function videoClipKey() {
 /* Put a stored video back on screen when a saved post is reopened. The
    <video> element takes the bucket URL directly — same element, same trim
    controls, same canvas preview as a local file. */
+/* Show which source the clip came from, and offer the matching way to change
+   it. The tabs are a plain click handler on the markup, so this drives the
+   same two lines rather than duplicating their meaning. */
+function selectVideoSourceTab(kind) {
+  const wanted = kind === "file" ? "file" : "link";
+  document.querySelectorAll("#video-source-tabs .video-source-tab").forEach((tab) => {
+    const active = (tab.dataset.videoSource === "file" ? "file" : "link") === wanted;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  const link = document.getElementById("video-source-link");
+  const file = document.getElementById("video-source-file");
+  if (link) link.hidden = wanted !== "link";
+  if (file) file.hidden = wanted !== "file";
+}
+
+/* The video panel as a reviewer needs it: open, on the right tab, and saying
+   what is actually attached. */
+function openVideoPanelForReview() {
+  const acc = document.getElementById("video-acc");
+  if (acc && acc.dataset.open !== "true") {
+    acc.dataset.open = "true";
+    acc.querySelector(":scope > .acc-head")?.setAttribute("aria-expanded", "true");
+  }
+
+  const kind = state.videoSourceKind === "file" ? "file" : "link";
+  selectVideoSourceTab(kind);
+
+  const name = state.videoFileName || "";
+  if (videoFileLabel) {
+    videoFileLabel.textContent = name || (kind === "file" ? "Uploaded video" : "Choose a video file");
+  }
+  if (videoUrlInput && kind === "link" && state.videoUrl) videoUrlInput.value = state.videoUrl;
+
+  /* Name the source in the status line too, because the file row is only on
+     screen while the "Upload File" tab is showing. A link keeps its address —
+     that is what it is — and an upload keeps its filename. */
+  const label = kind === "file"
+    ? (name || "an uploaded file")
+    : (state.videoUrl || "a link");
+  const length = state.trimEnd > state.trimStart
+    ? ` · ${formatTimecode(state.trimEnd - state.trimStart)}`
+    : "";
+  setVideoStatus(`Video from ${label}${length}. Play it below, re-trim it, or replace it.`, "success");
+}
+
 function restoreStoredVideo(video) {
   const url = video?.storedUrl || "";
   if (!url || !videoPreviewEl) return;
@@ -11346,6 +11394,7 @@ function restoreStoredVideo(video) {
   state.storedVideoUrl = url;
   state.videoFile = null;
   state.videoSourceKind = video.sourceKind || "file";
+  state.videoFileName = video.fileName || video.title || "";
   state.videoMuted = Boolean(video.muted);
   state.videoCaption = video.caption || "";
   state.videoCaptionSize = numberOr(video.captionSize, state.videoCaptionSize);
@@ -11381,6 +11430,20 @@ function restoreStoredVideo(video) {
     state.storedVideoFor = videoClipKey();
     if (typeof syncTrimUI === "function") syncTrimUI();
     if (videoEditor) videoEditor.hidden = false;
+
+    /* Hand the reviewer a working video panel, not a collapsed one.
+
+       Everything needed to play, scrub, re-trim and replace the clip already
+       existed — the <video> carries native controls, the trim sliders and the
+       source tabs are right there — but the Video accordion restores CLOSED,
+       the source tab always read "Paste Link" regardless of how the video was
+       added, and the file row still said "Choose a video file". So a reviewer
+       opening a post with a video was shown no player, no indication of what
+       the writer had attached, and the wrong tab for replacing it.
+
+       Opened only when the post actually has a clip, so it does not push
+       itself in front of every ordinary post. */
+    openVideoPanelForReview();
 
     /* Decode a frame before painting, or the card paints black.
 

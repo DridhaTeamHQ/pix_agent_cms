@@ -6814,6 +6814,20 @@ async function fetchVideoFromUrl(url) {
     state.videoFile = null;
     state.videoMeta = meta;
     state.videoSourceKind = "link";
+    // Replacing an upload with a link must not keep the upload's filename.
+    state.videoFileName = "";
+  /* A new source means the stored copy is no longer this post's video.
+
+     storedVideoUrl/storedVideoFor were cleared in only two places — starting a
+     new post, and blanking a page — never when the clip itself was replaced.
+     So swapping the video and then hitting an encode failure saved the row
+     pointing at the PREVIOUS clip: reopening played the old footage, and
+     restoreStoredVideo stamped storedVideoFor to match it, so the next Submit
+     took the "already stored and unchanged" shortcut and reported nothing at
+     all. QA then published the old video, to a write-only API. */
+  state.storedVideoUrl = null;
+  state.storedVideoFor = null;
+  state.renderedClip = null;
 
     setupTrimRange(meta.duration || 0);
     if (videoEditor) videoEditor.hidden = false;
@@ -6875,6 +6889,18 @@ function loadLocalVideoFile(file) {
   state.videoMeta = null;
   state.videoSourceKind = "file";
   state.videoFileName = file.name;
+  /* A new source means the stored copy is no longer this post's video.
+
+     storedVideoUrl/storedVideoFor were cleared in only two places — starting a
+     new post, and blanking a page — never when the clip itself was replaced.
+     So swapping the video and then hitting an encode failure saved the row
+     pointing at the PREVIOUS clip: reopening played the old footage, and
+     restoreStoredVideo stamped storedVideoFor to match it, so the next Submit
+     took the "already stored and unchanged" shortcut and reported nothing at
+     all. QA then published the old video, to a write-only API. */
+  state.storedVideoUrl = null;
+  state.storedVideoFor = null;
+  state.renderedClip = null;
   if (videoFileLabel) videoFileLabel.textContent = file.name;
 
   const objectUrl = URL.createObjectURL(file);
@@ -6914,8 +6940,35 @@ function loadLocalVideoFile(file) {
    that page then LOADS the clip instead of erasing it, and withPrimaryVideo()
    finds it at save time from whichever page is on screen. */
 function commitVideoToItsPage() {
-  const page = primaryVideoPage() || ensureVideoPage();
-  if (!page) return null;
+  /* The page the writer is actually on, not "the primary video page".
+
+     primaryVideoPage() deliberately prefers a page that ALREADY holds a clip,
+     which makes the first video page a permanent magnet: on a post with two
+     Video slides, loading footage into slide 4 was written onto slide 2
+     instead. And because the commit below replaces every video field at once,
+     that did not merely misfile the new clip — it overwrote slide 2's
+     storedVideoUrl, destroying footage that was already uploaded and saved.
+
+     Video controls are scope-gated to video pages (PAGE_SCOPE.video), so the
+     selected page IS the right answer on the normal path; the primary is only
+     a fallback for a clip arriving from somewhere else. */
+  const active = activePage();
+  const page = (active?.type === "video" ? active : primaryVideoPage()) || ensureVideoPage();
+
+  /* No page to put it on. ensureVideoPage() returns null when the rail is
+     full, and every caller discarded that null — the status line had already
+     said "success", so the clip simply evaporated at save time inside
+     withPrimaryVideo(), which substitutes a blank video page and writes the
+     row with no clip WHILE the editor carries on showing the video. Said here
+     rather than at the call sites so future callers inherit it. */
+  if (!page) {
+    setVideoStatus(
+      `This post already has all ${MAX_PAGES} slides, so the clip has nowhere to live — remove a page and add the video again.`,
+      "error",
+    );
+    return null;
+  }
+
   if (!page.content) page.content = {};
   Object.assign(page.content, capturePageFields(VIDEO_PAGE_FIELDS));
   return page;
@@ -11291,7 +11344,22 @@ async function ensureMediaUploaded(onProgress = () => {}) {
       if (!basePage.content) basePage.content = {};
       basePage.content.storedImageFor = src;
       basePage.content.storedImageUrl = url;
-      if (activePage() === basePage) {
+      /* Also into `state` when the SELECTED page does not own these fields.
+
+         storedImageFor/storedImageUrl became page-owned, and a Video page is
+         the one page type that owns none of the image fields. When one is
+         selected, syncActivePageContent() treats every BASE field as
+         un-owned and rebuilds basePage.content from `state` — which still
+         mirrors the pre-upload values, because the write above deliberately
+         skipped state. So the URL just uploaded was overwritten with null
+         three times inside the same save, and describeMainImage then recorded
+         main_image_url: null for a picture that is sitting in the bucket.
+
+         The test is additive rather than a replacement: when the base page IS
+         selected, state must still be written, or the ordinary path loses the
+         URL the same way. */
+      if (activePage() === basePage
+          || !fieldsForPage(activePage()).includes("storedImageUrl")) {
         state.storedImageFor = src;
         state.storedImageUrl = url;
       }

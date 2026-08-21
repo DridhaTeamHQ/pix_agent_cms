@@ -437,8 +437,18 @@ function applyAspectRatio(ratio) {
   const L = LAYOUT_PRESETS[ratio];
   canvas.width = L.W;
   canvas.height = L.H;
-  // Reset image pan (positions vary too much across ratios to preserve)
+  /* Reset image pan (positions vary too much across ratios to preserve).
+
+     On EVERY page, not just the selected one. The ratio belongs to the post,
+     so switching 9:16 to 16:9 reframes all of it — but this cleared only live
+     state, leaving slides 2-5 panned for the old shape with their subjects
+     half out of frame until each was selected and reset by hand. */
   state.imageOffset = { x: 0, y: 0 };
+  for (const page of pages) {
+    if (page.content && "imageOffset" in page.content) {
+      page.content.imageOffset = { x: 0, y: 0 };
+    }
+  }
   if (typeof imgOffsetX !== "undefined") imgOffsetX.value = 0;
   if (typeof imgOffsetY !== "undefined") imgOffsetY.value = 0;
   // Update the size badge in the preview header
@@ -1002,9 +1012,33 @@ function resetImageControls() {
   imgZoom.value = 100;
 }
 
+/* The page a pending image pick belongs to.
+
+   The nonce alone answers "is this still the picture the writer wants"; it
+   does not answer "which slide did they want it ON". setActivePage never
+   bumps the nonce, so clicking another card mid-fetch left the arriving photo
+   to land on whatever slide was then selected — replacing its picture, while
+   the slide the pick was made for stayed empty. */
+let imageSelectionOwner = null;
+
 function claimImageSelection() {
   state.imageSelectionNonce += 1;
+  imageSelectionOwner = activePage();
   return state.imageSelectionNonce;
+}
+
+/* An image that arrived for a page the writer has since left. Files it on that
+   page and reports true, so the caller skips the live path entirely rather
+   than writing someone else's slide. */
+function stashImageForAbsentPage(page, img) {
+  if (!page || activePage() === page) return false;
+  if (!page.content) page.content = {};
+  page.content.mainImage = img;
+  // A fresh picture is unframed, matching resetImageControls() on the live path.
+  page.content.imageOffset = { x: 0, y: 0 };
+  page.content.imageZoom = 100;
+  renderPoster();
+  return true;
 }
 
 function isXRenderMode() {
@@ -1347,8 +1381,18 @@ async function fetchAiCaption(headline, timeoutMs = 12000) {
 }
 
 function downloadXPreview({ usePrimaryButton = false } = {}) {
-  const headline = (state.headline || "").trim();
-  if (!headline) {
+  /* The X card is pinned to the base page — it is not in slotOrder and shows
+     the post's own poster whatever is selected. The export did not say so:
+     it snapshotted the render MODE but not the SELECTION, so pressing Download
+     on the X card while a story or a second poster page was selected rendered
+     THAT page instead. The PNG carried the wrong picture, or none, and for a
+     second poster page the wrong headline and tag — silently, since it looks
+     like a normal download.
+
+     The headline test has to read the base page too, or a Story page (which
+     owns no headline) makes this refuse a post that has one. */
+  const baseHeadline = (basePageView().headline || "").trim();
+  if (!baseHeadline) {
     setPostStatus("Build a poster first.", "error");
     return;
   }
@@ -1361,16 +1405,30 @@ function downloadXPreview({ usePrimaryButton = false } = {}) {
   // can never leak the text image into the X export. Restore the user's
   // on-screen preview mode afterwards.
   const prevMode = state.previewMode;
+  const prevDownloading = state.isDownloading;
+  const prevShortly = state.useShortlyLogo;
+  const prevForceText = state.forceTextExport;
+  /* Render the page the X card actually shows. syncActivePageContent() first,
+     so the selected page's edits are filed before the selection moves. */
+  syncActivePageContent();
+  const restorePageId = activePageId;
+  setActivePage("base", { force: true });
+
   state.isDownloading = true;
   state.useShortlyLogo = true;
   state.forceTextExport = false;
   state.previewMode = "x";
 
   const restore = () => {
-    state.isDownloading = false;
-    state.useShortlyLogo = false;
-    state.forceTextExport = false;
+    /* Back to what they WERE, not to hard-coded defaults. Writing `false`
+       here meant an export that overlapped another one restored the wrong
+       thing permanently — the whole rail losing its engagement bars and
+       drawing the Shortly logo until the page was reloaded. */
+    state.isDownloading = prevDownloading;
+    state.useShortlyLogo = prevShortly;
+    state.forceTextExport = prevForceText;
     state.previewMode = prevMode;
+    setActivePage(restorePageId, { force: true });
     renderPoster();
     if (targetButton) targetButton.disabled = false;
   };
@@ -1391,7 +1449,7 @@ function downloadXPreview({ usePrimaryButton = false } = {}) {
       const blobUrl = URL.createObjectURL(blob);
       const dl = document.createElement("a");
       dl.href = blobUrl;
-      dl.download = `${slugify(headline || "pix-post")}-x.png`;
+      dl.download = `${slugify(baseHeadline || "pix-post")}-x.png`;
       dl.click();
       setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
       setPostStatus("X-ready PNG downloaded.", "success");
@@ -2120,8 +2178,12 @@ async function analyzeUploadedProductImage(imageData, expectedNonce) {
     if (!response.ok) throw new Error(payload.error || "Image analysis failed.");
     if (state.imageSelectionNonce !== expectedNonce) return;
 
-    state.productImageAnalysis = payload.analysis || null;
-    const text = (state.productImageAnalysis?.visibleText || []).join(", ");
+    /* Onto the page the picture was picked for. This is page-owned and the
+       vision call outlives the click, so an added slide was inheriting a
+       different slide's analysis and skewing its suggested-image terms. */
+    commitFieldToPage(imageSelectionOwner, "productImageAnalysis", payload.analysis || null);
+    const analysis = imageSelectionOwner?.content?.productImageAnalysis ?? state.productImageAnalysis;
+    const text = (analysis?.visibleText || []).join(", ");
     setStatus(text ? `Product text recognized: ${text}` : "Product patterns recognized.", "success");
   } catch (error) {
     console.warn("Product image analysis failed:", error);
@@ -2392,6 +2454,8 @@ async function fetchStockImages(headline, options = {}) {
     };
 
     const applySuggestedImage = async (img, thumb = null, expectedNonce = null) => {
+      // The slide this pick is FOR, before any await moves the selection.
+      const owner = activePage();
       if (expectedNonce !== null && state.imageSelectionNonce !== expectedNonce) {
         return false;
       }
@@ -2405,6 +2469,16 @@ async function fetchStockImages(headline, options = {}) {
           }
           await ensureImageFocalPoint(fullImg);
           claimImageSelection();
+          // claimImageSelection() stamps the CURRENT page; this pick belongs
+          // to the one it was made from.
+          imageSelectionOwner = owner;
+          if (stashImageForAbsentPage(owner, fullImg)) {
+            report("Image applied to the slide it was chosen for.", "success");
+            setStatus("Image applied!", "success");
+            stockImagesGrid.querySelectorAll(".stock-item").forEach(t => t.classList.remove("active"));
+            if (thumb) thumb.classList.add("active");
+            return true;
+          }
           state.mainImage = fullImg;
           resetImageControls();
           renderPoster();
@@ -3120,6 +3194,9 @@ function restorePages(list, spine) {
     if (entry.type === "video") {
       content.videoUrl = entry.video?.url || "";
       content.storedVideoUrl = entry.video?.storedUrl || null;
+      /* Seed the player source too, so the card can paint without waiting to
+         be selected and adoptPageVideo has something to load. */
+      content.videoSrc = entry.video?.storedUrl || "";
       content.storedVideoFor = entry.video?.storedFor || null;
       content.videoSourceKind = entry.video?.sourceKind || "link";
       content.trimStart = numberOr(entry.video?.trimStart, 0);
@@ -3400,6 +3477,12 @@ function applyPageScope(page) {
     if ("disabled" in el) el.disabled = !on;
   };
   setScope(headlineEdit, scope.headline);
+  /* The Size slider sizes the headline, so it belongs to the same gate. It was
+     in no scope at all: on a Story or Text page the headline box sat visibly
+     dimmed and disabled while the slider right beneath it stayed live — and
+     moving it edited the poster on page 1, a card the writer was not looking
+     at, with no visible effect on the page they were. */
+  setScope(fontSizeInput, scope.headline);
   setScope(detailEdit, scope.detail);
   setScope(tagPresetsContainer, scope.tag);
   setScope(document.getElementById("video-acc"), scope.video);
@@ -3500,7 +3583,18 @@ function adoptPageVideo(page) {
 
   if (playerOwner && playerOwner !== page) parkPageVideo(playerOwner);
 
-  const wanted = content.videoSrc || "";
+  /* Fall back to what the page actually stores.
+
+     Only ONE video page is primed with a videoSrc on load (loadPixIntoEditor
+     does it for design.video), so any other restored video page had an empty
+     `wanted` — and an empty `wanted` meant this blanked the shared player
+     instead of loading that page's own footage. Clicking the Video card made
+     the clip that was visible a moment earlier disappear. storedUrl is the
+     bucket copy; the link is re-previewed through the proxy the same way the
+     fetch path does it. */
+  const wanted = content.videoSrc
+    || content.storedVideoUrl
+    || (content.videoUrl ? `/api/video/preview?u=${encodeURIComponent(content.videoUrl)}` : "");
   const current = videoPreviewEl.currentSrc || videoPreviewEl.getAttribute("src") || "";
 
   if (wanted && wanted !== current) {
@@ -6633,6 +6727,8 @@ if (aiEnhanceBtn) {
   aiEnhanceBtn.addEventListener("click", async () => {
     const img = state.mainImage;
     if (!img) return;
+    // Whose picture this is. Read before the first await — see the commit below.
+    const enhanceOwner = activePage();
 
     aiEnhanceBtn.disabled = true;
     aiEnhanceBtn.classList.add("working");
@@ -6683,7 +6779,13 @@ if (aiEnhanceBtn) {
         enhanced.src = data.image;
       });
       await ensureImageFocalPoint(enhanced);
-      state.mainImage = enhanced;
+      /* Onto the page that was selected when Enhance was pressed. This runs
+         30-90 seconds after the click and had no page guard at all, so a
+         writer who clicked through the carousel while waiting watched the
+         slide they happened to be looking at swap to page 1's enhanced photo
+         — destroying that slide's own picture, unrecoverable when it was a
+         drag-and-drop upload. */
+      commitFieldToPage(enhanceOwner, "mainImage", enhanced);
       renderPoster();
       const ENGINE_LABELS = {
         realesrgan: "Real-ESRGAN (self-hosted, free)",
@@ -6974,6 +7076,25 @@ function commitVideoToItsPage() {
   return page;
 }
 
+/* Commit an async result to the page that OWNED it when the work started.
+
+   Anything that finishes after an await — an enhance, a stock pick, a scrape,
+   a vision call, an encode — was started FOR a particular page, and the writer
+   is free to click a different card while it runs. Writing the result into
+   live `state` on arrival files it under whatever page happens to be selected
+   at that moment: the wrong slide gets the picture, and the slide it was meant
+   for keeps nothing. Worse, if the selected page does not own the field at
+   all, syncActivePageContent() spills it onto page 1.
+
+   So: write through the owning page, and touch `state` only while that page is
+   still the one on screen. Same shape as commitVideoToItsPage(). */
+function commitFieldToPage(page, field, value) {
+  if (!page) return;
+  if (!page.content) page.content = {};
+  page.content[field] = value;
+  if (activePage() === page) state[field] = value;
+}
+
 /* ── Trim ── */
 function setupTrimRange(duration) {
   const dur = Math.max(0, duration || 0);
@@ -7209,6 +7330,16 @@ async function exportVideoClip() {
 
   try {
     const { width, height } = videoTargetSize();
+    /* The key and the page BEFORE the encode, not after.
+
+       The encode runs for minutes and the trim sliders stay live throughout.
+       Stamping the finished blob with a key computed on ARRIVAL filed old
+       footage under the new range: the row recorded the new in/out points, the
+       preview played them, and the stored and published mp4 was the old cut,
+       with no error anywhere. resolvePublishClipFromState already reads its
+       key before the await; this is the same discipline. */
+    const clipKey = videoClipKey();
+    const clipOwner = activePage();
     const blob = await renderTrimmedClip({ width, height, onStatus: setVideoStatus });
 
     const title = (state.videoMeta && state.videoMeta.title) || state.headline || "pix-clip";
@@ -7222,9 +7353,11 @@ async function exportVideoClip() {
 
     setVideoStatus(`Exported ${(blob.size / 1048576).toFixed(1)} MB · ${width}×${height}`, "success");
 
-    // The encode is done and paid for; keep it so Save can store this exact
-    // clip without re-rendering it.
-    state.renderedClip = { blob, key: videoClipKey() };
+    /* The encode is done and paid for; keep it so Save can store this exact
+       clip without re-rendering it — filed against the page it was rendered
+       for, so navigating away mid-export neither loses it nor hands it to a
+       different video slide. */
+    commitFieldToPage(clipOwner, "renderedClip", { blob, key: clipKey });
   } catch (err) {
     // A dropped connection surfaces as a bare "Failed to fetch", which tells
     // the user nothing — name the likely cause.
@@ -7277,6 +7410,13 @@ async function exportSlidePng(mode, targetLongEdges = EXPORT_LONG_EDGES, encode 
     downloading: state.isDownloading,
     forceText: state.forceTextExport,
     shortly: state.useShortlyLogo,
+    /* The caller's text slice belongs in the snapshot too. The restore-render
+       in the finally takes renderPoster's full path, which ends every page by
+       clearing _detailSlice — so the FIRST compression rung consumed it and
+       every rung after it exported the whole paragraph instead of that page's
+       slice. On a carousel with two Text pages that publishes both slides with
+       identical, overflowing copy. */
+    slice: state._detailSlice,
   };
   state.isDownloading = true;
   state.previewMode = mode;
@@ -7294,6 +7434,10 @@ async function exportSlidePng(mode, targetLongEdges = EXPORT_LONG_EDGES, encode 
     state.forceTextExport = prev.forceText;
     state.useShortlyLogo = prev.shortly;
     renderPoster();
+    /* AFTER the restore-render, not before: that render is itself what clears
+       _detailSlice, so restoring first would simply be undone and the next
+       compression rung would export the whole paragraph again. */
+    state._detailSlice = prev.slice;
   }
   return result;
 }
@@ -7578,6 +7722,18 @@ function moveSlot(card, toIndex) {
     const item = e.target.closest("[data-add-page]");
     if (!item) return;
     closeMenu();
+    /* One video per post — the rule primaryVideoPage() and the publish path
+       have always assumed, without anything enforcing it. A second Video page
+       could be added, but every video operation resolves through the PRIMARY
+       page: the publish loop shipped the first clip twice and never sent the
+       second, and saving uploaded the first page's footage for both. Since
+       DailyMattr's API is write-only, that duplicate is permanent. Refusing
+       the second page is the honest reading of a model the rest of the code
+       already relies on. */
+    if (item.dataset.addPage === "video" && pages.some((p) => p.type === "video")) {
+      setStatus("A post carries one video, so it has one Video page. Edit the one you have.", "error");
+      return;
+    }
     addPage(item.dataset.addPage);
   });
 
@@ -8098,6 +8254,22 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
     setDailyMattrStatus(mediaError, "error");
     return;
   }
+  /* Same idea for the clip length. MAX_CLIP_SECONDS was enforced in exactly
+     two places: the Export button, which greys out with no explanation, and
+     the server — AFTER the entire several-hundred-megabyte upload had been
+     received. So a writer who dragged the end handle past the limit watched
+     every slide render and the whole file upload, and only then read "Clip is
+     200s; the limit is 90s." Checked here it costs a click. */
+  const clipForLimit = primaryVideoContent();
+  const clipSeconds = (clipForLimit.trimEnd ?? 0) - (clipForLimit.trimStart ?? 0);
+  if (clipSeconds > MAX_CLIP_SECONDS) {
+    setDailyMattrStatus(
+      `The video is ${clipSeconds.toFixed(0)}s and the limit is ${MAX_CLIP_SECONDS}s. Shorten the trim range on the Video page, then publish.`,
+      "error",
+    );
+    return;
+  }
+
   /* DailyMattr rejects the State category without a state. Caught here so the
      failure costs a click, not a multi-minute video encode and upload first. */
   if (stateIsRequired(categoryId) && !stateId) {
@@ -9228,8 +9400,15 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
         resubmitted: Boolean(data.resubmitted),
         warning: mediaProblems.length ? mediaProblems.join("; ") : null,
         videoStoreFailure,
-        // The submit was downgraded to a draft because the clip is missing.
-        heldBack,
+        /* The submit was downgraded to a draft because the clip is missing —
+           and the SERVER agreed. Asserting this from intent alone told a
+           writer their post "was kept as YOUR draft" when the row had come
+           back non-draft, which happens whenever the post was already with QA:
+           an asDraft save cannot un-submit one. The sharpest case is a
+           rejected post, where the same save also lifts the rejection and
+           pushes it back into the Awaiting queue — so the writer is told it is
+           safe in Drafts while QA is holding it, clipless, right now. */
+        heldBack: heldBack && (data.isDraft ?? !handOver) === true,
       };
     } catch (err) {
       console.warn("[pix] not saved:", err.message);
@@ -11125,6 +11304,11 @@ function considerAutosave() {
      post it is about to declare saved, and a publish is stepping the
      selection through every page to export it. Neither is a person typing. */
   if (editorLoading || publishInFlight) return;
+  /* An export is already encoding this clip. ensureMediaUploaded would post
+     the whole original file to /api/video/clip a SECOND time — two ffmpeg jobs
+     on the same footage, two multi-hundred-megabyte uploads, from a timer
+     nobody pressed. The publish button refuses for the same reason. */
+  if (state.videoExporting) return;
   if (lastSavedFingerprint === null) return;
 
   /* ── Where autosave stops ──
@@ -11175,8 +11359,23 @@ function considerAutosave() {
      into a repeated submission to QA. */
   savePixToLibrary({ asDraft: state.isDraft, auto: true })
     .then((result) => {
-      if (result.ok) {
-        setStatus("Saved automatically.", "success");
+      if (result.ok && result.videoStoreFailure) {
+        /* Saved, but not with its video — so it must not read as saved.
+
+           Autosave used to print "Saved automatically" and light "Autosaved at
+           14:32" whatever happened to the clip, dropping both result.warning
+           and result.videoStoreFailure on the floor. The writer saw green,
+           believed the post was safe, reloaded or opened the next story, and
+           the footage was gone for good: the row keeps a trim range and no
+           URL, and an uploaded File does not survive a reload.
+
+           No dialog here — a modal from a background timer would interrupt
+           typing every few seconds — but the line is red, it names the clip,
+           and the "saved" stamp is deliberately withheld. */
+        setStatus(`Saved automatically, but the video was not: ${result.videoStoreFailure}. Press Save to try the clip again.`, "error");
+      } else if (result.ok) {
+        setStatus(result.warning ? `Saved automatically, but the ${result.warning}.` : "Saved automatically.",
+          result.warning ? "error" : "success");
         showAutosaved(`Autosaved at ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`);
       } else {
         /* Quietly. The unsaved dot stays lit, so the state is still visible,

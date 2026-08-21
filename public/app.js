@@ -656,7 +656,23 @@ function mbLabel(bytes) {
 }
 
 const DAILYMATTR_SLIDE_BUDGET_BYTES = 3 * 1024 * 1024;
-const DAILYMATTR_POST_BUDGET_BYTES = 20 * 1024 * 1024;
+/* Two limits, because they have two different remedies.
+
+   The SLIDES budget covers what we render and can therefore compress — the
+   JPEG cards. If those are heavy the answer is to compress harder or drop a
+   slide, and the ladder above has usually already done the first.
+
+   The CEILING covers the whole upload including video, and is deliberately
+   far looser. A clip's size is inherent: it cannot be re-encoded in the
+   browser, and the only real remedy is a shorter trim range. Counting a video
+   against the slides budget was simply wrong — it blocked every video post
+   with advice ("replace the heaviest picture") that does not apply to a video,
+   and four video posts have published to DailyMattr successfully (buzz ids
+   8281, 8375, 8386, 8429) with clips up to 32s, so the platform plainly
+   accepts them. The ceiling matches the per-file cap the server already
+   enforces, so this refuses only what could not have been sent anyway. */
+const DAILYMATTR_SLIDES_BUDGET_BYTES = 20 * 1024 * 1024;
+const DAILYMATTR_TOTAL_CEILING_BYTES = 64 * 1024 * 1024;
 const DAILYMATTR_COMPRESSION_LADDER = [
   { longEdges: [3840], quality: 0.92 },
   { longEdges: [3840], quality: 0.82 },
@@ -8241,13 +8257,21 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
        with the one message QA cannot act on. Checked here it fails with the
        numbers, and only after compression has already had its go, so this
        fires for a genuinely huge post rather than for a normal one. */
+    const isVideoItem = (m) => String(m.blob?.type || "").startsWith("video/");
     const totalBytes = outboundMedia.reduce((sum, m) => sum + (m.blob?.size || 0), 0);
-    if (totalBytes > DAILYMATTR_POST_BUDGET_BYTES) {
-      const heaviest = [...outboundMedia]
-        .sort((a, b) => (b.blob?.size || 0) - (a.blob?.size || 0))
-        .slice(0, 3)
-        .map((m, i) => `${i + 1}. ${m.filename} — ${mbLabel(m.blob.size)}`);
-      const message = `This post is ${mbLabel(totalBytes)} of media, over the ${mbLabel(DAILYMATTR_POST_BUDGET_BYTES)} DailyMattr accepts.`;
+    const videoBytes = outboundMedia.filter(isVideoItem)
+      .reduce((sum, m) => sum + (m.blob?.size || 0), 0);
+    const slideBytes = totalBytes - videoBytes;
+
+    const heaviest = (items) => [...items]
+      .sort((a, b) => (b.blob?.size || 0) - (a.blob?.size || 0))
+      .slice(0, 3)
+      .map((m, i) => `${i + 1}. ${m.filename} — ${mbLabel(m.blob.size)}`);
+
+    /* The pictures, which we render and can compress. Video is excluded on
+       purpose — see the two constants. */
+    if (slideBytes > DAILYMATTR_SLIDES_BUDGET_BYTES) {
+      const message = `The pictures in this post come to ${mbLabel(slideBytes)}, over the ${mbLabel(DAILYMATTR_SLIDES_BUDGET_BYTES)} limit.`;
       setDailyMattrStatus(message, "error");
       confirmAction({
         notice: true,
@@ -8256,14 +8280,40 @@ async function publishToDailyMattr({ skipConfirm = false } = {}) {
         facts: [
           "Nothing was sent — the post is unchanged.",
           "The heaviest items:",
-          ...heaviest,
+          ...heaviest(outboundMedia.filter((m) => !isVideoItem(m))),
           "Remove a slide, or replace the heaviest picture with a smaller one.",
         ],
         confirmLabel: "Close",
       });
       return;
     }
-    console.info(`[pix] publishing ${outboundMedia.length} media, ${mbLabel(totalBytes)} total`);
+
+    /* The whole upload. Only a very long clip can reach this, and the remedy
+       is a shorter trim — not "replace a picture", which is what this used to
+       tell people holding a perfectly ordinary video. */
+    if (totalBytes > DAILYMATTR_TOTAL_CEILING_BYTES) {
+      const message = `This post is ${mbLabel(totalBytes)} of media, over the ${mbLabel(DAILYMATTR_TOTAL_CEILING_BYTES)} limit.`;
+      setDailyMattrStatus(message, "error");
+      confirmAction({
+        notice: true,
+        title: "Too large to publish",
+        body: message,
+        facts: [
+          "Nothing was sent — the post is unchanged.",
+          "The heaviest items:",
+          ...heaviest(outboundMedia),
+          videoBytes
+            ? `The video accounts for ${mbLabel(videoBytes)} — shorten its trim range on the Video page.`
+            : "Remove a slide, or replace the heaviest picture with a smaller one.",
+        ],
+        confirmLabel: "Close",
+      });
+      return;
+    }
+    console.info(
+      `[pix] publishing ${outboundMedia.length} media, ${mbLabel(totalBytes)} total` +
+      (videoBytes ? ` (${mbLabel(videoBytes)} video)` : ""),
+    );
 
     // Numbered by position, so the pages are always 1..N with no gaps no
     // matter which of the optional items are present.

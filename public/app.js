@@ -3534,8 +3534,24 @@ async function withPrimaryVideo(fn) {
   try {
     return await fn();
   } finally {
-    if (page) Object.assign(page.content, capturePageFields(VIDEO_PAGE_FIELDS));
-    applyPageFields(live);
+    /* What fn actually produced — a fresh encode, an uploaded URL, a new clip
+       key — read out of state before anything is restored over it. */
+    const produced = capturePageFields(VIDEO_PAGE_FIELDS);
+    if (page) Object.assign(page.content, produced);
+
+    /* `live` is a snapshot taken BEFORE fn ran, so restoring it blindly puts
+       the pre-upload values back into state. That is harmless while some other
+       page is selected — the video page owns the fields and state's copy is
+       irrelevant — but it is destructive when the video page is the one on
+       screen, because then state IS that page's live copy and the very next
+       syncActivePageContent() captures the stale snapshot straight back over
+       the upload. The clip encoded, uploaded and logged successfully, and the
+       row still saved storedUrl: null.
+
+       Writers are routinely on the Video page when they press Save — it is
+       the page they were just editing — so this was the common path, not the
+       rare one. */
+    applyPageFields(activePage() === page ? produced : live);
   }
 }
 
@@ -6785,6 +6801,10 @@ async function fetchVideoFromUrl(url) {
 
     setupTrimRange(meta.duration || 0);
     if (videoEditor) videoEditor.hidden = false;
+    /* Committed here as well as after the preview loads: a link is trimmable
+       by timecode even when the preview never arrives, and that case must not
+       be the one that loses the clip. */
+    commitVideoToItsPage();
 
     const len = meta.duration ? ` · ${formatTimecode(meta.duration)}` : "";
     setVideoStatus(`${meta.title || "Video"}${len} — loading preview…`);
@@ -6802,6 +6822,7 @@ async function fetchVideoFromUrl(url) {
           setupTrimRange(videoPreviewEl.duration);
         }
         setVideoStatus(`${meta.title || "Video"}${len}`, "success");
+        commitVideoToItsPage();
         renderPoster();
       }, { once: true });
       videoPreviewEl.addEventListener("error", () => {
@@ -6850,10 +6871,38 @@ function loadLocalVideoFile(file) {
       setupTrimRange(videoPreviewEl.duration || 0);
       if (videoEditor) videoEditor.hidden = false;
       setVideoStatus(`${file.name} · ${formatTimecode(videoPreviewEl.duration)}`, "success");
+      // Onto the video page, not just into state — see commitVideoToItsPage.
+      commitVideoToItsPage();
       renderPoster();
       if (!videoPreviewEl.paused) startVideoPreviewLoop();
     }, { once: true });
   }
+}
+
+/* File the video under the page that owns it, whatever is selected.
+
+   The video controls live in the left panel, not in the page rail, so the
+   natural way to add a clip is to be looking at page 1 while doing it. But the
+   video fields are PAGE-owned: syncActivePageContent() captures the fields of
+   the SELECTED page, and page 1's list has no video in it — so a clip added
+   from page 1 was written into `state` and nowhere else. The moment the writer
+   clicked the Video card to look at it, applyPageFields loaded that page's
+   (empty) content over the top and the File was gone: state.videoFile null,
+   trim back to 0, videoClipKey() null.
+
+   That is why so many posts saved with a trim range and no storedUrl, and why
+   the console said "clip skipped, no key" — the file had been destroyed by a
+   click, before Save ever ran, and an uploaded File cannot be recovered.
+
+   So the moment a video is loaded it is committed to its own page. Selecting
+   that page then LOADS the clip instead of erasing it, and withPrimaryVideo()
+   finds it at save time from whichever page is on screen. */
+function commitVideoToItsPage() {
+  const page = primaryVideoPage() || ensureVideoPage();
+  if (!page) return null;
+  if (!page.content) page.content = {};
+  Object.assign(page.content, capturePageFields(VIDEO_PAGE_FIELDS));
+  return page;
 }
 
 /* ── Trim ── */

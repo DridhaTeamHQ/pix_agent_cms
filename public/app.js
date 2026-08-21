@@ -8994,6 +8994,23 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
       if ((state.pixId ?? null) !== targetId) {
         return { ok: false, error: "Not saved — another post was opened while this one was uploading." };
       }
+
+      /* A video that did not store must not be handed to QA.
+
+         Submitting used to go ahead regardless: the writer got a dialog saying
+         the clip had failed, pressed "Got it", and the post was already in the
+         review queue — without its video. QA then opened a post whose video
+         does not play, and publishing refused with "the video could not be
+         prepared", by which time the writer's file was long gone from their
+         tab and the footage was unrecoverable. Eight of the twelve most recent
+         video posts in the library are in exactly that state.
+
+         So the hand-over is held back and the post stays a draft. Nothing is
+         lost — every word and every picture is saved — and it stays with the
+         one person who can still fix it, because they are the only one who
+         still has the file. */
+      const heldBack = submitting && Boolean(videoStoreFailure);
+      const handOver = submitting && !heldBack;
       if (savePixLabel) savePixLabel.textContent = "Saving…";
       const response = await fetch(PIX_SAVE_ENDPOINT, {
         method: "POST",
@@ -9002,7 +9019,7 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
         // `autosave` rides alongside the columns rather than in them: it
         // describes the request, not the post, and normalise() on the server
         // only reads keys it maps to columns.
-        body: JSON.stringify({ ...collectPixPayload(submitting), autosave: auto }),
+        body: JSON.stringify({ ...collectPixPayload(handOver), autosave: auto }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -9027,7 +9044,7 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
            handleSave), so believing the intent here would leave the editor
            calling a submitted post a draft — and the next line of feedback,
            the pill and the autosave gate all read this flag. */
-        state.isDraft = data.isDraft ?? !submitting;
+        state.isDraft = data.isDraft ?? !handOver;
         state.pixId = data.id || state.pixId;
         /* The server lifted a rejection because this save was the author's
            correction, so the post is back in QA's Awaiting queue. Carried into
@@ -9059,6 +9076,8 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
         resubmitted: Boolean(data.resubmitted),
         warning: mediaProblems.length ? mediaProblems.join("; ") : null,
         videoStoreFailure,
+        // The submit was downgraded to a draft because the clip is missing.
+        heldBack,
       };
     } catch (err) {
       console.warn("[pix] not saved:", err.message);
@@ -9288,12 +9307,17 @@ async function runSave(intent) {
     if (result.videoStoreFailure) {
       await confirmAction({
         notice: true,
-        title: "The video was not saved",
-        body: "Everything else was saved, but the clip could not be prepared — so this post cannot be published with its video.",
+        title: result.heldBack ? "Not sent to QA — the video is missing" : "The video was not saved",
+        body: result.heldBack
+          ? "Your writing and pictures are saved, but the clip could not be prepared — so this post was kept as YOUR draft instead of going to QA. A post whose video is missing cannot be published by anyone."
+          : "Everything else was saved, but the clip could not be prepared — so this post cannot be published with its video.",
         facts: [
           result.videoStoreFailure,
-          "Press Save again now. The file is still loaded in this tab.",
+          "Press Submit again now. The file is still loaded in this tab.",
           "Do NOT reload or open another post first — an uploaded video cannot be recovered after that, and would have to be added again.",
+          ...(result.heldBack
+            ? ["It stays in your Drafts until the video goes through, so nothing you have written is lost."]
+            : []),
         ],
         confirmLabel: "Got it",
       });
@@ -9312,7 +9336,11 @@ async function runSave(intent) {
            trying to achieve and previously never happened. */
         result.resubmitted
           ? "Saved and back with QA — your correction returns the post to the review queue."
-          : draft
+          /* A submit that was held back for a missing clip really did stay a
+             draft, so it must not be described as sent. */
+          : result.heldBack
+            ? "Kept as your draft — the video did not save, so it was not sent to QA."
+            : draft
             ? (result.created
                 ? "Draft saved. QA cannot see it until you press Submit."
                 : "Draft updated. QA cannot see it until you press Submit.")
@@ -9328,7 +9356,11 @@ async function runSave(intent) {
        preview was being missed — writers kept typing the next story over the
        row they had just sent. QA sees no dialog: saving is not a handoff for
        them, and a modal on every edit would be in the way. */
-    if (state.user?.role === "writer") {
+    /* Not when the hand-over was held back: the writer has just been told, in
+       its own dialog, that the post stayed with them because the video is
+       missing. A second dialog immediately after saying "Sent to QA" would
+       contradict it — and the reassuring one is the lie. */
+    if (state.user?.role === "writer" && !result.heldBack) {
       confirmAction({
         notice: true,
         title: result.resubmitted
@@ -9470,7 +9502,25 @@ async function openSavedPost(id) {
     }
     await loadPixIntoEditor(payload.post);
     setReviewStatus("");
-    setStatus("Opened — edit it, then press Save.", "success");
+    /* The unpublishable case gets the line, not the cheerful one.
+
+       A post carrying a video page with no stored clip cannot be published by
+       anybody, and the only place that ever said so was the publish button —
+       after QA had read the article, edited it, and committed to sending it.
+       Saying it on open means the first thing a reviewer learns about an
+       unpublishable post is that it is unpublishable, while the writer may
+       still have the file and a rejection can still recover the footage.
+
+       Set here rather than inside loadPixIntoEditor because the success line
+       above runs afterwards and would overwrite it. */
+    if (canReviewRole(state.user?.role) && primaryVideoPage() && !state.storedVideoUrl) {
+      setStatus(
+        "This post has a video page but no stored clip, so it cannot be published. Reject it back to the writer to have the video added again.",
+        "error",
+      );
+    } else {
+      setStatus("Opened — edit it, then press Save.", "success");
+    }
   } catch (err) {
     setReviewStatus(err.message || "Could not open that post.", "error");
   }

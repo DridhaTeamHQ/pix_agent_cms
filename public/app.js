@@ -11409,7 +11409,99 @@ setInterval(() => {
    uploading every image the moment it is dragged in would spend storage on
    posters nobody keeps. */
 
-async function uploadMediaBlob(blob, filename) {
+/* PUT a blob with progress. fetch() cannot report upload progress at all, and
+   a writer staring at a still screen through a 45 MB clip has no way to tell a
+   slow upload from a dead one — so this stays XHR. */
+function putWithProgress(url, blob, { contentType, onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url, true);
+    if (contentType) xhr.setRequestHeader("Content-Type", contentType);
+    // Storage rejects a repeat PUT to the same path without this; a retry of a
+    // half-finished upload must be allowed to land on its own key.
+    xhr.setRequestHeader("x-upsert", "true");
+
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) { resolve(); return; }
+      let detail = "";
+      try { detail = JSON.parse(xhr.responseText)?.message || ""; } catch { /* not json */ }
+      reject(new Error(detail || `Storage refused the upload (${xhr.status}).`));
+    };
+    // A dropped connection lands here rather than in onload, and it is the
+    // failure that orphaned every stray clip in the bucket.
+    xhr.onerror = () => reject(new Error("The connection dropped during the upload."));
+    xhr.ontimeout = () => reject(new Error("The upload timed out."));
+    xhr.onabort = () => reject(new Error("The upload was cancelled."));
+    xhr.send(blob);
+  });
+}
+
+/**
+ * Store one blob and return the URL it can be read back from.
+ *
+ * Three steps, and the third is the one that matters: the server is asked to
+ * CONFIRM the object is in the bucket before this resolves. Until that check
+ * existed, "uploaded" meant "the request did not visibly fail", which is how
+ * 27 clips ended up in Storage with no post pointing at them.
+ *
+ * The bytes go straight from here to Supabase. They no longer pass through the
+ * app server, which used to hold each whole file in memory while forwarding it.
+ */
+async function uploadMediaBlob(blob, filename, { onProgress } = {}) {
+  const contentType = blob?.type || "application/octet-stream";
+
+  // 1. Ask for a one-shot signed URL scoped to one object path.
+  const signRes = await fetch("/api/media/sign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ contentType, filename: filename || "upload" }),
+  });
+
+  /* An older server has no /api/media/sign. Falling back keeps a browser tab
+     that is mid-shift working across a deploy instead of failing every upload
+     until it is reloaded. */
+  if (signRes.status === 404) return legacyUploadMediaBlob(blob, filename);
+
+  const signed = await signRes.json().catch(() => ({}));
+  if (!signRes.ok) {
+    if (signRes.status === 401) handleSignedOut();
+    throw new Error(signed.error || `Could not prepare the upload (${signRes.status}).`);
+  }
+  if (!signed.uploadUrl || !signed.key) {
+    throw new Error("The server did not return an upload address.");
+  }
+
+  // 2. Straight to Storage.
+  await putWithProgress(signed.uploadUrl, blob, { contentType, onProgress });
+
+  // 3. Only now ask whether it is really there. A URL is recorded on a post
+  //    only after this answers yes.
+  const confirmRes = await fetch("/api/media/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ key: signed.key }),
+  });
+  const confirmed = await confirmRes.json().catch(() => ({}));
+  if (!confirmRes.ok) {
+    if (confirmRes.status === 401) handleSignedOut();
+    throw new Error(confirmed.error || `The upload could not be confirmed (${confirmRes.status}).`);
+  }
+  if (typeof confirmed.url !== "string" || !/^https?:\/\//i.test(confirmed.url)) {
+    throw new Error("The upload was not confirmed as stored.");
+  }
+  return confirmed.url;
+}
+
+/* The previous route: browser -> app server -> Storage. Kept only so an
+   in-flight tab survives a deploy; nothing should reach for it by choice. */
+async function legacyUploadMediaBlob(blob, filename) {
   const form = new FormData();
   form.append("file", blob, filename || "upload");
   const response = await fetch("/api/media", {
@@ -11421,6 +11513,13 @@ async function uploadMediaBlob(blob, filename) {
   if (!response.ok) {
     if (response.status === 401) handleSignedOut();
     throw new Error(payload.error || `Upload failed (${response.status}).`);
+  }
+  /* A 200 is not the same as a URL. The body is parsed with .catch(() => ({})),
+     so an empty, truncated or HTML response arrives here as {} and this used to
+     return undefined — which the caller then filed as a "stored" clip with no
+     address. */
+  if (typeof payload.url !== "string" || !/^https?:\/\//i.test(payload.url)) {
+    throw new Error("Upload finished but the server returned no file URL.");
   }
   return payload.url;
 }
@@ -11617,8 +11716,16 @@ async function ensureMediaUploaded(onProgress = () => {}) {
   await withPrimaryVideo(async () => {
     const clipKey = videoClipKey();
 
-    /* Already stored and unchanged — nothing to do, and nothing to report. */
-    if (clipKey && state.storedVideoFor === clipKey) return;
+    /* Already stored and unchanged — nothing to do, and nothing to report.
+
+       The URL is part of the test, not just the fingerprint. Testing the
+       fingerprint alone is what turned one failed upload into "video never
+       works": the moment a clip was stamped as stored without an address,
+       every later save took this early return, uploaded nothing, reported
+       nothing, and wrote another row with a trim range and no clip. Requiring
+       the URL means a poisoned post retries instead of failing silently for
+       ever. resolvePublishClipFromState already tests both (app.js:8089). */
+    if (clipKey && state.storedVideoFor === clipKey && state.storedVideoUrl) return;
 
     /* No key, but there IS a video page. This used to `return` alongside the
        line above, which is the quietest failure in the whole save path: the
@@ -11655,8 +11762,32 @@ async function ensureMediaUploaded(onProgress = () => {}) {
         blob = await renderTrimmedClip({ onStatus: (m) => onProgress(m) });
         state.renderedClip = { blob, key: clipKey };
       }
-      onProgress("Uploading video…");
-      const url = await uploadMediaBlob(blob, "slide2.mp4");
+      /* One retry. The measured failure is a large clip whose bytes reach
+         Storage while the client never gets a usable response back — the
+         object lands, the reference does not. A second attempt costs one
+         upload and recovers the case that produced every orphan in the
+         bucket. Two attempts, not a loop: if it fails twice the writer needs
+         to be told, not kept waiting. */
+      /* Raw, uncompressed, whatever size the writer's clip is. Compression
+         belongs at publish, where DailyMattr's own cap applies — squeezing it
+         here would degrade the master copy for a limit that is not ours. */
+      const mb = (blob.size / 1048576).toFixed(1);
+      onProgress(`Uploading video (${mb} MB)…`);
+      const track = (pct) => onProgress(`Uploading video (${mb} MB) — ${pct}%`);
+
+      let url;
+      try {
+        url = await uploadMediaBlob(blob, "slide2.mp4", { onProgress: track });
+      } catch (first) {
+        console.warn("[pix] clip upload failed, retrying once:", first);
+        onProgress("Upload failed — retrying…");
+        url = await uploadMediaBlob(blob, "slide2.mp4", { onProgress: track });
+      }
+      /* Stamp only once the address is real. Setting storedVideoFor next to a
+         null URL is what the early return above then treats as "done". */
+      if (typeof url !== "string" || !url) {
+        throw new Error("the upload returned no URL");
+      }
       state.storedVideoFor = clipKey;
       state.storedVideoUrl = url;
     } catch (err) {

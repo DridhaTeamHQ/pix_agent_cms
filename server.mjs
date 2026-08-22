@@ -27,6 +27,7 @@ import { handlePixRequest } from "./lib/pix-api.js";
 import { handlePixAnalyticsRequest } from "./lib/pix-analytics.js";
 import {
   configureStorage, isStorageConfigured, uploadMedia, pingStorage,
+  createSignedUploadUrl, statMedia,
 } from "./lib/storage.js";
 import {
   fetchDailyMattrMeta, getDailyMattrConfig, publishDailyMattrBuzzContent,
@@ -404,6 +405,20 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && req.url === "/api/upscale-image") {
     await handleUpscaleImage(req, res);
+    return;
+  }
+
+  /* Direct-to-Storage upload. /api/media/sign hands the browser a one-shot
+     URL, the browser sends the bytes straight to Supabase, and
+     /api/media/confirm verifies the object arrived before any post is allowed
+     to reference it. The bytes never touch this container. */
+  if (req.method === "POST" && req.url === "/api/media/sign") {
+    await handleMediaSign(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/media/confirm") {
+    await handleMediaConfirm(req, res);
     return;
   }
 
@@ -1243,6 +1258,103 @@ async function handleVideoClip(req, res) {
    Signed-in users only: this writes to a bucket with the service_role key,
    and an open upload endpoint backed by that key is a free file host for
    anyone who finds it. */
+/* ── Direct-to-Storage upload ───────────────────────────────────────────────
+
+   Two calls around an upload this server never sees the bytes of:
+
+     POST /api/media/sign     -> { uploadUrl, key }
+     ...browser PUTs the file straight to Supabase Storage...
+     POST /api/media/confirm  -> { url, bytes }
+
+   The split exists so that "stored" is something this server has checked
+   rather than something the browser asserts. The old single-shot route
+   buffered the whole file in memory here and answered with a URL the moment
+   the forward succeeded; when that leg failed after Storage had already
+   written the object, the bytes stayed in the bucket with nothing pointing at
+   them. Twenty-seven clips in this bucket are that failure.
+
+   The signed URL is scoped to one object path under the caller's own folder,
+   so a writer cannot aim an upload at someone else's prefix. */
+async function handleMediaSign(req, res) {
+  const user = await currentUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Sign in to upload media." });
+    return;
+  }
+  if (!isStorageConfigured()) {
+    sendJson(res, 503, { error: "Media storage is not configured on this server." });
+    return;
+  }
+
+  let body = {};
+  try {
+    body = await readJson(req, { limit: 10_000 });
+  } catch {
+    sendJson(res, 400, { error: "Invalid request." });
+    return;
+  }
+
+  const contentType = String(body.contentType || "application/octet-stream").slice(0, 100);
+  const filename = String(body.filename || "").slice(0, 200);
+
+  try {
+    // Path is built here, never from anything the browser sent: a filename off
+    // a client is attacker-controlled and has no business steering a key.
+    const key = `${user.id}/${randomUUID()}${extensionFor(contentType, filename)}`;
+    const signed = await createSignedUploadUrl(key);
+    sendJson(res, 200, { uploadUrl: signed.uploadUrl, key: signed.key });
+  } catch (err) {
+    console.warn("⚠ could not sign an upload:", err.message);
+    sendJson(res, 502, { error: err.message || "Could not prepare the upload." });
+  }
+}
+
+async function handleMediaConfirm(req, res) {
+  const user = await currentUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Sign in to upload media." });
+    return;
+  }
+
+  let body = {};
+  try {
+    body = await readJson(req, { limit: 10_000 });
+  } catch {
+    sendJson(res, 400, { error: "Invalid request." });
+    return;
+  }
+
+  const key = String(body.key || "");
+  /* Confirm only within the caller's own folder. Without this, a signed-in
+     writer could ask the server to vouch for any object in the bucket and
+     attach someone else's video to their post. */
+  if (!key || !key.startsWith(`${user.id}/`) || key.includes("..")) {
+    sendJson(res, 400, { error: "That upload does not belong to this account." });
+    return;
+  }
+
+  try {
+    const stat = await statMedia(key);
+    if (!stat.ok) {
+      // The reference is refused, so the post cannot record a video that is
+      // not there — which is the whole point of this round trip.
+      sendJson(res, 404, {
+        error: "The upload did not arrive in storage. Nothing was saved — please try again.",
+      });
+      return;
+    }
+    if (!stat.bytes) {
+      sendJson(res, 422, { error: "The upload arrived empty. Please try again." });
+      return;
+    }
+    console.log(`✓ media confirmed ${Math.round(stat.bytes / 1024)} KB → ${key}`);
+    sendJson(res, 200, { url: stat.url, bytes: stat.bytes, contentType: stat.contentType });
+  } catch (err) {
+    console.warn("⚠ could not confirm an upload:", err.message);
+    sendJson(res, 502, { error: err.message || "Could not confirm the upload." });
+  }
+}
+
 async function handleMediaUpload(req, res) {
   const user = await currentUser(req);
   if (!user) {

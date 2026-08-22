@@ -1400,8 +1400,20 @@ async function handleMediaDelete(req, res) {
   }
 
   try {
+    /* Every column a media URL can be reached from, not just design.
+ 
+       design alone is the video-shaped question. An image is also reachable
+       through main_image_url and source_image_url, and a published story
+       records what it sent in published_history — so checking design only
+       would happily delete the picture off the front of a live post. If a new
+       column ever carries a URL, it belongs in this list. */
     const { rows } = await readQuery(
-      "select id from pix_posts where design::text like $1 limit 1",
+      `select id from pix_posts
+        where design::text like $1
+           or coalesce(main_image_url, '') like $1
+           or coalesce(source_image_url, '') like $1
+           or coalesce(published_history::text, '') like $1
+        limit 1`,
       [`%${key}%`]
     );
     if (rows.length) {

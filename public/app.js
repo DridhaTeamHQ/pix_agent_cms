@@ -9333,7 +9333,7 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
          lost — every word and every picture is saved — and it stays with the
          one person who can still fix it, because they are the only one who
          still has the file. */
-      const heldBack = submitting && Boolean(videoStoreFailure);
+      const heldBack = submitting && Boolean(videoStoreFailure || imageStoreFailure);
       const handOver = submitting && !heldBack;
       if (savePixLabel) savePixLabel.textContent = "Saving…";
       const response = await fetch(PIX_SAVE_ENDPOINT, {
@@ -9400,6 +9400,7 @@ async function savePixToLibrary({ asDraft, auto = false } = {}) {
         resubmitted: Boolean(data.resubmitted),
         warning: mediaProblems.length ? mediaProblems.join("; ") : null,
         videoStoreFailure,
+        imageStoreFailure,
         /* The submit was downgraded to a draft because the clip is missing —
            and the SERVER agreed. Asserting this from intent alone told a
            writer their post "was kept as YOUR draft" when the row had come
@@ -9637,19 +9638,27 @@ async function runSave(intent) {
 
        So: say it now, while the file is still in memory and pressing Save
        again is a real fix. */
-    if (result.videoStoreFailure) {
+    /* A missing slide picture gets the same treatment as a missing clip. Both
+       reach QA as a post that looks finished and is not, and in both cases the
+       only moment it can still be fixed cheaply is now, while the source is
+       still loaded in this tab. */
+    if (result.videoStoreFailure || result.imageStoreFailure) {
+      const missingVideo = Boolean(result.videoStoreFailure);
+      const thing = missingVideo ? "video" : "picture";
       await confirmAction({
         notice: true,
-        title: result.heldBack ? "Not sent to QA — the video is missing" : "The video was not saved",
+        title: result.heldBack
+          ? `Not sent to QA — the ${thing} is missing`
+          : `The ${thing} was not saved`,
         body: result.heldBack
-          ? "Your writing and pictures are saved, but the clip could not be prepared — so this post was kept as YOUR draft instead of going to QA. A post whose video is missing cannot be published by anyone."
-          : "Everything else was saved, but the clip could not be prepared — so this post cannot be published with its video.",
+          ? `Your writing is saved, but the ${thing} could not be stored — so this post was kept as YOUR draft instead of going to QA. A post with a missing ${thing} cannot be published by anyone.`
+          : `Everything else was saved, but the ${thing} could not be stored — so this post cannot be published as it stands.`,
         facts: [
-          result.videoStoreFailure,
+          result.videoStoreFailure || result.imageStoreFailure,
           "Press Submit again now. The file is still loaded in this tab.",
-          "Do NOT reload or open another post first — an uploaded video cannot be recovered after that, and would have to be added again.",
+          `Do NOT reload or open another post first — an uploaded ${thing} cannot be recovered after that, and would have to be added again.`,
           ...(result.heldBack
-            ? ["It stays in your Drafts until the video goes through, so nothing you have written is lost."]
+            ? ["It stays in your Drafts until it goes through, so nothing you have written is lost."]
             : []),
         ],
         confirmLabel: "Got it",
@@ -11604,10 +11613,15 @@ async function storeImageForSlide(src, filename) {
 /* Set when the clip could not be stored on THIS save. Read by the caller so
    it can raise a dialog rather than a status line — see runSave. */
 let videoStoreFailure = null;
+/* Same contract as videoStoreFailure, for a slide picture that could not be
+   stored. A carousel handed to QA with a blank slide is the image-shaped
+   version of a post handed over with no clip. */
+let imageStoreFailure = null;
 
 async function ensureMediaUploaded(onProgress = () => {}) {
   const problems = [];
   videoStoreFailure = null;
+  imageStoreFailure = null;
 
   /* The image to upload is the POST's, not the selected page's — otherwise
      saving while an added page is selected uploaded that page's picture (or,
@@ -11706,7 +11720,12 @@ async function ensureMediaUploaded(onProgress = () => {}) {
         state.storedImageUrl = url;
       }
     } catch (err) {
+      /* Recorded, not just listed. A slide whose picture never reached Storage
+         renders as words on a blank frame, and until now that still went to QA
+         with nothing to stop it — the same silent hand-over the missing clip
+         used to get. */
       problems.push(`page image not stored (${err.message})`);
+      imageStoreFailure = err.message || "a slide picture could not be stored";
     }
   }
 

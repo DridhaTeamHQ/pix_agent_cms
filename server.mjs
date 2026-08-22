@@ -15,7 +15,7 @@ import {
 import {
   configureDb, isConfigured as dbConfigured, ping as dbPing,
   getPix, setApproval,
-  claimPublish, recordPublishedId, releasePublishClaim,
+  claimPublish, recordPublishedId, releasePublishClaim, readQuery,
 } from "./lib/db.js";
 import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
@@ -27,7 +27,7 @@ import { handlePixRequest } from "./lib/pix-api.js";
 import { handlePixAnalyticsRequest } from "./lib/pix-analytics.js";
 import {
   configureStorage, isStorageConfigured, uploadMedia, pingStorage,
-  createSignedUploadUrl, statMedia,
+  createSignedUploadUrl, statMedia, deleteMedia,
 } from "./lib/storage.js";
 import {
   fetchDailyMattrMeta, getDailyMattrConfig, publishDailyMattrBuzzContent,
@@ -412,6 +412,13 @@ const server = http.createServer(async (req, res) => {
      URL, the browser sends the bytes straight to Supabase, and
      /api/media/confirm verifies the object arrived before any post is allowed
      to reference it. The bytes never touch this container. */
+  /* Removing an object from the bucket. Admin only, and refused outright for
+     anything a post still points at. */
+  if (req.method === "DELETE" && req.url?.startsWith("/api/media")) {
+    await handleMediaDelete(req, res);
+    return;
+  }
+
   if (req.method === "POST" && req.url === "/api/media/sign") {
     await handleMediaSign(req, res);
     return;
@@ -1352,6 +1359,72 @@ async function handleMediaConfirm(req, res) {
   } catch (err) {
     console.warn("⚠ could not confirm an upload:", err.message);
     sendJson(res, 502, { error: err.message || "Could not confirm the upload." });
+  }
+}
+
+/* Delete one stored object.
+ 
+   Two guards, because this is the only irreversible thing in the media path
+   and Storage keeps no undo:
+ 
+     1. Admin only. QA can delete a POST, but a post is a row and the bytes it
+        points at may be shared with another; removing media is a different
+        act with a different blast radius.
+     2. Refused if any post still references the key. An admin reaching for
+        this is tidying up, not trying to break a live story, so the server
+        checks rather than trusting the caller to have checked. This is the
+        guard that makes the endpoint safe to leave in place. */
+const MEDIA_KEY_RE = /^[0-9a-f-]{36}\/[0-9a-f-]{36}\.[a-z0-9]{1,5}$/i;
+
+async function handleMediaDelete(req, res) {
+  const user = await currentUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Sign in to manage media." });
+    return;
+  }
+  if (!isAdmin(user.role)) {
+    sendJson(res, 403, { error: "Only an admin can delete stored media." });
+    return;
+  }
+  if (!isStorageConfigured()) {
+    sendJson(res, 503, { error: "Media storage is not configured on this server." });
+    return;
+  }
+
+  const key = new URL(req.url, "http://localhost").searchParams.get("key") || "";
+  // Shape-checked rather than merely escaped: every key this app writes is
+  // <uuid>/<uuid>.<ext>, so anything else is not ours to delete.
+  if (!MEDIA_KEY_RE.test(key)) {
+    sendJson(res, 400, { error: "That is not a valid media key." });
+    return;
+  }
+
+  try {
+    const { rows } = await readQuery(
+      "select id from pix_posts where design::text like $1 limit 1",
+      [`%${key}%`]
+    );
+    if (rows.length) {
+      sendJson(res, 409, {
+        error: `Still in use by post ${rows[0].id}. Nothing was deleted.`,
+        postId: rows[0].id,
+      });
+      return;
+    }
+  } catch (err) {
+    // A reference check that could not run is not a licence to delete.
+    console.warn("⚠ could not check media references:", err.message);
+    sendJson(res, 503, { error: "Could not verify whether this file is in use. Nothing was deleted." });
+    return;
+  }
+
+  try {
+    await deleteMedia(key);
+    console.log(`✓ media deleted by ${user.username}: ${key}`);
+    sendJson(res, 200, { deleted: true, key });
+  } catch (err) {
+    console.warn("⚠ media delete failed:", err.message);
+    sendJson(res, 502, { error: err.message || "Could not delete that file." });
   }
 }
 

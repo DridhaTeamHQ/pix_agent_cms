@@ -414,6 +414,11 @@ const server = http.createServer(async (req, res) => {
      to reference it. The bytes never touch this container. */
   /* Removing an object from the bucket. Admin only, and refused outright for
      anything a post still points at. */
+  if (req.method === "POST" && req.url?.startsWith("/api/media/cleanup")) {
+    await handleMediaCleanup(req, res);
+    return;
+  }
+
   if (req.method === "DELETE" && req.url?.startsWith("/api/media")) {
     await handleMediaDelete(req, res);
     return;
@@ -1375,6 +1380,88 @@ async function handleMediaConfirm(req, res) {
         checks rather than trusting the caller to have checked. This is the
         guard that makes the endpoint safe to leave in place. */
 const MEDIA_KEY_RE = /^[0-9a-f-]{36}\/[0-9a-f-]{36}\.[a-z0-9]{1,5}$/i;
+
+/* Sweep the bucket for objects no post points at.
+ 
+   The orphan question is a join between storage.objects and pix_posts, and
+   both live in the same database — so it is answered here in one query rather
+   than by shuttling twelve hundred object names to a client and back.
+ 
+   Matching is on the file's own uuid, not its full path. A stored picture can
+   be referenced through the image proxy, where the path arrives percent-encoded
+   and the '/' is '%2F'; a path match would miss that and call a live image an
+   orphan. The uuid survives any encoding.
+ 
+   Defaults to a dry run. Deleting is the caller's explicit decision, and the
+   list it returns is exactly what a confirm=true call will remove. */
+async function handleMediaCleanup(req, res) {
+  const user = await currentUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Sign in to manage media." });
+    return;
+  }
+  if (!isAdmin(user.role)) {
+    sendJson(res, 403, { error: "Only an admin can clean up stored media." });
+    return;
+  }
+  if (!isStorageConfigured()) {
+    sendJson(res, 503, { error: "Media storage is not configured on this server." });
+    return;
+  }
+
+  const params = new URL(req.url, "http://localhost").searchParams;
+  const confirm = params.get("confirm") === "true";
+  const limit = Math.min(Math.max(Number(params.get("limit") || 500), 1), 2000);
+
+  let rows;
+  try {
+    ({ rows } = await readQuery(
+      `with objs as (
+         select o.name, (o.metadata->>'size')::bigint as bytes,
+                regexp_replace(split_part(o.name, '/', 2), '\.[a-z0-9]+$', '') as fid
+           from storage.objects o
+          where o.bucket_id = 'pix-media'
+       )
+       select name, bytes from objs o
+        where o.fid <> ''
+          and not exists (
+            select 1 from pix_posts p
+             where p.design::text like '%' || o.fid || '%'
+                or coalesce(p.main_image_url, '')   like '%' || o.fid || '%'
+                or coalesce(p.source_image_url, '') like '%' || o.fid || '%'
+                or coalesce(p.published_history::text, '') like '%' || o.fid || '%')
+        order by o.name
+        limit $1`,
+      [limit]
+    ));
+  } catch (err) {
+    console.warn("⚠ cleanup scan failed:", err.message);
+    sendJson(res, 502, { error: `Could not scan for orphans: ${err.message}` });
+    return;
+  }
+
+  const bytes = rows.reduce((sum, r) => sum + Number(r.bytes || 0), 0);
+  if (!confirm) {
+    sendJson(res, 200, {
+      dryRun: true, found: rows.length, bytes,
+      sample: rows.slice(0, 10).map((r) => r.name),
+    });
+    return;
+  }
+
+  let deleted = 0;
+  const failures = [];
+  for (const row of rows) {
+    try {
+      await deleteMedia(row.name);
+      deleted += 1;
+    } catch (err) {
+      failures.push({ name: row.name, error: err.message });
+    }
+  }
+  console.log(`✓ media cleanup by ${user.username}: ${deleted} deleted, ${failures.length} failed`);
+  sendJson(res, 200, { dryRun: false, found: rows.length, deleted, bytes, failures: failures.slice(0, 10) });
+}
 
 async function handleMediaDelete(req, res) {
   const user = await currentUser(req);

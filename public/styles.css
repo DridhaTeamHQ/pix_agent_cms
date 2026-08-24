@@ -2064,14 +2064,11 @@ body.view-writers .edit-sheet {
   margin-bottom: 18px;
 }
 
-.analytics-kicker {
-  display: inline-block;
-  margin-bottom: 8px;
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--accent-dim);
+/* Keep retired analytics hero copy hidden if stale HTML is paired with new CSS. */
+.analytics-kicker,
+#analytics-title,
+#analytics-desc {
+  display: none !important;
 }
 
 .analytics-hero {
@@ -4171,11 +4168,6 @@ textarea:focus {
 }
 
 /* ── Analytics Dark Mode Overrides ── */
-:root[data-theme="dark"] .analytics-kicker {
-  color: #c9b4ff;
-  letter-spacing: 0.18em;
-}
-
 :root[data-theme="dark"] .analytics-stat-card {
   border: 1px solid rgba(255, 255, 255, 0.14);
   background:

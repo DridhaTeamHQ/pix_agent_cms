@@ -4360,64 +4360,10 @@ textarea:focus {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Slide 2 video — source tabs, trim controls, preview
+   Slide 2 video — direct upload, trim controls, preview
    All colours come from the semantic tokens, so light/dark follow
    the theme automatically with no per-theme overrides needed.
    ═══════════════════════════════════════════════════════════════ */
-
-.video-source-tabs {
-  display: flex;
-  gap: 3px;
-  background: var(--surface-input);
-  border: 1px solid var(--border-color);
-  border-radius: 100px;
-  padding: 3px;
-  margin-bottom: 12px;
-}
-
-.video-source-tab {
-  flex: 1;
-  padding: 7px 12px;
-  border: 0;
-  border-radius: 100px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: 0.78rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: var(--transition);
-}
-
-.video-source-tab:hover {
-  color: var(--text-primary);
-}
-
-.video-source-tab.active {
-  background: linear-gradient(135deg, rgba(77, 132, 255, 0.28), rgba(80, 80, 230, 0.18));
-  color: var(--accent-dim);
-  box-shadow: 0 0 0 1px rgba(77, 132, 255, 0.32);
-}
-
-.video-url-row {
-  display: flex;
-  gap: 8px;
-  align-items: stretch;
-}
-
-.video-url-row input[type="url"] {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-/* .btn-secondary is width:100% globally, which would starve the input to a
-   stub — reset it so the button hugs its label and the field takes the rest. */
-.video-url-row .btn-secondary {
-  flex: 0 0 auto;
-  width: auto;
-  padding-inline: 18px;
-  white-space: nowrap;
-}
 
 /* Local-file drop zone — label wraps a hidden input so the whole box clicks */
 .video-file-drop {
@@ -4438,6 +4384,7 @@ textarea:focus {
 }
 
 .video-file-drop:hover,
+.video-file-drop:focus-visible,
 .video-file-drop.dragover {
   border-color: var(--accent);
   background: var(--accent-soft);

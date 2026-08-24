@@ -277,7 +277,7 @@ const state = {
   videoUrl: "",             // resolved source URL (scrape path)
   videoFile: null,          // File object (local upload path)
   videoMeta: null,          // { title, duration, uploader, ... } from /resolve
-  videoSourceKind: "link",  // "link" | "file"
+  videoSourceKind: "file",  // new clips are direct uploads; "link" is legacy-only
   trimStart: 0,
   trimEnd: 0,
   videoMuted: false,
@@ -2961,7 +2961,7 @@ function blankPageContent(type) {
     videoUrl: "",
     videoFile: null,
     videoMeta: null,
-    videoSourceKind: "link",
+    videoSourceKind: "file",
     trimStart: 0,
     trimEnd: 0,
     videoMuted: false,
@@ -6850,10 +6850,10 @@ if (aiEnhanceBtn) {
 
 /* ═══════════════════════ Slide 2 — video ═══════════════════════
 
-   Slide 2 is either the Text card or a video clip. The clip comes from a
-   YouTube/Instagram link (fetched server-side with yt-dlp) or a local file,
-   gets trimmed to a range chosen here, and is exported with the Pix branding
-   burned in by ffmpeg.
+   Slide 2 is either the Text card or a directly uploaded video clip. The clip
+   gets trimmed to a range chosen here and is exported with the Pix branding
+   burned in by ffmpeg. Legacy URL-backed posts can still be reopened, but new
+   videos enter through file upload only.
 
    Both endpoints are ordinary same-origin routes on this server, which
    shells out to yt-dlp and ffmpeg. An earlier version POSTed to a separate
@@ -6865,15 +6865,12 @@ if (aiEnhanceBtn) {
 const MAX_CLIP_SECONDS = 90;          // matches MAX_CLIP_SECONDS on the service
 const MAX_VIDEO_UPLOAD_BYTES = 300 * 1024 * 1024;
 
-const videoUrlInput    = document.getElementById("video-url");
-const videoFetchBtn    = document.getElementById("video-fetch-btn");
 const videoFileInput   = document.getElementById("video-file-input");
 const videoFileDrop    = document.getElementById("video-file-drop");
 const videoFileLabel   = document.getElementById("video-file-label");
 const videoStatusEl    = document.getElementById("video-status");
 const videoEditor      = document.getElementById("video-editor");
 const videoPreviewEl   = document.getElementById("video-preview");
-const videoSourceTabs  = document.getElementById("video-source-tabs");
 const trimStartInput   = document.getElementById("trim-start");
 const trimEndInput     = document.getElementById("trim-end");
 const trimStartLabel   = document.getElementById("trim-start-label");
@@ -6918,81 +6915,6 @@ async function mediaErrorMessage(res) {
   if (res.status === 413) return "That file is too large.";
   if (res.status === 504) return "The server timed out. Try a shorter clip.";
   return `Server error ${res.status}.`;
-}
-
-/* ── Source: pasted link ── */
-async function fetchVideoFromUrl(url) {
-  setVideoStatus("Fetching video details…");
-  if (videoFetchBtn) videoFetchBtn.disabled = true;
-  try {
-    const res = await fetch("/api/video/resolve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    if (!res.ok) throw new Error(await mediaErrorMessage(res));
-
-    const meta = await res.json();
-    state.videoUrl = meta.webpage_url || url;
-    state.videoFile = null;
-    state.videoMeta = meta;
-    state.videoSourceKind = "link";
-    // Replacing an upload with a link must not keep the upload's filename.
-    state.videoFileName = "";
-  /* A new source means the stored copy is no longer this post's video.
-
-     storedVideoUrl/storedVideoFor were cleared in only two places — starting a
-     new post, and blanking a page — never when the clip itself was replaced.
-     So swapping the video and then hitting an encode failure saved the row
-     pointing at the PREVIOUS clip: reopening played the old footage, and
-     restoreStoredVideo stamped storedVideoFor to match it, so the next Submit
-     took the "already stored and unchanged" shortcut and reported nothing at
-     all. QA then published the old video, to a write-only API. */
-  state.storedVideoUrl = null;
-  state.storedVideoFor = null;
-  state.renderedClip = null;
-
-    setupTrimRange(meta.duration || 0);
-    if (videoEditor) videoEditor.hidden = false;
-    /* Committed here as well as after the preview loads: a link is trimmable
-       by timecode even when the preview never arrives, and that case must not
-       be the one that loses the clip. */
-    commitVideoToItsPage();
-
-    const len = meta.duration ? ` · ${formatTimecode(meta.duration)}` : "";
-    setVideoStatus(`${meta.title || "Video"}${len} — loading preview…`);
-
-    // A browser can't play a YouTube/Instagram page URL, so the server
-    // fetches a small copy and streams it back same-origin. Without this the
-    // element shows a poster only and trimming is blind guesswork.
-    if (videoPreviewEl) {
-      videoPreviewEl.poster = meta.thumbnail || "";
-      videoPreviewEl.src = `/api/video/preview?u=${encodeURIComponent(state.videoUrl)}`;
-      videoPreviewEl.addEventListener("loadedmetadata", () => {
-        // yt-dlp's reported duration can disagree slightly with the actual
-        // stream; the decoded value is what the scrubber must match.
-        if (videoPreviewEl.duration && Number.isFinite(videoPreviewEl.duration)) {
-          setupTrimRange(videoPreviewEl.duration);
-        }
-        setVideoStatus(`${meta.title || "Video"}${len}`, "success");
-        commitVideoToItsPage();
-        renderPoster();
-      }, { once: true });
-      videoPreviewEl.addEventListener("error", () => {
-        // Preview is a convenience — trimming by timecode still works, so
-        // don't tear the editor down, just say so.
-        setVideoStatus(
-          `${meta.title || "Video"}${len} — preview unavailable, trim by time`,
-          "error"
-        );
-      }, { once: true });
-      videoPreviewEl.load();
-    }
-  } catch (err) {
-    setVideoStatus(err.message, "error");
-  } finally {
-    if (videoFetchBtn) videoFetchBtn.disabled = false;
-  }
 }
 
 /* ── Source: local file ── */
@@ -7232,39 +7154,16 @@ if (videoCaptionSizeInput) {
   });
 }
 
-/* ── Source tabs ── */
-if (videoSourceTabs) {
-  videoSourceTabs.addEventListener("click", (e) => {
-    const btn = e.target.closest(".video-source-tab");
-    if (!btn) return;
-    // Same two lines the restore path needs, so the tabs cannot end up
-    // meaning one thing when clicked and another when reopened.
-    selectVideoSourceTab(btn.dataset.videoSource);
-  });
-}
-
-if (videoFetchBtn) {
-  videoFetchBtn.addEventListener("click", () => {
-    const url = (videoUrlInput ? videoUrlInput.value : "").trim();
-    if (!/^https?:\/\//i.test(url)) {
-      setVideoStatus("Paste a full https:// link.", "error");
-      return;
-    }
-    fetchVideoFromUrl(url);
-  });
-}
-
-if (videoUrlInput) {
-  videoUrlInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); if (videoFetchBtn) videoFetchBtn.click(); }
-  });
-}
-
 if (videoFileInput) {
   videoFileInput.addEventListener("change", (e) => loadLocalVideoFile(e.target.files && e.target.files[0]));
 }
 
 if (videoFileDrop) {
+  videoFileDrop.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    videoFileInput?.click();
+  });
   ["dragenter", "dragover"].forEach((ev) =>
     videoFileDrop.addEventListener(ev, (e) => {
       e.preventDefault();
@@ -7591,7 +7490,7 @@ function openEditorForPage(cardEl) {
 
   const mode = cardEl?.dataset.previewMode;
   const focusTarget = page.type === "video" || mode === "video"
-    ? document.getElementById("video-url")
+    ? videoFileDrop
     : (mode === "text" ? detailEdit : headlineEdit);
 
   openAccordion(focusTarget);
@@ -11877,24 +11776,7 @@ function videoClipKey() {
 /* Put a stored video back on screen when a saved post is reopened. The
    <video> element takes the bucket URL directly — same element, same trim
    controls, same canvas preview as a local file. */
-/* Show which source the clip came from, and offer the matching way to change
-   it. The tabs are a plain click handler on the markup, so this drives the
-   same two lines rather than duplicating their meaning. */
-function selectVideoSourceTab(kind) {
-  const wanted = kind === "file" ? "file" : "link";
-  document.querySelectorAll("#video-source-tabs .video-source-tab").forEach((tab) => {
-    const active = (tab.dataset.videoSource === "file" ? "file" : "link") === wanted;
-    tab.classList.toggle("active", active);
-    tab.setAttribute("aria-selected", active ? "true" : "false");
-  });
-  const link = document.getElementById("video-source-link");
-  const file = document.getElementById("video-source-file");
-  if (link) link.hidden = wanted !== "link";
-  if (file) file.hidden = wanted !== "file";
-}
-
-/* The video panel as a reviewer needs it: open, on the right tab, and saying
-   what is actually attached. */
+/* The video panel as a reviewer needs it: open and saying what is attached. */
 function openVideoPanelForReview() {
   const acc = document.getElementById("video-acc");
   if (acc && acc.dataset.open !== "true") {
@@ -11902,25 +11784,17 @@ function openVideoPanelForReview() {
     acc.querySelector(":scope > .acc-head")?.setAttribute("aria-expanded", "true");
   }
 
-  const kind = state.videoSourceKind === "file" ? "file" : "link";
-  selectVideoSourceTab(kind);
-
   const name = state.videoFileName || "";
   if (videoFileLabel) {
-    videoFileLabel.textContent = name || (kind === "file" ? "Uploaded video" : "Choose a video file");
+    videoFileLabel.textContent = name || "Upload a replacement video";
   }
-  if (videoUrlInput && kind === "link" && state.videoUrl) videoUrlInput.value = state.videoUrl;
 
-  /* Name the source in the status line too, because the file row is only on
-     screen while the "Upload File" tab is showing. A link keeps its address —
-     that is what it is — and an upload keeps its filename. */
-  const label = kind === "file"
-    ? (name || "an uploaded file")
-    : (state.videoUrl || "a link");
+  // Existing URL-backed posts remain playable, but replacement is upload-only.
+  const label = name || (state.videoSourceKind === "link" ? "a legacy linked video" : "an uploaded file");
   const length = state.trimEnd > state.trimStart
     ? ` · ${formatTimecode(state.trimEnd - state.trimStart)}`
     : "";
-  setVideoStatus(`Video from ${label}${length}. Play it below, re-trim it, or replace it.`, "success");
+  setVideoStatus(`Video from ${label}${length}. Play it below, re-trim it, or replace it by uploading a file.`, "success");
 }
 
 function restoreStoredVideo(video) {

@@ -732,6 +732,30 @@ h3 {
   padding: 0 var(--space-3) var(--space-5);
 }
 
+.cms-brand .nav-logo-mark {
+  display: block;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: none;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.3);
+}
+
+.agent-auth-kicker {
+  align-items: center;
+  gap: 9px;
+}
+
+.agent-auth-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: cover;
+  box-shadow: 0 5px 14px rgba(37, 99, 235, 0.24);
+}
+
 .cms-brand-text {
   font-size: 1.05rem;
   font-weight: 800;

@@ -6027,6 +6027,7 @@ select option[value=""] {
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-left: auto;
   padding-bottom: 3px;
 }
 

@@ -129,8 +129,6 @@ const logoutBtn = document.getElementById("logout-btn");
 const analyticsView = document.getElementById("analytics-view");
 const analyticsRefreshBtn = document.getElementById("analytics-refresh");
 const analyticsStatus = document.getElementById("analytics-status");
-const analyticsTitle = document.getElementById("analytics-title");
-const analyticsDesc = document.getElementById("analytics-desc");
 const analyticsMetaTitle = document.getElementById("analytics-meta-title");
 const analyticsMetaList = document.getElementById("analytics-meta-list");
 const analyticsTodayDate = document.getElementById("analytics-today-date");
@@ -468,7 +466,7 @@ const defaultMain = makeMainPlaceholder();
 
 /* ── Load the real Pix logo ── */
 const pixLogo = new Image();
-pixLogo.src = "./assests/pix-logo.png";
+pixLogo.src = "./assests/pix-logo.png?v=20260824";
 pixLogo.onload = () => {
   state.logoImage = pixLogo;
   renderPoster();
@@ -6245,17 +6243,6 @@ async function loadAnalytics({ force = false } = {}) {
 
     analyticsRecentRows = Array.isArray(analytics.recent) ? analytics.recent : [];
     renderAnalyticsRecent();
-
-    if (analyticsTitle) {
-      analyticsTitle.innerHTML = role === "admin" ? "Team output,<br>clearly measured."
-        : role === "qa" ? "QA pipeline,<br>clearly measured."
-        : "Your writing flow,<br>clearly measured.";
-    }
-    if (analyticsDesc) {
-      analyticsDesc.textContent = canReviewRole(role)
-        ? "Track what the writers are sending, what is still waiting, and how quickly the QA desk is clearing approvals."
-        : "Track how many posts you have sent, how many QA has approved, and how much is still waiting in the queue.";
-    }
 
     // Sections may not have loaded yet on the first analytics open; refill from
     // whatever loadSectionOptions() has by now so the picker is never empty.

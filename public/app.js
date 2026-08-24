@@ -151,6 +151,8 @@ const analyticsFrom = document.getElementById("analytics-from");
 const analyticsTo = document.getElementById("analytics-to");
 const analyticsRangeApply = document.getElementById("analytics-range-apply");
 const analyticsRangeClear = document.getElementById("analytics-range-clear");
+const analyticsUpdated = document.getElementById("analytics-updated");
+const analyticsFilterSummary = document.getElementById("analytics-filter-summary");
 
 const editPanel = document.getElementById("edit-panel");
 const imagePanel = document.getElementById("image-panel");
@@ -903,6 +905,9 @@ function applySession(user) {
   refreshMyPixCount();
   syncPrimaryAction();
   setAuthState(user ? "ready" : "blocked", user ? "" : "Sign in to continue.");
+  // The mobile editor sheet must not open until the auth gate is gone. Opening
+  // it during module setup puts its fixed backdrop above the sign-in card.
+  if (user && isMobile()) setSheetOpen(true);
   syncReviewCopy();
   // Publishing to shortlyindia.com is QA-only (the server returns 403 for
   // writers). Hide the panel rather than showing controls that cannot work,
@@ -927,6 +932,7 @@ function applySession(user) {
 function setAuthState(status, message) {
   document.body.classList.remove("auth-checking", "auth-ready", "auth-blocked");
   document.body.classList.add(status === "ready" ? "auth-ready" : status === "blocked" ? "auth-blocked" : "auth-checking");
+  if (status !== "ready") document.body.classList.remove("sheet-open");
   if (authMessage) authMessage.textContent = message || "";
   if (authGate) authGate.hidden = status === "ready";
   if (loginForm) loginForm.hidden = status !== "blocked";
@@ -1890,12 +1896,6 @@ function setInitialAccordionState() {
 }
 setInitialAccordionState();
 
-// On mobile first load, open the sheet so the URL input + Build button are
-// immediately visible. After a successful build, the sheet auto-closes
-// (via closeSheetIfMobile) and the FAB takes over for re-editing.
-if (window.matchMedia("(max-width: 760px)").matches) {
-  setSheetOpen(true);
-}
 window.addEventListener("resize", () => {
   // Re-apply on viewport class crossings (mobile↔desktop) for sanity
   const isMob = isMobile();
@@ -5589,11 +5589,13 @@ function renderAnalyticsDaily(daily = {}) {
 function renderAnalyticsSummary(summary = {}, role = "writer") {
   animateCounter(analyticsValueEl("sent"), summary.sent_count || 0);
   animateCounter(analyticsValueEl("approved"), summary.approved_count || 0);
+  animateCounter(analyticsValueEl("rejected"), summary.rejected_count || 0);
   animateCounter(analyticsValueEl("pending"), summary.pending_count || 0);
   animateCounter(analyticsValueEl("rate"), summary.approval_rate || 0, "%");
 
   const sentSub = document.getElementById("analytics-sent-sub");
   const approvedSub = document.getElementById("analytics-approved-sub");
+  const rejectedSub = document.getElementById("analytics-rejected-sub");
   const pendingSub = document.getElementById("analytics-pending-sub");
   const rateSub = document.getElementById("analytics-rate-sub");
 
@@ -5606,6 +5608,11 @@ function renderAnalyticsSummary(summary = {}, role = "writer") {
     approvedSub.textContent = canReviewRole(role)
       ? `${formatCount(summary.approved_by_me_count || 0)} approved by you`
       : "Posts QA has approved";
+  }
+  if (rejectedSub) {
+    rejectedSub.textContent = canReviewRole(role)
+      ? "Returned to writers for changes"
+      : "Posts QA returned for changes";
   }
   if (pendingSub) {
     pendingSub.textContent = canReviewRole(role)
@@ -5680,6 +5687,22 @@ let rosterMode = "writers";     // "writers" | "qa"
 const UNCATEGORISED = "__none__";
 
 const analyticsFilters = { source: "all", category: "all", from: "", to: "" };
+
+function analyticsFilterDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || "")) return "";
+  return new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" })
+    .format(new Date(`${value}T12:00:00+05:30`));
+}
+
+function syncAnalyticsFilterSummary() {
+  if (!analyticsFilterSummary) return;
+  const source = analyticsSourceLabel?.textContent?.trim() || "All sources";
+  const category = analyticsCategoryLabel?.textContent?.trim() || "All categories";
+  const from = analyticsFilterDate(analyticsFilters.from);
+  const to = analyticsFilterDate(analyticsFilters.to);
+  const dates = from && to ? `${from} – ${to}` : from ? `From ${from}` : to ? `Until ${to}` : "All dates";
+  analyticsFilterSummary.textContent = `${source} · ${category} · ${dates}`;
+}
 
 /* Copy for each side of the toggle. The writer view counts verdicts on what a
    writer sent; the QA view counts verdicts a reviewer recorded. */
@@ -5821,17 +5844,12 @@ function toggleWriterRoster(force = null) {
 
 if (analyticsRosterToggle) {
   analyticsRosterToggle.addEventListener("click", () => toggleWriterRoster());
-  analyticsRosterToggle.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    toggleWriterRoster();
-  });
 }
 
 document.querySelectorAll("[data-roster-mode]").forEach((btn) => {
   btn.addEventListener("click", (event) => {
-    // The card head is itself the expand target — a click on the toggle must
-    // not also collapse the list out from under the switch.
+    // Keep this event local to the mode switch; the nearby expand button owns
+    // the separate show/hide action.
     event.stopPropagation();
     rosterMode = btn.dataset.rosterMode === "qa" ? "qa" : "writers";
     document.querySelectorAll("[data-roster-mode]").forEach((other) => {
@@ -5888,6 +5906,7 @@ function setSourceValue(value, { refetch = true } = {}) {
   const next = chosen.dataset.value;
   const changed = analyticsFilters.source !== next;
   analyticsFilters.source = next;
+  syncAnalyticsFilterSummary();
   if (refetch && changed) loadAnalytics({ force: true });
 }
 
@@ -5928,6 +5947,7 @@ function setCategoryValue(value, { refetch = true } = {}) {
   const next = chosen.dataset.value;
   const changed = analyticsFilters.category !== next;
   analyticsFilters.category = next;
+  syncAnalyticsFilterSummary();
   if (refetch && changed) loadAnalytics({ force: true });
 }
 
@@ -6086,8 +6106,7 @@ if (analyticsCategoryMenu) {
   });
 }
 
-// Clicking anywhere else dismisses it — including the card head, which would
-// otherwise collapse the whole roster with the menu still hanging open.
+// Clicking anywhere else dismisses whichever dashboard menu is open.
 document.addEventListener("click", () => {
   if (sourceMenuIsOpen()) closeSourceMenu();
   if (categoryMenuIsOpen()) closeCategoryMenu();
@@ -6101,6 +6120,7 @@ if (analyticsRangeApply) {
   analyticsRangeApply.addEventListener("click", () => {
     analyticsFilters.from = analyticsFrom?.value || "";
     analyticsFilters.to = analyticsTo?.value || "";
+    syncAnalyticsFilterSummary();
     loadAnalytics({ force: true });
   });
 }
@@ -6109,8 +6129,13 @@ if (analyticsRangeClear) {
   analyticsRangeClear.addEventListener("click", () => {
     if (analyticsFrom) analyticsFrom.value = "";
     if (analyticsTo) analyticsTo.value = "";
+    analyticsFilters.source = "all";
+    analyticsFilters.category = "all";
+    setSourceValue("all", { refetch: false });
+    setCategoryValue("all", { refetch: false });
     analyticsFilters.from = "";
     analyticsFilters.to = "";
+    syncAnalyticsFilterSummary();
     loadAnalytics({ force: true });
   });
 }
@@ -6191,6 +6216,7 @@ async function loadAnalytics({ force = false } = {}) {
   if (!force && analyticsLoadedForRole === state.user.role) return;
 
   if (analyticsRefreshBtn) analyticsRefreshBtn.disabled = true;
+  analyticsView.setAttribute("aria-busy", "true");
   setAnalyticsStatus("Loading analytics…");
 
   const query = new URLSearchParams();
@@ -6240,10 +6266,12 @@ async function loadAnalytics({ force = false } = {}) {
     // have to follow it.
     if (payload.filters) {
       setSourceValue(payload.filters.source || "all", { refetch: false });
+      setCategoryValue(payload.filters.category || "all", { refetch: false });
       analyticsFilters.from = payload.filters.from || "";
       analyticsFilters.to = payload.filters.to || "";
       if (analyticsFrom) analyticsFrom.value = analyticsFilters.from;
       if (analyticsTo) analyticsTo.value = analyticsFilters.to;
+      syncAnalyticsFilterSummary();
     }
 
     renderAnalyticsSummary(analytics.summary, role);
@@ -6273,11 +6301,17 @@ async function loadAnalytics({ force = false } = {}) {
       }], analytics.summary?.pending_count || 0);
     }
 
+    if (analyticsUpdated) {
+      analyticsUpdated.textContent = `Updated ${new Intl.DateTimeFormat("en-IN", {
+        hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata",
+      }).format(new Date())} IST`;
+    }
     setAnalyticsStatus("");
   } catch (err) {
     setAnalyticsStatus(err.message || "Could not load analytics.", "error");
   } finally {
     if (analyticsRefreshBtn) analyticsRefreshBtn.disabled = false;
+    analyticsView.removeAttribute("aria-busy");
   }
 }
 

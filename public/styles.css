@@ -2502,16 +2502,7 @@ body.view-writers .edit-sheet {
 .analytics-roster-head {
   margin: 0;
   padding: 18px;
-  cursor: pointer;
-  user-select: none;
   align-items: center;
-  transition: background 0.2s ease;
-}
-
-.analytics-roster-head:hover,
-.analytics-roster-head:focus-visible {
-  background: var(--hover-tint);
-  outline: none;
 }
 
 .analytics-roster-desc {
@@ -2556,6 +2547,30 @@ body.view-writers .edit-sheet {
   background: rgba(155, 114, 239, 0.55);
 }
 
+.analytics-roster-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--analytics-faint);
+  font: inherit;
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.analytics-roster-expand:hover,
+.analytics-roster-expand:focus-visible {
+  outline: none;
+  border-color: var(--hairline);
+  background: var(--hover-tint);
+  color: var(--text-primary);
+}
+
 .analytics-roster-chevron {
   width: 8px;
   height: 8px;
@@ -2565,7 +2580,7 @@ body.view-writers .edit-sheet {
   transition: transform 0.25s var(--spring);
 }
 
-.analytics-roster-head[aria-expanded="true"] .analytics-roster-chevron {
+.analytics-roster-expand[aria-expanded="true"] .analytics-roster-chevron {
   transform: rotate(225deg) translate(-2px, -2px);
 }
 
@@ -5980,4 +5995,494 @@ select option[value=""] {
   object-fit: contain;
   display: block;
   border-radius: inherit;
+}
+
+/* ─── Analytics polish ──────────────────────────────────────
+   The dashboard is summary-first: global filters stay visible, headline
+   metrics form one quiet strip, and the team table is immediately readable. */
+.analytics-shell {
+  padding-bottom: 72px;
+}
+
+.analytics-intro {
+  align-items: flex-end;
+  margin-bottom: 10px;
+}
+
+.analytics-intro h1 {
+  max-width: 720px;
+  margin: 0;
+  font-size: clamp(2rem, 4.2vw, 3.65rem);
+  line-height: 0.98;
+  letter-spacing: -0.055em;
+}
+
+.analytics-intro .desc {
+  max-width: 720px;
+  margin-top: 14px;
+  line-height: 1.65;
+}
+
+.analytics-intro-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 3px;
+}
+
+.analytics-updated {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.analytics-refresh {
+  min-height: 38px;
+  padding-inline: 15px;
+  white-space: nowrap;
+}
+
+.analytics-refresh:disabled {
+  cursor: wait;
+}
+
+#analytics-status:empty {
+  display: none;
+}
+
+.analytics-filterbar {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: minmax(180px, 0.42fr) minmax(0, 1.58fr);
+  align-items: center;
+  gap: 18px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 18px;
+  background: var(--surface-card);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), var(--shadow-sm);
+}
+
+.analytics-filterbar:has(.analytics-select-menu.is-open) {
+  z-index: 40;
+}
+
+.analytics-filterbar-copy {
+  min-width: 0;
+}
+
+.analytics-filterbar-copy .analytics-card-label {
+  margin-bottom: 3px;
+}
+
+.analytics-filterbar-copy strong,
+.analytics-filterbar-copy>span:last-child {
+  display: block;
+}
+
+.analytics-filterbar-copy strong {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  letter-spacing: -0.01em;
+}
+
+.analytics-filterbar-copy>span:last-child {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-filterbar-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.analytics-filterbar .analytics-roster-filter {
+  flex: 0 1 auto;
+  gap: 7px;
+  padding: 4px 4px 4px 10px;
+  border-color: var(--hairline);
+  border-radius: 12px;
+  background: var(--surface-input);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.analytics-filterbar .analytics-select-trigger,
+.analytics-filterbar .analytics-roster-filter input[type="date"] {
+  min-height: 34px;
+  border-color: transparent;
+  border-radius: 9px;
+  background: var(--surface-solid);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.analytics-filterbar .analytics-select-trigger {
+  min-width: 132px;
+  max-width: 180px;
+  padding: 7px 10px;
+}
+
+.analytics-filterbar .analytics-select-trigger>span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-filterbar .analytics-roster-filter input[type="date"] {
+  width: 128px;
+  padding: 6px 8px;
+}
+
+.analytics-date-separator {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.analytics-filter-apply,
+.analytics-filter-clear {
+  min-height: 42px;
+  border-radius: 12px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 750;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.analytics-filter-apply {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.analytics-filter-clear {
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.analytics-filter-apply:hover,
+.analytics-filter-clear:hover {
+  transform: translateY(-1px);
+}
+
+.analytics-filter-clear:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.analytics-hero {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.analytics-stat-card {
+  --analytics-stat-accent: var(--accent);
+  min-height: 144px;
+  padding: 18px 17px 16px;
+  border-color: var(--hairline);
+  border-radius: 18px;
+  background: var(--surface-card);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), var(--shadow-sm);
+}
+
+.analytics-stat-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 14px auto;
+  height: 3px;
+  border-radius: 0 0 999px 999px;
+  background: var(--analytics-stat-accent);
+}
+
+.analytics-stat-card::after {
+  display: none;
+}
+
+.analytics-stat-card.accent-a {
+  --analytics-stat-accent: #3979ff;
+  background: linear-gradient(180deg, rgba(57, 121, 255, 0.08), transparent 55%), var(--surface-card);
+}
+
+.analytics-stat-card.accent-b {
+  --analytics-stat-accent: #10a879;
+  background: linear-gradient(180deg, rgba(16, 168, 121, 0.08), transparent 55%), var(--surface-card);
+}
+
+.analytics-stat-card.accent-e {
+  --analytics-stat-accent: #e45e6d;
+  background: linear-gradient(180deg, rgba(228, 94, 109, 0.08), transparent 55%), var(--surface-card);
+}
+
+.analytics-stat-card.accent-c {
+  --analytics-stat-accent: #e79a25;
+  background: linear-gradient(180deg, rgba(231, 154, 37, 0.09), transparent 55%), var(--surface-card);
+}
+
+.analytics-stat-card.accent-d {
+  --analytics-stat-accent: #7f6ce5;
+  background: linear-gradient(180deg, rgba(127, 108, 229, 0.08), transparent 55%), var(--surface-card);
+}
+
+.analytics-stat-card:nth-child(5) {
+  animation-delay: 0.2s;
+}
+
+.analytics-stat-value {
+  margin-top: 13px;
+  font-size: clamp(2rem, 3vw, 2.55rem);
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-stat-sub {
+  min-height: 2.3em;
+  margin-top: 11px;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.analytics-today-card {
+  margin-top: 10px;
+  border-radius: 18px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--shadow-sm);
+}
+
+.analytics-grid {
+  margin-top: 10px;
+}
+
+.analytics-card {
+  border-radius: 18px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--shadow-sm);
+}
+
+.analytics-meta-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.analytics-meta-card .analytics-card-head {
+  margin: 0;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.analytics-meta-card .analytics-card-label {
+  margin-bottom: 3px;
+}
+
+.analytics-meta-card .analytics-metric-list {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+}
+
+.analytics-meta-card .analytics-metric {
+  min-width: 0;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 7px;
+  padding: 16px 18px 18px;
+  border: 0;
+  border-right: 1px solid var(--hairline);
+  border-radius: 0;
+  background: transparent;
+}
+
+.analytics-meta-card .analytics-metric:last-child {
+  border-right: 0;
+}
+
+.analytics-meta-card .analytics-metric-value {
+  font-size: 1.32rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-roster-card {
+  border-radius: 18px;
+}
+
+.analytics-roster-head {
+  padding: 16px 18px;
+}
+
+.analytics-roster-body {
+  overflow-x: auto;
+  padding: 0 18px 18px;
+}
+
+.analytics-roster-list {
+  min-width: 940px;
+  row-gap: 6px;
+  column-gap: 12px;
+}
+
+.roster-row {
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--surface-input);
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.roster-row:hover {
+  transform: none;
+  background: var(--hover-tint);
+}
+
+.roster-head-row,
+.roster-head-row:hover {
+  padding-bottom: 4px;
+  background: transparent;
+}
+
+.analytics-card-wide .analytics-card-head {
+  align-items: center;
+}
+
+.analytics-card-wide .analytics-search input {
+  min-height: 40px;
+  border-radius: 12px;
+}
+
+.analytics-recent {
+  gap: 7px;
+}
+
+.analytics-recent-row {
+  padding: 12px 14px;
+  border-radius: 12px;
+}
+
+.analytics-recent-row:hover {
+  border-color: rgba(57, 121, 255, 0.28);
+}
+
+@media (max-width: 1180px) {
+  .analytics-filterbar {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .analytics-filterbar-controls {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .analytics-hero {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .analytics-intro {
+    align-items: flex-start;
+  }
+
+  .analytics-intro-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .analytics-meta-card .analytics-metric-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-meta-card .analytics-metric:nth-child(2) {
+    border-right: 0;
+  }
+
+  .analytics-meta-card .analytics-metric:nth-child(n + 3) {
+    border-top: 1px solid var(--hairline);
+  }
+}
+
+@media (max-width: 620px) {
+  .analytics-shell {
+    padding-bottom: 94px;
+  }
+
+  .analytics-intro h1 {
+    font-size: 2.35rem;
+  }
+
+  .analytics-filterbar {
+    padding: 14px;
+  }
+
+  .analytics-filterbar-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .analytics-filterbar .analytics-roster-filter,
+  .analytics-filterbar .analytics-select,
+  .analytics-filterbar .analytics-select-trigger {
+    width: 100%;
+    max-width: none;
+  }
+
+  .analytics-filterbar .analytics-roster-dates {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .analytics-filterbar .analytics-roster-filter input[type="date"] {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .analytics-filter-apply,
+  .analytics-filter-clear {
+    width: 100%;
+  }
+
+  .analytics-hero {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-stat-card {
+    min-height: 132px;
+    padding: 16px 14px;
+  }
+
+  .analytics-stat-card:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .analytics-stat-value {
+    font-size: 2rem;
+  }
+
+  .analytics-roster-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .analytics-roster-cue {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .analytics-card-wide .analytics-card-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .analytics-search {
+    max-width: none;
+  }
 }

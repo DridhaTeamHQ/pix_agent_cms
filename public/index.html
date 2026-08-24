@@ -1075,10 +1075,60 @@
         <h1 id="analytics-title">Content flow,<br>at a glance.</h1>
         <p class="desc" id="analytics-desc">See how many posts writers are sending and how quickly QA is clearing the queue.</p>
       </div>
-      <button type="button" class="btn-ghost" id="analytics-refresh">Refresh</button>
+      <div class="analytics-intro-actions">
+        <span class="analytics-updated" id="analytics-updated">Waiting for data</span>
+        <button type="button" class="btn-ghost analytics-refresh" id="analytics-refresh">Refresh data</button>
+      </div>
     </header>
 
     <p class="status-text" id="analytics-status" role="status" aria-live="polite"></p>
+
+    <section class="analytics-filterbar" aria-label="Analytics filters">
+      <div class="analytics-filterbar-copy">
+        <span class="analytics-card-label">View</span>
+        <strong>Filter the whole dashboard</strong>
+        <span id="analytics-filter-summary">All sources · All categories · All dates</span>
+      </div>
+      <div class="analytics-filterbar-controls">
+        <div class="analytics-roster-filter">
+          <span id="analytics-source-caption">Source</span>
+          <div class="analytics-select" id="analytics-source">
+            <button type="button" class="analytics-select-trigger" id="analytics-source-trigger"
+                    aria-haspopup="listbox" aria-expanded="false"
+                    aria-labelledby="analytics-source-caption analytics-source-label">
+              <span id="analytics-source-label">All sources</span>
+              <span class="analytics-select-chevron" aria-hidden="true"></span>
+            </button>
+            <ul class="analytics-select-menu" id="analytics-source-menu" role="listbox"
+                aria-labelledby="analytics-source-caption" tabindex="-1"></ul>
+          </div>
+        </div>
+
+        <div class="analytics-roster-filter">
+          <span id="analytics-category-caption">Category</span>
+          <div class="analytics-select" id="analytics-category">
+            <button type="button" class="analytics-select-trigger" id="analytics-category-trigger"
+                    aria-haspopup="listbox" aria-expanded="false"
+                    aria-labelledby="analytics-category-caption analytics-category-label">
+              <span id="analytics-category-label">All categories</span>
+              <span class="analytics-select-chevron" aria-hidden="true"></span>
+            </button>
+            <ul class="analytics-select-menu" id="analytics-category-menu" role="listbox"
+                aria-labelledby="analytics-category-caption" tabindex="-1"></ul>
+          </div>
+        </div>
+
+        <div class="analytics-roster-filter analytics-roster-dates">
+          <span>Date</span>
+          <input type="date" id="analytics-from" aria-label="From date" />
+          <span class="analytics-date-separator">to</span>
+          <input type="date" id="analytics-to" aria-label="To date" />
+        </div>
+
+        <button type="button" class="analytics-filter-apply" id="analytics-range-apply">Apply</button>
+        <button type="button" class="analytics-filter-clear" id="analytics-range-clear">Reset</button>
+      </div>
+    </section>
 
     <section class="analytics-hero">
       <div class="analytics-stat-card accent-a">
@@ -1090,6 +1140,11 @@
         <span class="analytics-stat-label">Approved</span>
         <strong class="analytics-stat-value" data-analytics-value="approved">0</strong>
         <span class="analytics-stat-sub" id="analytics-approved-sub">Cleared by QA</span>
+      </div>
+      <div class="analytics-stat-card accent-e">
+        <span class="analytics-stat-label">Rejected</span>
+        <strong class="analytics-stat-value" data-analytics-value="rejected">0</strong>
+        <span class="analytics-stat-sub" id="analytics-rejected-sub">Returned for changes</span>
       </div>
       <div class="analytics-stat-card accent-c">
         <span class="analytics-stat-label">Pending</span>
@@ -1151,8 +1206,7 @@
 
       <section class="analytics-grid analytics-roster-grid">
         <article class="analytics-card analytics-roster-card" id="analytics-roster-card">
-          <div class="analytics-card-head analytics-roster-head" id="analytics-roster-toggle"
-               role="button" tabindex="0" aria-expanded="false" aria-controls="analytics-roster-body">
+          <div class="analytics-card-head analytics-roster-head">
             <div>
               <span class="analytics-card-label">Team</span>
               <h3 id="analytics-roster-title">Content writers</h3>
@@ -1163,52 +1217,14 @@
                 <button type="button" class="analytics-roster-mode is-active" data-roster-mode="writers" aria-pressed="true">Writers</button>
                 <button type="button" class="analytics-roster-mode" data-roster-mode="qa" aria-pressed="false">QA</button>
               </span>
-              <span id="analytics-roster-count">0 writers</span>
-              <span class="analytics-roster-chevron" aria-hidden="true"></span>
+              <button type="button" class="analytics-roster-expand" id="analytics-roster-toggle"
+                      aria-expanded="true" aria-controls="analytics-roster-body">
+                <span id="analytics-roster-count">0 writers</span>
+                <span class="analytics-roster-chevron" aria-hidden="true"></span>
+              </button>
             </span>
           </div>
-          <div class="analytics-roster-body" id="analytics-roster-body" hidden>
-            <div class="analytics-roster-controls">
-              <div class="analytics-roster-filter">
-                <span id="analytics-source-caption">By source</span>
-                <div class="analytics-select" id="analytics-source">
-                  <button type="button" class="analytics-select-trigger" id="analytics-source-trigger"
-                          aria-haspopup="listbox" aria-expanded="false"
-                          aria-labelledby="analytics-source-caption analytics-source-label">
-                    <span id="analytics-source-label">All sources</span>
-                    <span class="analytics-select-chevron" aria-hidden="true"></span>
-                  </button>
-                  <ul class="analytics-select-menu" id="analytics-source-menu" role="listbox"
-                      aria-labelledby="analytics-source-caption" tabindex="-1"></ul>
-                </div>
-              </div>
-
-              <!-- A listbox rather than a <select>: the native popup cannot be
-                   given a translucent fill, cannot be animated, and cannot be
-                   kept from covering its own trigger. -->
-              <div class="analytics-roster-filter">
-                <span id="analytics-category-caption">By category</span>
-                <div class="analytics-select" id="analytics-category">
-                  <button type="button" class="analytics-select-trigger" id="analytics-category-trigger"
-                          aria-haspopup="listbox" aria-expanded="false"
-                          aria-labelledby="analytics-category-caption analytics-category-label">
-                    <span id="analytics-category-label">All categories</span>
-                    <span class="analytics-select-chevron" aria-hidden="true"></span>
-                  </button>
-                  <ul class="analytics-select-menu" id="analytics-category-menu" role="listbox"
-                      aria-labelledby="analytics-category-caption" tabindex="-1"></ul>
-                </div>
-              </div>
-
-              <div class="analytics-roster-filter analytics-roster-dates">
-                <span>From</span>
-                <input type="date" id="analytics-from" aria-label="From date" />
-                <span>To</span>
-                <input type="date" id="analytics-to" aria-label="To date" />
-                <button type="button" class="analytics-roster-sort is-active" id="analytics-range-apply">Apply</button>
-                <button type="button" class="analytics-roster-sort" id="analytics-range-clear">Clear</button>
-              </div>
-            </div>
+          <div class="analytics-roster-body" id="analytics-roster-body">
             <div class="analytics-roster-list" id="analytics-roster-list"></div>
           </div>
         </article>
@@ -1221,7 +1237,8 @@
         <div class="analytics-card-head">
           <div>
             <span class="analytics-card-label">Content</span>
-            <h3>Recent posts and who wrote them</h3>
+            <h3>Recent posts</h3>
+            <p class="analytics-roster-desc">Open a post to review its content and publishing status.</p>
           </div>
           <label class="analytics-search">
             <input type="search" id="analytics-search" placeholder="Filter by headline or writer…" />

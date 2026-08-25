@@ -1749,16 +1749,46 @@ const COMPRESS_CRF = String(env("DAILYMATTR_VIDEO_CRF") || 23);
 const COMPRESS_TIMEOUT_MS = 600_000;
 const COMPRESS_AUDIO_BPS = 128_000;
 
+/* Bring a clip under DailyMattr's cap, or refuse the publish.
+
+   Every failure here used to `return file` — the ORIGINAL, oversized. That is
+   the quietest way to lose a video: DailyMattr accepts the post, drops the
+   clip it will not store, and answers 200 with a buzz id. Our side records a
+   successful publish, QA sees "published", and the story is live on the app
+   without its video. Nothing in the response says so, their API is write-only
+   so it cannot be checked afterwards, and the post cannot be corrected — only
+   republished as a second copy.
+
+   So this now throws instead. The caller runs it in its own try precisely
+   because a throw here provably means nothing was sent, which leaves the post
+   unpublished, the claim released, and QA holding an actionable message. A
+   refused publish costs a retry; a silently clipless one costs the video.
+
+   The output is also VERIFIED against the cap rather than merely compared
+   against the input: -maxrate is a rate-control hint, not a guarantee, so
+   "smaller than it was" was never the same as "small enough". */
 async function compressForDailyMattr(file) {
   if (DAILYMATTR_TARGET_VIDEO_BYTES <= 0) return file;
   if (!/^video\//i.test(file.contentType || "")) return file;
   if (file.buffer.length <= DAILYMATTR_TARGET_VIDEO_BYTES) return file;
 
+  const mb = (n) => (n / 1048576).toFixed(1);
+  const capMb = mb(DAILYMATTR_TARGET_VIDEO_BYTES);
+  const tooBig = (why) => new Error(
+    `the ${mb(file.buffer.length)} MB video could not be brought under DailyMattr's ${capMb} MB limit (${why}). ` +
+    `Shorten the trim range on the Video page and publish again.`,
+  );
+
+  /* No encoder, no way to shrink it — and no reason to pretend otherwise by
+     sending a file we know will be dropped. */
+  if (!ffmpegAvailable) {
+    throw tooBig("ffmpeg is not installed on this server");
+  }
+
   const job = randomUUID().replace(/-/g, "");
   const dir = join(tmpdir(), `pix-compress-${job}`);
   mkdirSync(dir, { recursive: true });
   const inPath = join(dir, "in.mp4");
-  const outPath = join(dir, "out.mp4");
 
   try {
     writeFileSync(inPath, file.buffer);
@@ -1768,47 +1798,61 @@ async function compressForDailyMattr(file) {
     ], 30_000);
     const duration = Number(probe.stdout.toString("utf-8").trim());
     if (!Number.isFinite(duration) || duration <= 0) {
-      console.warn("⚠ could not read clip duration — sending it uncompressed");
-      return file;
+      throw tooBig("its duration could not be read");
     }
 
-    // 0.92 leaves headroom for container overhead and rate-control overshoot;
-    // without it the result lands slightly OVER the number we promised.
-    const budgetBps = (DAILYMATTR_TARGET_VIDEO_BYTES * 8 * 0.92) / duration;
-    const maxrate = Math.max(200_000, Math.round(budgetBps - COMPRESS_AUDIO_BPS));
+    /* Two passes at most. The first aims at the cap; if rate control overshoots
+       — which it does on high-motion footage — the second aims at whatever
+       fraction of the cap the first actually achieved. Beyond that the clip is
+       genuinely too long for the budget and the honest answer is to say so
+       rather than grind. */
+    let best = null;
+    let aim = DAILYMATTR_TARGET_VIDEO_BYTES;
 
-    const t0 = Date.now();
-    const enc = await run("ffmpeg", [
-      "-hide_banner", "-loglevel", "error", "-y", "-i", inPath,
-      "-c:v", "libx264", "-preset", "slow", "-crf", COMPRESS_CRF,
-      "-maxrate", String(maxrate), "-bufsize", String(maxrate * 2),
-      "-c:a", "aac", "-b:a", "128k",
-      "-pix_fmt", "yuv420p",      // required for Safari / iOS playback
-      "-movflags", "+faststart",  // metadata up front so it streams
-      outPath,
-    ], COMPRESS_TIMEOUT_MS);
+    for (let pass = 1; pass <= 2; pass += 1) {
+      const outPath = join(dir, `out-${pass}.mp4`);
+      // 0.92 leaves headroom for container overhead and rate-control overshoot;
+      // without it the result lands slightly OVER the number we promised.
+      const budgetBps = (aim * 8 * 0.92) / duration;
+      const maxrate = Math.max(200_000, Math.round(budgetBps - COMPRESS_AUDIO_BPS));
 
-    if (enc.code !== 0 || !existsSync(outPath)) {
-      console.warn(`⚠ compression failed, sending the original: ${enc.stderr.toString("utf-8").slice(-200)}`);
-      return file;
+      const t0 = Date.now();
+      const enc = await run("ffmpeg", [
+        "-hide_banner", "-loglevel", "error", "-y", "-i", inPath,
+        "-c:v", "libx264", "-preset", "slow", "-crf", COMPRESS_CRF,
+        "-maxrate", String(maxrate), "-bufsize", String(maxrate * 2),
+        "-c:a", "aac", "-b:a", "128k",
+        "-pix_fmt", "yuv420p",      // required for Safari / iOS playback
+        "-movflags", "+faststart",  // metadata up front so it streams
+        outPath,
+      ], COMPRESS_TIMEOUT_MS);
+
+      if (enc.code !== 0 || !existsSync(outPath)) {
+        throw tooBig(`ffmpeg failed: ${enc.stderr.toString("utf-8").slice(-160) || `exit ${enc.code}`}`);
+      }
+
+      const shrunk = readFileSync(outPath);
+      if (!shrunk.length) throw tooBig("the encoder produced an empty file");
+      if (!best || shrunk.length < best.length) best = shrunk;
+
+      console.log(
+        `· compress pass ${pass} ${file.fieldName}: ${mb(file.buffer.length)} MB → ${mb(shrunk.length)} MB ` +
+        `(${duration.toFixed(1)}s, crf ${COMPRESS_CRF}, maxrate ${Math.round(maxrate / 1000)}k, ${Date.now() - t0}ms)`,
+      );
+
+      if (shrunk.length <= DAILYMATTR_TARGET_VIDEO_BYTES) {
+        console.log(`✓ compressed ${file.fieldName} to ${mb(shrunk.length)} MB, under the ${capMb} MB cap`);
+        return { ...file, buffer: shrunk };
+      }
+
+      // Overshot. Aim the next pass proportionally lower.
+      aim = Math.max(
+        Math.round(DAILYMATTR_TARGET_VIDEO_BYTES * 0.5),
+        Math.round(aim * (DAILYMATTR_TARGET_VIDEO_BYTES / shrunk.length) * 0.9),
+      );
     }
 
-    const shrunk = readFileSync(outPath);
-    // A "smaller" file that grew is not smaller. Never ship the worse one.
-    if (!shrunk.length || shrunk.length >= file.buffer.length) {
-      console.warn("⚠ compression did not reduce the file — sending the original");
-      return file;
-    }
-
-    const mb = (n) => (n / 1048576).toFixed(2);
-    console.log(
-      `✓ compressed ${file.fieldName}: ${mb(file.buffer.length)} MB → ${mb(shrunk.length)} MB ` +
-      `(${duration.toFixed(1)}s, crf ${COMPRESS_CRF}, maxrate ${Math.round(maxrate / 1000)}k, ${Date.now() - t0}ms)`,
-    );
-    return { ...file, buffer: shrunk };
-  } catch (err) {
-    console.warn(`⚠ compression error, sending the original: ${err.message}`);
-    return file;
+    throw tooBig(`the closest encode was still ${mb(best.length)} MB`);
   } finally {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* temp dir */ }
   }

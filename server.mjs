@@ -15,7 +15,7 @@ import {
 import {
   configureDb, isConfigured as dbConfigured, ping as dbPing,
   getPix, setApproval,
-  claimPublish, recordPublishedId, releasePublishClaim, readQuery,
+  claimPublish, recordPublishedId, recordPublishAttempt, releasePublishClaim, readQuery,
 } from "./lib/db.js";
 import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
@@ -1741,6 +1741,19 @@ const PIX_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
    flag separating "confirmed live" from "sent, outcome unknown" everywhere
    else — a null there makes a publish we watched succeed look like one that
    may never have happened. */
+/* Their answer, bounded. A response we cannot store is worse than a trimmed
+   one, and the interesting part — any media list, any error detail — is short
+   next to the content echo. Kept as JSON when it fits and as a marked-up
+   string when it does not, so a reader always knows which they are looking
+   at. */
+function truncateForStorage(value, limit = 8000) {
+  if (value == null) return null;
+  let text;
+  try { text = JSON.stringify(value); } catch { return { unserialisable: String(value).slice(0, limit) }; }
+  if (text.length <= limit) return value;
+  return { truncated: true, bytes: text.length, head: text.slice(0, limit) };
+}
+
 const PUBLISH_ID_MISSING = "(accepted, no id returned)";
 
 const DAILYMATTR_TARGET_VIDEO_BYTES =
@@ -2082,6 +2095,15 @@ async function runDailyMattrPublish(req, res) {
   console.log(
     `→ DailyMattr publish by ${user.username}: ${payload.files.length} file(s), ${videoCount} video — ${manifest}`,
   );
+  /* The same manifest as data, to be stored beside their answer. The log line
+     above is for whoever is watching at the time; this is for whoever asks a
+     week later why a story has no video. */
+  const sentParts = payload.files.map((f) => ({
+    field: f.fieldName,
+    type: f.contentType || null,
+    bytes: f.buffer.length,
+    filename: f.filename || null,
+  }));
 
   /* The irreversible call, alone in its own try so its failure can be
      classified rather than lumped in with everything else in the handler. */
@@ -2094,6 +2116,23 @@ async function runDailyMattrPublish(req, res) {
       `⚠ DailyMattr publish failed (${neverSent ? "nothing sent" : "OUTCOME UNKNOWN"}, ` +
       `status=${err?.status ?? "n/a"}) for ${payload.pixId || "unsaved poster"}: ${err.message}`,
     );
+
+    /* Keep the evidence. A refusal is a response, and the indeterminate case —
+       sent, no usable answer — is the single hardest state to reconstruct a
+       week later, because the row looks untouched and the log has rotated.
+       Best-effort: this must never turn a publish failure into a 500. */
+    if (payload.pixId) {
+      await recordPublishAttempt(payload.pixId, {
+        at: new Date().toISOString(),
+        by: user.username,
+        outcome: neverSent ? "refused-before-storing" : "outcome-unknown",
+        status: err?.status ?? null,
+        error: String(err?.message || "").slice(0, 2000),
+        details: Array.isArray(err?.details) ? err.details.slice(0, 8) : undefined,
+        sent: sentParts,
+        response: truncateForStorage(err?.rawPayload ?? null),
+      }).catch((e) => console.warn("⚠ could not record the failed attempt:", e.message));
+    }
 
     if (neverSent) {
       // Provably nothing was stored at their end, so hand the claim back and
@@ -2151,7 +2190,30 @@ async function runDailyMattrPublish(req, res) {
          column takes this marker rather than staying null — otherwise the row
          reads "sent, never confirmed" and every later reader is told the story
          may not be live when we watched them accept it. */
-      const row = await recordPublishedId(payload.pixId, result.publishedId ?? PUBLISH_ID_MISSING);
+      /* The receipt, written in the same statement as the id.
+
+         `sent` is what left this server, part by part; `response` is their
+         verbatim answer. Together they answer the question their write-only
+         API cannot be asked afterwards: when a story appears without its
+         video, was the clip forwarded and dropped, or never forwarded?
+
+         Their answer is capped rather than trusted whole — the content_en
+         echo alone can be large, and this column exists to be readable, not
+         to mirror their payload. */
+      const receipt = {
+        at: new Date().toISOString(),
+        by: user.username,
+        buzzId: result.publishedId ?? null,
+        sent: sentParts,
+        videoBytes: sentParts.filter((f) => /^video\//i.test(f.type || ""))
+          .reduce((n, f) => n + f.bytes, 0) || null,
+        response: truncateForStorage(result.response),
+      };
+      const row = await recordPublishedId(
+        payload.pixId,
+        result.publishedId ?? PUBLISH_ID_MISSING,
+        receipt,
+      );
       publishRecord = row
         ? {
             ok: true,

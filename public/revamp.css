@@ -2296,15 +2296,20 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
    thing after one lands and the thing you come back to — while Custom Upload
    is how a picture arrives at all and AI Enhance is the occasional paid step.
    The most-used control should not sit under two boxes. */
+/* The top row carries the two controls a reviewer actually reaches for:
+   Adjustments to frame the picture, AI Enhance to sharpen it. Custom Upload
+   is how a picture arrives ONCE and Filters is a finishing touch, so they take
+   the second row. Putting Adjustments first must not cost AI Enhance its place
+   above the fold — that was the point of moving it up in the first place. */
 .cms-media-strip .image-panel>.acc:has(#img-zoom) {
   order: 1;
 }
 
-.cms-media-strip .image-panel>.acc:has(#bg-upload-zone) {
+.cms-media-strip .image-panel>.acc:has(#ai-enhance-btn) {
   order: 2;
 }
 
-.cms-media-strip .image-panel>.acc:has(#ai-enhance-btn) {
+.cms-media-strip .image-panel>.acc:has(#bg-upload-zone) {
   order: 3;
 }
 
@@ -2443,16 +2448,36 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
    per pixel, so framing a face became a hunt: overshoot, correct, overshoot.
    A step is 5% and predictable, the readout says exactly where you are, and
    press-and-hold covers the long distances. */
+/* The column runs from ~240px at 1900 down to ~120px at 1250, so a single
+   row of label + − + readout + + + reset cannot be made to fit at both. It
+   wraps instead: the label takes its own line the moment the controls need
+   the width, which costs one line of height and never clips. min-width:0 is
+   what lets the readout shrink rather than forcing the row wider than the
+   column — without it the buttons hang over into the next panel, which is
+   exactly how it shipped. */
 .zoom-stepper {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
+  gap: 6px;
+  min-width: 0;
+}
+
+.zoom-stepper .slider-label {
+  min-width: 0;
+}
+
+/* Below this the label cannot share a line with the controls. */
+@media (max-width: 1500px) {
+  .zoom-stepper .slider-label {
+    flex: 1 0 100%;
+  }
 }
 
 .zoom-step {
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   font-size: 1.05rem;
@@ -2482,23 +2507,32 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
 }
 
 .zoom-readout {
-  flex: 1 1 auto;
+  flex: 1 1 34px;      /* enough for "105%", and free to grow when there is room */
+  min-width: 0;
   text-align: center;
   font-variant-numeric: tabular-nums;   /* 100% and 95% must not jiggle */
   font-size: 0.82rem;
   color: var(--text-secondary);
 }
 
+/* An icon, and only while it has something to undo. A word-width "Reset"
+   parked permanently at the end is what pushed this row past the column. */
 .zoom-reset {
   flex: 0 0 auto;
-  padding: 4px 9px;
-  font-size: 0.72rem;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  font-size: 0.85rem;
+  line-height: 1;
   border-radius: 8px;
   border: 1px solid var(--hairline);
   background: none;
   color: var(--text-secondary);
   cursor: pointer;
 }
+
+.zoom-reset[hidden] { display: none; }
 
 .zoom-reset:hover {
   border-color: var(--accent);

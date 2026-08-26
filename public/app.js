@@ -1812,6 +1812,8 @@ function syncZoomReadout() {
   if (imgZoomValue) imgZoomValue.textContent = `${z}%`;
   if (imgZoomOut) imgZoomOut.disabled = z <= ZOOM_MIN;
   if (imgZoomIn) imgZoomIn.disabled = z >= ZOOM_MAX;
+  // Nothing to undo at 100%, and the column has no room to spare.
+  if (imgZoomReset) imgZoomReset.hidden = z === 100;
 }
 
 function applyZoom(next) {

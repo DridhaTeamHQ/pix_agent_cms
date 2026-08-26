@@ -4350,11 +4350,148 @@ async function tryRailwayUpscale(buffer, mime, strength) {
   }
 }
 
-async function handleUpscaleImage(req, res) {
-  if (!openaiApiKey) {
-    sendJson(res, 503, { error: "OPENAI_API_KEY not set on server." });
-    return;
+/* ── A real upscaler, not a generative one ──────────────────────────────────
+
+   gpt-image was doing this job and it is the wrong tool. It does not enlarge a
+   photograph, it re-imagines one: measured on a real enhance, the geometry
+   correlation between input and output is 0.80 (1.0 being an identical
+   layout), even with a prompt that forbids cropping, zooming and re-centring,
+   and with the requested size matched to the source so there is nothing to
+   outpaint. It re-composes anyway. That is why faces came back subtly
+   re-modelled and why published cards carried a faint doubled outline of the
+   subject — the ghost on the Pocket FM card was raw model output, not
+   post-processing. No amount of prompting fixes it, because redrawing is what
+   a generative model does.
+
+   Enlarging an image is a solved problem that needs no model at all. Lanczos
+   is a windowed-sinc resampler — the standard high-quality choice — and CAS
+   (Contrast Adaptive Sharpen) restores the crispness resampling costs while
+   deliberately avoiding the halos plain unsharp masking leaves on hard edges.
+   Both ship with the ffmpeg already installed here for video, so this needs no
+   new service, no new key and no new dependency.
+
+   What this cannot do is invent detail that was never captured; a genuinely
+   tiny, mushy source stays soft. What it cannot do either — and this is the
+   point — is invent a face, ghost an outline or hallucinate a logo. It is
+   arithmetic on the pixels that exist. It also costs nothing and finishes in
+   about a second rather than twenty to ninety.
+
+   For real learned super-resolution — recovering detail rather than
+   preserving it — the right answer is a dedicated model such as Real-ESRGAN,
+   which is what UPSCALER_URL is for and what the Railway path above calls. */
+const UPSCALE_MAX_LONG_EDGE = Number(env("UPSCALE_MAX_LONG_EDGE") || 2048);
+
+/* Two sharpeners, because one of them alone does not show.
+
+   CAS is adaptive and deliberately gentle — that is its virtue on hard edges
+   and its problem as the only stage. Measured on a soft 420px source enlarged
+   to 840px, against the same resize with no sharpening at all:
+
+     cas 0.45 (the old default)      +2.4% edge energy
+     cas 0.60                        +3.1%
+     cas 0.80                        +4.8%
+     unsharp 1.2                    +10.7%
+     unsharp 1.2 + cas 0.4          +15.7%   ← this
+     cas 1.00                       +26.5%   (its whole range in the last step)
+
+   A 2% lift is invisible, which is why "it is not enhancing" was a fair
+   report even once the resampler was right: the pipeline was doing almost
+   nothing a viewer could see. Unsharp supplies the visible lift and CAS adds
+   edge crispness on top without the halos unsharp leaves when pushed alone —
+   neither is run hard enough to ring. No pixel was driven to 0 or 255 by any
+   chain above, this one included.
+
+   Both are knobs because the right amount depends on the source, and a news
+   photo that is already crisp wants less than a soft scrape. */
+const UPSCALE_SHARPEN = env("UPSCALE_SHARPEN") || "0.4";     // CAS strength, 0..1
+const UPSCALE_UNSHARP = env("UPSCALE_UNSHARP") || "1.2";     // unsharp luma amount
+
+// 5x5 is the standard kernel for this: wide enough to catch a real edge,
+// narrow enough not to smear a halo across it. Chroma is left alone —
+// sharpening colour channels buys nothing and amplifies compression blotches.
+const SHARPEN_CHAIN = `unsharp=5:5:${UPSCALE_UNSHARP}:5:5:0,cas=strength=${UPSCALE_SHARPEN}`;
+
+async function upscaleLocally(buffer, mime) {
+  if (!ffmpegAvailable) return null;
+
+  const job = randomUUID().replace(/-/g, "");
+  const dir = join(tmpdir(), `pix-upscale-${job}`);
+  mkdirSync(dir, { recursive: true });
+  const ext = mime === "image/jpeg" ? "jpg" : "png";
+  const inPath = join(dir, `in.${ext}`);
+  const outPath = join(dir, "out.png");
+
+  try {
+    writeFileSync(inPath, buffer);
+
+    const probe = await run("ffprobe", [
+      "-v", "error", "-select_streams", "v:0",
+      "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", inPath,
+    ], 20_000);
+    const [w, h] = probe.stdout.toString("utf-8").trim().split("x").map(Number);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 2 || h < 2) {
+      console.warn("⚠ upscale: could not read image dimensions");
+      return null;
+    }
+
+    /* 2x, but never past the cap — the poster renders into a 920px slot and
+       DailyMattr re-encodes on top of that, so pixels beyond this are paid for
+       in bytes and thrown away downstream.
+
+       The `>= 1.5` is the part that matters, and it is why this is not simply
+       `min(2, cap/longEdge)`: that form enlarged a 1682px image to exactly
+       2048 — a 1.22x stretch that adds no detail a viewer can see and 40% more
+       bytes to carry it, on an image that was already big enough. Resampling
+       only earns its cost as a real enlargement; below that threshold the
+       honest answer is to leave the geometry alone and just sharpen, which is
+       what an already-large source actually needs.
+
+       Never below 1: this route enlarges or leaves alone, and silently
+       shrinking someone's upload would be a strange way to answer "enhance". */
+    const longEdge = Math.max(w, h);
+    const headroom = UPSCALE_MAX_LONG_EDGE / longEdge;
+    const factor = headroom >= 1.5 ? Math.min(2, headroom) : 1;
+    const outW = Math.round(w * factor / 2) * 2;   // even dimensions keep every encoder happy
+    const outH = Math.round(h * factor / 2) * 2;
+
+    const filters = factor > 1.01
+      ? `scale=${outW}:${outH}:flags=lanczos,${SHARPEN_CHAIN}`
+      : SHARPEN_CHAIN;
+
+    const t0 = Date.now();
+    const enc = await run("ffmpeg", [
+      "-hide_banner", "-loglevel", "error", "-y", "-i", inPath,
+      "-vf", filters, "-frames:v", "1", outPath,
+    ], 60_000);
+
+    if (enc.code !== 0 || !existsSync(outPath)) {
+      console.warn(`⚠ upscale failed: ${enc.stderr.toString("utf-8").slice(-200)}`);
+      return null;
+    }
+
+    const out = readFileSync(outPath);
+    if (!out.length) return null;
+    console.log(
+      `✓ upscaled ${w}x${h} → ${outW}x${outH} ` +
+      `(lanczos + unsharp ${UPSCALE_UNSHARP} + cas ${UPSCALE_SHARPEN}) ` +
+      `in ${Date.now() - t0}ms, ${(out.length / 1048576).toFixed(2)} MB`,
+    );
+    return {
+      dataUrl: `data:image/png;base64,${out.toString("base64")}`,
+      engine: `lanczos+sharpen ${outW}x${outH}`,
+    };
+  } catch (err) {
+    console.warn(`⚠ upscale error: ${err.message}`);
+    return null;
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* temp dir */ }
   }
+}
+
+async function handleUpscaleImage(req, res) {
+  /* No OpenAI key needed to sharpen a picture. The local path below is
+     arithmetic, and gating the whole route on a key it may never use turned a
+     missing credential into "enhance is broken". */
 
   try {
     // Read raw image body (10 MB cap)
@@ -4386,11 +4523,49 @@ async function handleUpscaleImage(req, res) {
       sendJson(res, 200, { image: railway.dataUrl, engine: railway.engine });
       return;
     }
+    /* SECOND: enlarge and sharpen the photograph itself.
+
+       This is the default, and generative restoration is now opt-in. The model
+       was producing the very artefacts this route exists to remove — altered
+       faces, doubled edges, a ghosted second copy of a logo — because it
+       redraws rather than enlarges. Arithmetic on the real pixels cannot do
+       any of that, costs nothing, and returns in about a second.
+
+       A caller that genuinely wants the model asks for it by name:
+         X-Enhance-Mode: generative
+       Everything else gets the true upscale. */
+    const mode = String(req.headers["x-enhance-mode"] || "").toLowerCase();
+    if (mode !== "generative") {
+      const localT0 = Date.now();
+      const local = await upscaleLocally(buffer, mime);
+      if (local) {
+        console.log(`✓ enhance via ${local.engine} in ${Date.now() - localT0}ms (no model, no cost)`);
+        sendJson(res, 200, { image: local.dataUrl, engine: local.engine });
+        return;
+      }
+      /* ffmpeg missing or the encode failed. Falling through to a paid model
+         that rewrites faces would be a surprising way to answer "sharpen
+         this", so say what happened instead. */
+      if (!openaiApiKey || gptImageDisabled) {
+        sendJson(res, 503, {
+          error: ffmpegAvailable
+            ? "The image could not be enlarged. Check the server log for the ffmpeg error."
+            : "Sharpening needs ffmpeg, which is not installed on this server.",
+        });
+        return;
+      }
+      console.warn("⚠ local upscale unavailable — falling back to gpt-image for this request");
+    }
+
     // The paid fallback is opt-out. Without this guard a momentary failure of
     // the self-hosted upscaler silently spends OpenAI credits — the caller
     // still gets an enhanced image, so nothing looks wrong until the bill
     // arrives. Set DISABLE_GPT_IMAGE=true to make that spend impossible and
     // surface the real problem instead.
+    if (!openaiApiKey) {
+      sendJson(res, 503, { error: "Generative restore needs OPENAI_API_KEY on the server." });
+      return;
+    }
     if (gptImageDisabled) {
       console.warn("⚠ upscaler unavailable and DISABLE_GPT_IMAGE is set — refusing to spend OpenAI credits");
       sendJson(res, 503, {

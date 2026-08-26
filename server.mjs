@@ -4234,16 +4234,35 @@ const VISION_PROMPT =
 // `It accompanies this news story: "<headline>"` reliably produced photos
 // with the headline burned into them. The renderer already draws the
 // headline on the canvas — the model never needs to know it.
-function buildEnhancePrompt(description, _headlineNotUsed, ratioLabel) {
+/* `ratioLabel` is deliberately no longer used.
+
+   It used to carry the POSTER's shape and the prompt told the model to EXTEND
+   the scene to fill it. Two things went wrong with that. The invented
+   background is not the photograph and appeared on a published card as a
+   hard-edged box of model-drawn scenery. And extending forces the model to
+   re-lay-out the picture: the subject is moved and rescaled to make room, so
+   the result no longer lines up with the original — which is what the merge
+   needs in order to keep a real face. A misaligned result printed the model's
+   edges over the photograph as a ghost.
+
+   The requested size now matches the source, so there is nothing to extend,
+   and the rules below say plainly not to try. Framing belongs to the poster
+   canvas, where the writer controls it and every pixel is real. */
+function buildEnhancePrompt(description, _headlineNotUsed, _ratioNoLongerUsed) {
   return [
     "Professional photo restoration of a REAL news photograph.",
     description ? `CONTEXT — the photo shows: ${description}` : "",
     "",
     "TASK: upscale and enhance — recover fine detail, increase sharpness,",
     "remove compression artifacts and noise, correct exposure and colour balance.",
-    ratioLabel
-      ? `The output canvas is ${ratioLabel}. If the original photo has a different shape, EXTEND the scene naturally (continue the background/setting) to fill the ${ratioLabel} frame — keep the main subject fully visible, at the same relative scale, never cropped, stretched or distorted.`
-      : "",
+    "",
+    "GEOMETRY — the output must line up with the input EXACTLY:",
+    "- Return the SAME framing and composition. Do not crop, zoom, pan, rotate,",
+    "  straighten, re-centre or re-compose anything.",
+    "- Every subject stays at the same position and the same scale, so the",
+    "  result can be laid over the original and match pixel for pixel.",
+    "- Do not extend, outpaint or fill beyond the edges of the photograph.",
+    "- Change no proportions: nothing stretched, squashed or resized.",
     "",
     "ABSOLUTE RULES:",
     "- Every person's face must stay PIXEL-FAITHFUL to the original identity:",
@@ -4255,9 +4274,8 @@ function buildEnhancePrompt(description, _headlineNotUsed, ratioLabel) {
     "- Text physically present in the photograph (signage, jerseys, banners",
     "  held by people) is preserved exactly as it already appears — never",
     "  invented, completed, translated or extended.",
-    "- The original content itself is unchanged — only the surrounding scene",
-    "  may be extended to fill the frame. Add no new people or objects of",
-    "  interest. This is journalism, not art.",
+    "- The original content itself is unchanged. Add no new people, objects,",
+    "  scenery or background of any kind. This is journalism, not art.",
     "",
     "The result is a clean photograph with no added lettering or graphics.",
   ].filter(Boolean).join("\n");

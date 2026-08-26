@@ -1069,15 +1069,12 @@ async function mergeEnhancement(original, enhanced, strength) {
   const dx = Math.round((W - dw) / 2);
   const dy = Math.round((H - dh) / 2);
 
-  /* How far the model's framing drifted from the source. Detail is added by
-     subtracting a blurred copy of the model's output from itself, which only
-     lines up if the two images show the same thing in the same place. When the
-     shapes disagree badly the model has reframed, the detail layer is
-     misaligned, and adding it would print ghost edges across the picture — so
-     the photograph is returned clean instead. Better a true picture with no
-     lift than a sharpened one with doubled edges. */
+  /* Shape alone is not proof of alignment. The model re-composes inside the
+     SAME aspect too — nudging the subject, zooming a little, straightening —
+     and detail from a picture whose edges sit somewhere else prints those
+     edges over the photograph. That is the ghost: the model's outline showing
+     through the real one. Checked properly below, by content. */
   const aspectDrift = Math.abs((W / H) - (ow / oh)) / (ow / oh);
-  const aligned = aspectDrift <= 0.06;
 
   const surface = (draw, filter) => {
     const c = document.createElement("canvas");
@@ -1100,12 +1097,32 @@ async function mergeEnhancement(original, enhanced, strength) {
     // The photograph, filling the frame. No model pixels underneath: there is
     // no gap for them to show through.
     base = surface((x) => x.drawImage(original, dx, dy, dw, dh));
-    if (!aligned) {
+    ai     = surface((x) => x.drawImage(enhanced, 0, 0, W, H));
+    aiBlur = surface((x) => x.drawImage(enhanced, 0, 0, W, H), `blur(${radius}px)`);
+
+    /* Does the model's picture still show the same thing in the same places?
+
+       Compared on a coarse grid of averages, which is geometry with the detail
+       thrown away, and by CORRELATION rather than difference — so a legitimate
+       exposure or colour correction (every value shifting together) still
+       matches, while a subject that has moved does not. Below the threshold
+       the detail layer cannot be trusted to line up, so the photograph is
+       returned clean: a true picture with no lift beats a sharpened one
+       wearing a second copy of itself. */
+    /* 0.985, measured rather than guessed. On a 1536-wide frame: an identical
+       layout scores 1.000, an exposure lift 1.000, a colour correction 0.994
+       and a pure sharpen 0.999 — all comfortably above. A subject nudged just
+       2% sideways, about 31px and plainly visible as a double edge, scores
+       0.978; a 12% move scores 0.684 and a 25% zoom 0.601. The line sits
+       between the corrections we want and the smallest displacement that
+       would ghost. */
+    const match = geometryCorrelation(base, ai, W, H);
+    if (aspectDrift > 0.06 || match < 0.985) {
+      console.info(`[pix] enhance: detail skipped, geometry match ${match.toFixed(3)}`
+        + (aspectDrift > 0.06 ? ` (aspect drift ${(aspectDrift * 100).toFixed(0)}%)` : ""));
       const clean = await canvasToImage(base, W, H);
       return clean || original;
     }
-    ai     = surface((x) => x.drawImage(enhanced, 0, 0, W, H));
-    aiBlur = surface((x) => x.drawImage(enhanced, 0, 0, W, H), `blur(${radius}px)`);
   } catch {
     return original;   // tainted canvas or allocation failure — the real picture
   }
@@ -1135,6 +1152,50 @@ async function canvasToImage(imageData, w, h) {
     img.src = canvas.toDataURL("image/png");
   });
   return img.naturalWidth ? img : null;
+}
+
+/* How closely two frames agree on WHERE things are.
+
+   Both are reduced to a coarse grid of brightness averages — geometry with
+   the detail removed — and compared by Pearson correlation. Correlation
+   ignores a uniform shift in brightness or contrast, which is exactly what a
+   legitimate exposure correction looks like, while a subject that has moved
+   breaks it immediately. Returns 1 for identical layout, 0 for unrelated. */
+function geometryCorrelation(a, b, W, H, grid = 24) {
+  const cellW = Math.max(1, Math.floor(W / grid));
+  const cellH = Math.max(1, Math.floor(H / grid));
+  const A = [], B = [];
+
+  for (let gy = 0; gy < grid; gy += 1) {
+    for (let gx = 0; gx < grid; gx += 1) {
+      let sa = 0, sb = 0, n = 0;
+      const y0 = gy * cellH, x0 = gx * cellW;
+      // Every fourth pixel: the average is what matters, not the sample count.
+      for (let y = y0; y < y0 + cellH && y < H; y += 2) {
+        for (let x = x0; x < x0 + cellW && x < W; x += 2) {
+          const i = (y * W + x) * 4;
+          sa += (a.data[i] + a.data[i + 1] + a.data[i + 2]) / 3;
+          sb += (b.data[i] + b.data[i + 1] + b.data[i + 2]) / 3;
+          n += 1;
+        }
+      }
+      if (!n) continue;
+      A.push(sa / n);
+      B.push(sb / n);
+    }
+  }
+  if (A.length < 4) return 1;
+
+  const mean = (v) => v.reduce((t, x) => t + x, 0) / v.length;
+  const ma = mean(A), mb = mean(B);
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < A.length; i += 1) {
+    const x = A[i] - ma, y = B[i] - mb;
+    num += x * y; da += x * x; db += y * y;
+  }
+  // A perfectly flat frame has no geometry to disagree about.
+  if (da === 0 || db === 0) return 1;
+  return num / Math.sqrt(da * db);
 }
 
 function clamp255(v) {

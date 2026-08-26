@@ -1016,192 +1016,6 @@ function resetImageControls() {
   imgZoom.value = 100;
 }
 
-/* Merge an AI "upscale" back onto the real photograph.
-
-   gpt-image is the upscaler here, and it does not sharpen an image — it
-   redraws it. Even at input_fidelity=high a face returns subtly re-modelled:
-   a different jawline, different eyes, a person who is nearly but not quite
-   the one photographed. On a poster of a named public figure that is a
-   factual problem.
-
-   A flat alpha blend fixes identity but throws away most of what was paid
-   for: at 20% you keep 20% of the upscale. So this separates the two things
-   an upscale actually does.
-
-     LOW frequency  — shape, colour, geometry: WHO the person is.
-     HIGH frequency — edge acuity, texture, grain: how SHARP the picture is.
-
-   Identity is taken entirely from the original and sharpness entirely from
-   the model: out = original + strength x (ai - blur(ai)). The subtraction
-   leaves only what the model added in fine detail, so the face keeps the real
-   photograph's geometry pixel for pixel while gaining the crispness of the
-   upscale. Strength now scales DETAIL, not the person.
-
-   Geometry note: the request size follows the POSTER ratio, not the source,
-   so the model frequently outpaints — a landscape photo comes back portrait
-   with invented margins. Those margins are wanted (they stop the canvas
-   cropping the subject to shreds), and there is no original underneath them.
-   So the model's frame is the base, the photograph is restored only inside
-   the rectangle it actually occupies, and the invented edges are left alone.
-   Stretching the original to the new frame instead — which a naive blend does
-   — produces a distorted ghost, worse than either input. */
-async function mergeEnhancement(original, enhanced, strength) {
-  const W = enhanced.naturalWidth || enhanced.width;
-  const H = enhanced.naturalHeight || enhanced.height;
-  const ow = original.naturalWidth || original.width;
-  const oh = original.naturalHeight || original.height;
-  if (!W || !H || !ow || !oh) return enhanced;
-
-  /* COVER, not contain. The photograph fills the model's frame and anything
-     that does not fit is cropped — the same crop the poster canvas would make
-     anyway.
-
-     Contain was the bug behind the box on the published card: it fitted the
-     photo inside the frame and left the model's outpainted invention showing
-     above and below it, with a hard edge where the two met. An invented
-     margin is not the photograph and must never be shown as if it were.
-
-     Nothing of the picture is lost by this — the canvas crops to the poster
-     ratio regardless, and the writer's zoom and pan still work on the result. */
-  const scale = Math.max(W / ow, H / oh);
-  const dw = Math.round(ow * scale);
-  const dh = Math.round(oh * scale);
-  const dx = Math.round((W - dw) / 2);
-  const dy = Math.round((H - dh) / 2);
-
-  /* Shape alone is not proof of alignment. The model re-composes inside the
-     SAME aspect too — nudging the subject, zooming a little, straightening —
-     and detail from a picture whose edges sit somewhere else prints those
-     edges over the photograph. That is the ghost: the model's outline showing
-     through the real one. Checked properly below, by content. */
-  const aspectDrift = Math.abs((W / H) - (ow / oh)) / (ow / oh);
-
-  const surface = (draw, filter) => {
-    const c = document.createElement("canvas");
-    c.width = W; c.height = H;
-    const x = c.getContext("2d", { willReadFrequently: true });
-    x.imageSmoothingEnabled = true;
-    x.imageSmoothingQuality = "high";
-    if (filter) x.filter = filter;
-    draw(x);
-    return x.getImageData(0, 0, W, H);
-  };
-
-  /* The blur radius sets what counts as "detail". Too small and it transfers
-     nothing; too large and it starts carrying the model's reshaped features
-     across, which is the whole thing being avoided. */
-  const radius = Math.max(1, Math.round(Math.min(W, H) / 320));
-
-  let ai, aiBlur, base;
-  try {
-    // The photograph, filling the frame. No model pixels underneath: there is
-    // no gap for them to show through.
-    base = surface((x) => x.drawImage(original, dx, dy, dw, dh));
-    ai     = surface((x) => x.drawImage(enhanced, 0, 0, W, H));
-    aiBlur = surface((x) => x.drawImage(enhanced, 0, 0, W, H), `blur(${radius}px)`);
-
-    /* Does the model's picture still show the same thing in the same places?
-
-       Compared on a coarse grid of averages, which is geometry with the detail
-       thrown away, and by CORRELATION rather than difference — so a legitimate
-       exposure or colour correction (every value shifting together) still
-       matches, while a subject that has moved does not. Below the threshold
-       the detail layer cannot be trusted to line up, so the photograph is
-       returned clean: a true picture with no lift beats a sharpened one
-       wearing a second copy of itself. */
-    /* 0.985, measured rather than guessed. On a 1536-wide frame: an identical
-       layout scores 1.000, an exposure lift 1.000, a colour correction 0.994
-       and a pure sharpen 0.999 — all comfortably above. A subject nudged just
-       2% sideways, about 31px and plainly visible as a double edge, scores
-       0.978; a 12% move scores 0.684 and a 25% zoom 0.601. The line sits
-       between the corrections we want and the smallest displacement that
-       would ghost. */
-    const match = geometryCorrelation(base, ai, W, H);
-    if (aspectDrift > 0.06 || match < 0.985) {
-      console.info(`[pix] enhance: detail skipped, geometry match ${match.toFixed(3)}`
-        + (aspectDrift > 0.06 ? ` (aspect drift ${(aspectDrift * 100).toFixed(0)}%)` : ""));
-      const clean = await canvasToImage(base, W, H);
-      return clean || original;
-    }
-  } catch {
-    return original;   // tainted canvas or allocation failure — the real picture
-  }
-
-  // The photograph covers every pixel, so detail applies to the whole frame.
-  const out = base.data, hi = ai.data, lo = aiBlur.data;
-  for (let i = 0; i < out.length; i += 4) {
-    out[i]     = clamp255(out[i]     + strength * (hi[i]     - lo[i]));
-    out[i + 1] = clamp255(out[i + 1] + strength * (hi[i + 1] - lo[i + 1]));
-    out[i + 2] = clamp255(out[i + 2] + strength * (hi[i + 2] - lo[i + 2]));
-  }
-
-  return (await canvasToImage(base, W, H)) || original;
-}
-
-/* ImageData -> a loaded <img>, so callers can treat the result exactly like
-   any other picture. Awaited, because the data: URL decodes asynchronously and
-   everything downstream reads naturalWidth straight away. */
-async function canvasToImage(imageData, w, h) {
-  const canvas = document.createElement("canvas");
-  canvas.width = w; canvas.height = h;
-  canvas.getContext("2d").putImageData(imageData, 0, 0);
-  const img = new Image();
-  await new Promise((resolve) => {
-    img.onload = resolve;
-    img.onerror = resolve;
-    img.src = canvas.toDataURL("image/png");
-  });
-  return img.naturalWidth ? img : null;
-}
-
-/* How closely two frames agree on WHERE things are.
-
-   Both are reduced to a coarse grid of brightness averages — geometry with
-   the detail removed — and compared by Pearson correlation. Correlation
-   ignores a uniform shift in brightness or contrast, which is exactly what a
-   legitimate exposure correction looks like, while a subject that has moved
-   breaks it immediately. Returns 1 for identical layout, 0 for unrelated. */
-function geometryCorrelation(a, b, W, H, grid = 24) {
-  const cellW = Math.max(1, Math.floor(W / grid));
-  const cellH = Math.max(1, Math.floor(H / grid));
-  const A = [], B = [];
-
-  for (let gy = 0; gy < grid; gy += 1) {
-    for (let gx = 0; gx < grid; gx += 1) {
-      let sa = 0, sb = 0, n = 0;
-      const y0 = gy * cellH, x0 = gx * cellW;
-      // Every fourth pixel: the average is what matters, not the sample count.
-      for (let y = y0; y < y0 + cellH && y < H; y += 2) {
-        for (let x = x0; x < x0 + cellW && x < W; x += 2) {
-          const i = (y * W + x) * 4;
-          sa += (a.data[i] + a.data[i + 1] + a.data[i + 2]) / 3;
-          sb += (b.data[i] + b.data[i + 1] + b.data[i + 2]) / 3;
-          n += 1;
-        }
-      }
-      if (!n) continue;
-      A.push(sa / n);
-      B.push(sb / n);
-    }
-  }
-  if (A.length < 4) return 1;
-
-  const mean = (v) => v.reduce((t, x) => t + x, 0) / v.length;
-  const ma = mean(A), mb = mean(B);
-  let num = 0, da = 0, db = 0;
-  for (let i = 0; i < A.length; i += 1) {
-    const x = A[i] - ma, y = B[i] - mb;
-    num += x * y; da += x * x; db += y * y;
-  }
-  // A perfectly flat frame has no geometry to disagree about.
-  if (da === 0 || db === 0) return 1;
-  return num / Math.sqrt(da * db);
-}
-
-function clamp255(v) {
-  return v < 0 ? 0 : v > 255 ? 255 : v;
-}
-
 /* The page a pending image pick belongs to.
 
    The nonce alone answers "is this still the picture the writer wants"; it
@@ -7054,20 +6868,34 @@ if (aiEnhanceBtn) {
          100 is the old behaviour for anyone who wants it. Done on the client
          because the original is already in memory here — the server no longer
          has it by then. */
-      /* Strength scales how much of the model's DETAIL is carried over, not
-         how much of the person is replaced — so the default no longer has to
-         be timid to protect a face. */
-      const strength = Math.max(0, Math.min(100, Number(state.enhanceStrength ?? 20))) / 100;
-      const merged = await mergeEnhancement(img, enhanced, strength);
+      /* The model's output, used as it comes.
 
-      await ensureImageFocalPoint(merged);
+         It was briefly composited back over the original to protect faces —
+         identity from the photograph, sharpness from the model. That needs the
+         two frames to line up, and measurement says they do not: on a real
+         enhance the geometry correlation between input and output is 0.80,
+         where 1.0 is an identical layout. gpt-image re-composes the picture
+         even when the prompt explicitly forbids cropping, zooming, panning and
+         re-centring.
+
+         Detail lifted from a frame laid out differently prints the model's
+         edges over the real ones — the doubled outline that reached a
+         published card. Guarding against that instead made Enhance hand back
+         the original untouched, so the call was paid for and did nothing.
+         Both failures come from the same false premise: a generative model is
+         not an aligner. The honest way to use one as an upscaler is to take
+         what it returns.
+
+         Faces are defended where it actually works: input_fidelity=high, and
+         the geometry and identity rules in buildEnhancePrompt. */
+      await ensureImageFocalPoint(enhanced);
       /* Onto the page that was selected when Enhance was pressed. This runs
          30-90 seconds after the click and had no page guard at all, so a
          writer who clicked through the carousel while waiting watched the
          slide they happened to be looking at swap to page 1's enhanced photo
          — destroying that slide's own picture, unrecoverable when it was a
          drag-and-drop upload. */
-      commitFieldToPage(enhanceOwner, "mainImage", merged);
+      commitFieldToPage(enhanceOwner, "mainImage", enhanced);
       renderPoster();
       const ENGINE_LABELS = {
         realesrgan: "Real-ESRGAN (self-hosted, free)",
@@ -9325,16 +9153,14 @@ if (showTimestampInput) {
 const enhanceStrengthInput = document.getElementById("enhance-strength");
 const enhanceStrengthHint = document.getElementById("enhance-strength-hint");
 if (enhanceStrengthInput) {
-  /* Strength scales how much of the model's fine DETAIL is carried onto the
-     photograph — it no longer trades the person away, because the face is
-     taken from the original at every setting. So the wording is about
-     sharpness, not about how artificial someone looks. */
+  /* This dial reaches the SELF-HOSTED upscaler only (UPSCALER_URL), where it
+     mixes the model output back toward a plain resample. gpt-image has no such
+     control — it returns one image and that is what you get — so with no
+     upscaler configured this slider changes nothing. Saying so is better than
+     implying a precision the path does not have; the honest lever on a
+     gpt-image enhance is IMAGE_QUALITY. */
   const describe = (v) =>
-    v >= 90 ? `${v}% — maximum detail. Watch for halos on hard edges.`
-    : v >= 60 ? `${v}% — crisp. Good for a soft or low-resolution source.`
-    : v >= 25 ? `${v}% — a clear lift in sharpness, faces untouched.`
-    : v > 0 ? `${v}% — a gentle lift. Raise it if the image still looks soft.`
-    : `Off — the picture is left exactly as it came in.`;
+    `${v}% — applies to the self-hosted upscaler. With gpt-image the result is whatever the model returns.`;
   enhanceStrengthInput.addEventListener("input", () => {
     state.enhanceStrength = Number(enhanceStrengthInput.value);
     if (enhanceStrengthHint) enhanceStrengthHint.textContent = describe(state.enhanceStrength);

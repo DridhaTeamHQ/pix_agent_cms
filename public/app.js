@@ -3791,6 +3791,10 @@ function paintPoster() {
   const enhanceBtn = document.getElementById("ai-enhance-btn");
   if (enhanceBtn && !enhanceBtn.classList.contains("working")) {
     enhanceBtn.disabled = !state.mainImage;
+    const restoreBtn = document.getElementById("ai-restore-btn");
+    if (restoreBtn && !restoreBtn.classList.contains("working")) {
+      restoreBtn.disabled = !state.mainImage;
+    }
   }
 }
 
@@ -6785,6 +6789,7 @@ if (copyAllBtn) {
 /* ═══════════════════════ AI Enhance (gpt-image-1) ═══════════════════════ */
 
 const aiEnhanceBtn    = document.getElementById("ai-enhance-btn");
+const aiRestoreBtn    = document.getElementById("ai-restore-btn");
 const aiEnhanceStatus = document.getElementById("ai-enhance-status");
 
 function setEnhanceStatus(msg, kind) {
@@ -6794,15 +6799,23 @@ function setEnhanceStatus(msg, kind) {
 }
 
 if (aiEnhanceBtn) {
-  aiEnhanceBtn.addEventListener("click", async () => {
+  /* Two operations behind one code path. "sharpen" enlarges the real
+     photograph with lanczos + CAS on the server: free, about a second, and
+     incapable of altering a face. "generative" asks gpt-image to redraw it,
+     which recovers detail a resample cannot but re-composes the frame — that
+     is what put altered faces and doubled edges on published cards, so it is
+     opt-in and labelled. */
+  const runEnhance = async (mode, button) => {
     const img = state.mainImage;
     if (!img) return;
     // Whose picture this is. Read before the first await — see the commit below.
     const enhanceOwner = activePage();
 
-    aiEnhanceBtn.disabled = true;
-    aiEnhanceBtn.classList.add("working");
-    setEnhanceStatus("Enhancing with AI — analysing photo, then rebuilding detail (30–90s)…");
+    button.disabled = true;
+    button.classList.add("working");
+    setEnhanceStatus(mode === "generative"
+      ? "Redrawing with AI — analysing the photo, then rebuilding detail (30–90s)…"
+      : "Enlarging and sharpening…");
 
     try {
       // Snapshot the current background to a temp canvas, capped at 1536 on
@@ -6834,6 +6847,7 @@ if (aiEnhanceBtn) {
           // reads as a painted face; mixing back toward a plain resample is
           // the dial for that.
           "X-Enhance-Strength": String((state.enhanceStrength ?? 20) / 100),
+          "X-Enhance-Mode": mode,
         },
         body: blob,
       });
@@ -6904,12 +6918,15 @@ if (aiEnhanceBtn) {
       const engineLabel = ENGINE_LABELS[data.engine] || data.engine || "AI";
       setEnhanceStatus(`✓ Enhanced via ${engineLabel}. Re-pick a stock image to undo.`, "success");
     } catch (err) {
-      setEnhanceStatus(`Enhance failed: ${err.message}`, "error");
+      setEnhanceStatus(`${mode === "generative" ? "Restore" : "Sharpen"} failed: ${err.message}`, "error");
     } finally {
-      aiEnhanceBtn.classList.remove("working");
-      aiEnhanceBtn.disabled = !state.mainImage;
+      button.classList.remove("working");
+      button.disabled = !state.mainImage;
     }
-  });
+  };
+
+  aiEnhanceBtn.addEventListener("click", () => runEnhance("sharpen", aiEnhanceBtn));
+  aiRestoreBtn?.addEventListener("click", () => runEnhance("generative", aiRestoreBtn));
 }
 
 /* ── Theme toggle (dark default; persisted in localStorage) ── */

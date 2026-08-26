@@ -4234,45 +4234,80 @@ const VISION_PROMPT =
 // `It accompanies this news story: "<headline>"` reliably produced photos
 // with the headline burned into them. The renderer already draws the
 // headline on the canvas — the model never needs to know it.
-function buildEnhancePrompt(description, _headlineNotUsed, ratioLabel) {
+/* Restore, upscale, preserve — not "generate a better version".
+
+   The order matters and so does what is left out. Three kinds of instruction
+   were removed from the previous version because each one asked the model to
+   invent rather than recover:
+
+     "EXTEND the scene to fill the frame"  — the outpainting that produced the
+       overlay. Gone entirely; the canvas now matches the source.
+     "DSLR-level depth of field"           — asking to ADD depth of field is a
+       request to synthesise bokeh that was never photographed, i.e. to redraw
+       the background.
+     "cinematic tones", "high-end magazine", "premium editorial"  — style
+       targets pull toward stylisation, which is the over-smoothed magazine
+       look. They fight the same request's demand for real skin.
+
+   What is left is a restoration brief: recover what the sensor captured,
+   change nothing about what the photograph shows. */
+function buildEnhancePrompt(description, _headlineNotUsed, _ratioNoLongerUsed) {
   return [
-    "Professional photo restoration of a REAL news photograph.",
+    "Restore and upscale this REAL news photograph.",
     description ? `CONTEXT — the photo shows: ${description}` : "",
     "",
-    "TASK: upscale and enhance — recover fine detail, increase sharpness,",
-    "remove compression artifacts and noise, correct exposure and colour balance.",
-    ratioLabel
-      ? `The output canvas is ${ratioLabel}. If the original photo has a different shape, EXTEND the scene naturally (continue the background/setting) to fill the ${ratioLabel} frame — keep the main subject fully visible, at the same relative scale, never cropped, stretched or distorted.`
-      : "",
+    "RESTORE:",
+    "- Remove compression artifacts, blur, noise and pixelation.",
+    "- Recover fine detail that the original capture contains: facial detail,",
+    "  skin texture, individual hair strands, fabric weave, fine edges.",
     "",
-    "ABSOLUTE RULES:",
-    "- Every person's face must stay PIXEL-FAITHFUL to the original identity:",
-    "  same facial structure, skin texture, wrinkles, expression and age.",
-    "  Do NOT beautify, smooth skin, or idealise anyone.",
-    "- DO NOT ADD ANY TEXT OR GRAPHICS. No headline, caption, title, label,",
-    "  subtitle, watermark, banner, lower-third or logo. Write no words",
-    "  anywhere in the image.",
-    "- Text physically present in the photograph (signage, jerseys, banners",
-    "  held by people) is preserved exactly as it already appears — never",
-    "  invented, completed, translated or extended.",
-    "- The original content itself is unchanged — only the surrounding scene",
-    "  may be extended to fill the frame. Add no new people or objects of",
-    "  interest. This is journalism, not art.",
+    "UPSCALE:",
+    "- Increase resolution and sharpness. Keep it photographic — no halos, no",
+    "  oversharpening, no waxy or plastic surfaces, no AI-looking skin.",
     "",
-    "The result is a clean photograph with no added lettering or graphics.",
+    "PRESERVE — the picture must come back as the same photograph:",
+    "- Identical composition, framing, crop and camera angle.",
+    "- Do not zoom, pan, rotate, straighten, re-centre or re-compose.",
+    "- Do not extend, outpaint or fill beyond the edges of the photograph.",
+    "- Every person's face stays PIXEL-FAITHFUL to the original identity: same",
+    "  facial structure, skin texture, wrinkles, expression, hairstyle and age.",
+    "  Do NOT beautify, smooth skin, slim, or idealise anyone.",
+    "- Same pose, clothing and body proportions. No change to anyone's build.",
+    "- Same background. Add no new people, objects or scenery.",
+    "- Preserve existing text, logos, icons and graphic elements exactly as",
+    "  they already appear — never invented, completed, translated or extended.",
+    "  Keep typography sharp and readable.",
+    "",
+    "ENHANCE — gently, and only what the photograph already has:",
+    "- Restore realistic lighting, depth and contrast.",
+    "- Natural, accurate colour. Natural skin tones. No colour grading, no",
+    "  stylised or cinematic look.",
+    "",
+    "DO NOT: redesign the image, change faces, generate new objects, alter or",
+    "add text, modify logos, shift colours drastically, oversharpen, produce",
+    "AI-looking skin, or distort proportions. This is journalism, not art.",
+    "",
+    "The result is the same photograph, clean and sharp, at higher resolution.",
   ].filter(Boolean).join("\n");
 }
 
-// Map the poster's aspect ratio to the closest gpt-image output size.
-function sizeForRatio(ratio, orientationHint) {
-  switch (ratio) {
-    case "9:16":
-    case "4:5":  return "1024x1536";
-    case "1:1":  return "1024x1024";
-    case "16:9": return "1536x1024";
-  }
+/* The SOURCE's shape, never the poster's.
+
+   Asking for the poster ratio is what produced the overlay. A landscape photo
+   requested as 1024x1536 cannot be returned as itself — the model has to place
+   it inside a taller canvas and invent the rest, which it does by generating a
+   background and blending a re-rendered subject into it. That compositing IS
+   the doubled image people were seeing, and it also contradicts the
+   input_fidelity=high flag set two lines later, which exists to preserve
+   composition. The request was telling the model to keep the framing and to
+   change it at the same time.
+
+   Framing belongs to the poster canvas, which crops and pans under the
+   writer's control using real pixels. The model's only job here is detail. */
+function sizeForRatio(_posterRatioNoLongerUsed, orientationHint) {
   if (orientationHint === "landscape") return "1536x1024";
   if (orientationHint === "portrait")  return "1024x1536";
+  // Unknown: let the model match the input rather than guess from the poster.
   return "auto";
 }
 
@@ -4523,19 +4558,17 @@ async function handleUpscaleImage(req, res) {
       sendJson(res, 200, { image: railway.dataUrl, engine: railway.engine });
       return;
     }
-    /* SECOND: enlarge and sharpen the photograph itself.
+    /* SECOND: gpt-image restores the photograph.
 
-       This is the default, and generative restoration is now opt-in. The model
-       was producing the very artefacts this route exists to remove — altered
-       faces, doubled edges, a ghosted second copy of a logo — because it
-       redraws rather than enlarges. Arithmetic on the real pixels cannot do
-       any of that, costs nothing, and returns in about a second.
+       The local lanczos path used to sit here as the default. It cannot alter
+       a face, but it also cannot recover detail that was never captured — it
+       is arithmetic on existing pixels, so a soft source stays soft. The model
+       is what actually restores, and it is what this route is for now.
 
-       A caller that genuinely wants the model asks for it by name:
-         X-Enhance-Mode: generative
-       Everything else gets the true upscale. */
+       X-Enhance-Mode: sharpen still reaches the resampler for anyone who wants
+       a free, pixel-exact enlargement instead. */
     const mode = String(req.headers["x-enhance-mode"] || "").toLowerCase();
-    if (mode !== "generative") {
+    if (mode === "sharpen") {
       const localT0 = Date.now();
       const local = await upscaleLocally(buffer, mime);
       if (local) {
@@ -4543,18 +4576,12 @@ async function handleUpscaleImage(req, res) {
         sendJson(res, 200, { image: local.dataUrl, engine: local.engine });
         return;
       }
-      /* ffmpeg missing or the encode failed. Falling through to a paid model
-         that rewrites faces would be a surprising way to answer "sharpen
-         this", so say what happened instead. */
-      if (!openaiApiKey || gptImageDisabled) {
-        sendJson(res, 503, {
-          error: ffmpegAvailable
-            ? "The image could not be enlarged. Check the server log for the ffmpeg error."
-            : "Sharpening needs ffmpeg, which is not installed on this server.",
-        });
-        return;
-      }
-      console.warn("⚠ local upscale unavailable — falling back to gpt-image for this request");
+      sendJson(res, 503, {
+        error: ffmpegAvailable
+          ? "The image could not be enlarged. Check the server log for the ffmpeg error."
+          : "Sharpening needs ffmpeg, which is not installed on this server.",
+      });
+      return;
     }
 
     // The paid fallback is opt-out. Without this guard a momentary failure of
@@ -4585,21 +4612,25 @@ async function handleUpscaleImage(req, res) {
     const sizeHint = (req.headers["x-image-orientation"] || "").toString();
     const size = sizeForRatio(posterRatio, sizeHint);
 
-    /* Default low. high≈$0.25, medium≈$0.06, low≈$0.016 — so this is roughly
-       a quarter of what medium cost, on the single biggest line item in the
-       app's running cost.
+    /* HIGH, deliberately. This is the setting that decides whether skin comes
+       back as skin or as clay.
 
-       Safe to drop because of the line below it: input_fidelity=high is what
-       preserves faces and identity, and that is kept. `quality` buys texture
-       and fine detail on top of that. On a news photo destined to be scaled
-       into a 920px poster slot and then re-encoded by DailyMattr, that extra
-       texture does not survive the trip — we were paying for detail that was
-       thrown away downstream.
+       `quality` is how much compute the model spends rendering detail —
+       OpenAI's own default is high, and this route used to force low to save
+       money (~$0.011 low against ~$0.042 medium). Starved of that budget the
+       model returns smooth, waxy, under-detailed surfaces, which on a face
+       reads as modelling clay. No prompt can undo it: you cannot instruct a
+       model to render texture it has no budget to render. The old comment
+       here argued the detail was thrown away by DailyMattr's re-encode
+       anyway; the clay proved otherwise.
 
-       Raise it per-deployment with IMAGE_QUALITY=medium if a particular set
-       of images needs it. Note that variable is already set in Railway, and
-       an env value overrides this default. */
-    const quality = (process.env.IMAGE_QUALITY || "low").toLowerCase();
+       IMAGE_QUALITY still overrides per deployment, and if it is set to `low`
+       in the environment the clay comes straight back — the boot log says so
+       explicitly when that happens. */
+    const quality = (process.env.IMAGE_QUALITY || "high").toLowerCase();
+    if (quality === "low") {
+      console.warn("⚠ IMAGE_QUALITY=low — faces will come back smooth and clay-like. Unset it or use high.");
+    }
 
     const t0 = Date.now();
 
@@ -4650,7 +4681,17 @@ async function handleUpscaleImage(req, res) {
     }
 
     console.log(`✓ AI enhance done in ${Date.now() - t0}ms (${modelUsed}, ${size}, quality=${quality})`);
-    sendJson(res, 200, { image: `data:image/png;base64,${b64}`, context: description, engine: modelUsed });
+    /* `quality` and `size` come back with the image so the setting can be
+       checked from outside the box. IMAGE_QUALITY is an environment variable
+       and an override in Railway silently reinstates the clay — without this
+       the only way to know was to read a log line on the host. */
+    sendJson(res, 200, {
+      image: `data:image/png;base64,${b64}`,
+      context: description,
+      engine: modelUsed,
+      quality,
+      size,
+    });
   } catch (err) {
     console.error("✗ upscale-image error:", err);
     sendJson(res, 500, { error: err.message || "Image enhance failed." });

@@ -1016,37 +1016,106 @@ function resetImageControls() {
   imgZoom.value = 100;
 }
 
-/* Lay `top` over `base` at `alpha`, at the larger of the two sizes.
+/* Merge an AI "upscale" back onto the real photograph.
 
-   Returns a plain <img> so callers can treat it exactly like any other loaded
-   picture — same shape as what imageFromUrl gives back. The canvas is sized to
-   the enhanced copy, which is the higher resolution of the pair, so nothing is
-   thrown away by the merge. */
-async function blendImages(base, top, alpha) {
-  const w = Math.max(top.naturalWidth || top.width || 0, base.naturalWidth || base.width || 0);
-  const h = Math.max(top.naturalHeight || top.height || 0, base.naturalHeight || base.height || 0);
-  if (!w || !h) return top;
+   gpt-image is the upscaler here, and it does not sharpen an image — it
+   redraws it. Even at input_fidelity=high a face returns subtly re-modelled:
+   a different jawline, different eyes, a person who is nearly but not quite
+   the one photographed. On a poster of a named public figure that is a
+   factual problem.
+
+   A flat alpha blend fixes identity but throws away most of what was paid
+   for: at 20% you keep 20% of the upscale. So this separates the two things
+   an upscale actually does.
+
+     LOW frequency  — shape, colour, geometry: WHO the person is.
+     HIGH frequency — edge acuity, texture, grain: how SHARP the picture is.
+
+   Identity is taken entirely from the original and sharpness entirely from
+   the model: out = original + strength x (ai - blur(ai)). The subtraction
+   leaves only what the model added in fine detail, so the face keeps the real
+   photograph's geometry pixel for pixel while gaining the crispness of the
+   upscale. Strength now scales DETAIL, not the person.
+
+   Geometry note: the request size follows the POSTER ratio, not the source,
+   so the model frequently outpaints — a landscape photo comes back portrait
+   with invented margins. Those margins are wanted (they stop the canvas
+   cropping the subject to shreds), and there is no original underneath them.
+   So the model's frame is the base, the photograph is restored only inside
+   the rectangle it actually occupies, and the invented edges are left alone.
+   Stretching the original to the new frame instead — which a naive blend does
+   — produces a distorted ghost, worse than either input. */
+async function mergeEnhancement(original, enhanced, strength) {
+  const W = enhanced.naturalWidth || enhanced.width;
+  const H = enhanced.naturalHeight || enhanced.height;
+  const ow = original.naturalWidth || original.width;
+  const oh = original.naturalHeight || original.height;
+  if (!W || !H || !ow || !oh) return enhanced;
+
+  // Where the photograph sits inside the model's frame: contain, centred.
+  const scale = Math.min(W / ow, H / oh);
+  const dw = Math.round(ow * scale);
+  const dh = Math.round(oh * scale);
+  const dx = Math.round((W - dw) / 2);
+  const dy = Math.round((H - dh) / 2);
+
+  const surface = (draw, filter) => {
+    const c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    const x = c.getContext("2d", { willReadFrequently: true });
+    x.imageSmoothingEnabled = true;
+    x.imageSmoothingQuality = "high";
+    if (filter) x.filter = filter;
+    draw(x);
+    return x.getImageData(0, 0, W, H);
+  };
+
+  /* The blur radius sets what counts as "detail". Too small and it transfers
+     nothing; too large and it starts carrying the model's reshaped features
+     across, which is the whole thing being avoided. */
+  const radius = Math.max(1, Math.round(Math.min(W, H) / 320));
+
+  let ai, aiBlur, base;
+  try {
+    ai     = surface((x) => x.drawImage(enhanced, 0, 0, W, H));
+    aiBlur = surface((x) => x.drawImage(enhanced, 0, 0, W, H), `blur(${radius}px)`);
+    base   = surface((x) => {
+      x.drawImage(enhanced, 0, 0, W, H);          // keep the invented margins
+      x.drawImage(original, dx, dy, dw, dh);      // the real photograph, undistorted
+    });
+  } catch {
+    return enhanced;   // tainted canvas or an allocation failure — take the model's
+  }
+
+  const out = base.data, hi = ai.data, lo = aiBlur.data;
+  const x0 = Math.max(0, dx), x1 = Math.min(W, dx + dw);
+  const y0 = Math.max(0, dy), y1 = Math.min(H, dy + dh);
+
+  for (let y = y0; y < y1; y += 1) {
+    let i = (y * W + x0) * 4;
+    for (let x = x0; x < x1; x += 1, i += 4) {
+      // Only inside the photograph. Outside it there is nothing to restore.
+      out[i]     = clamp255(out[i]     + strength * (hi[i]     - lo[i]));
+      out[i + 1] = clamp255(out[i + 1] + strength * (hi[i + 1] - lo[i + 1]));
+      out[i + 2] = clamp255(out[i + 2] + strength * (hi[i + 2] - lo[i + 2]));
+    }
+  }
 
   const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx2 = canvas.getContext("2d");
-  ctx2.imageSmoothingQuality = "high";
-  ctx2.drawImage(base, 0, 0, w, h);
-  ctx2.globalAlpha = alpha;
-  ctx2.drawImage(top, 0, 0, w, h);
-  ctx2.globalAlpha = 1;
+  canvas.width = W; canvas.height = H;
+  canvas.getContext("2d").putImageData(base, 0, 0);
 
-  /* Awaited, not returned raw: the data: URL decodes asynchronously, and
-     everything downstream — ensureImageFocalPoint, renderPoster, the upload —
-     reads naturalWidth immediately. */
-  const out = new Image();
+  const img = new Image();
   await new Promise((resolve) => {
-    out.onload = resolve;
-    out.onerror = resolve;   // fall through with whatever loaded
-    out.src = canvas.toDataURL("image/png");
+    img.onload = resolve;
+    img.onerror = resolve;
+    img.src = canvas.toDataURL("image/png");
   });
-  return out.naturalWidth ? out : top;
+  return img.naturalWidth ? img : enhanced;
+}
+
+function clamp255(v) {
+  return v < 0 ? 0 : v > 255 ? 255 : v;
 }
 
 /* The page a pending image pick belongs to.
@@ -6899,8 +6968,11 @@ if (aiEnhanceBtn) {
          100 is the old behaviour for anyone who wants it. Done on the client
          because the original is already in memory here — the server no longer
          has it by then. */
+      /* Strength scales how much of the model's DETAIL is carried over, not
+         how much of the person is replaced — so the default no longer has to
+         be timid to protect a face. */
       const strength = Math.max(0, Math.min(100, Number(state.enhanceStrength ?? 20))) / 100;
-      const merged = strength >= 1 ? enhanced : await blendImages(img, enhanced, strength);
+      const merged = await mergeEnhancement(img, enhanced, strength);
 
       await ensureImageFocalPoint(merged);
       /* Onto the page that was selected when Enhance was pressed. This runs
@@ -9167,11 +9239,16 @@ if (showTimestampInput) {
 const enhanceStrengthInput = document.getElementById("enhance-strength");
 const enhanceStrengthHint = document.getElementById("enhance-strength-hint");
 if (enhanceStrengthInput) {
+  /* Strength scales how much of the model's fine DETAIL is carried onto the
+     photograph — it no longer trades the person away, because the face is
+     taken from the original at every setting. So the wording is about
+     sharpness, not about how artificial someone looks. */
   const describe = (v) =>
-    v >= 90 ? `${v}% — full model output, sharpest but most artificial.`
-    : v >= 60 ? `${v}% — strong, and where faces start to look painted.`
-    : v >= 25 ? `${v}% — mostly a clean resample, very natural.`
-    : `${v}% — raise this only if the image still looks soft.`;
+    v >= 90 ? `${v}% — maximum detail. Watch for halos on hard edges.`
+    : v >= 60 ? `${v}% — crisp. Good for a soft or low-resolution source.`
+    : v >= 25 ? `${v}% — a clear lift in sharpness, faces untouched.`
+    : v > 0 ? `${v}% — a gentle lift. Raise it if the image still looks soft.`
+    : `Off — the picture is left exactly as it came in.`;
   enhanceStrengthInput.addEventListener("input", () => {
     state.enhanceStrength = Number(enhanceStrengthInput.value);
     if (enhanceStrengthHint) enhanceStrengthHint.textContent = describe(state.enhanceStrength);

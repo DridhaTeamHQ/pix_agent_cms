@@ -619,28 +619,17 @@
           <svg class="acc-chevron" width="14" height="14"><use href="#i-chevron"/></svg>
         </button>
         <div class="acc-body"><div class="acc-inner">
-            <!-- Two different operations, named honestly. Sharpen enlarges the
-                 real photograph; Restore asks a model to redraw it, which is
-                 what altered faces and left doubled edges on published cards. -->
+          <!-- gpt-image-1 enhance: regenerates the background at higher clarity -->
             <button type="button" id="ai-enhance-btn" class="btn-ai" disabled>
               <svg class="ai-spark" width="14" height="14" aria-hidden="true"><use href="#i-spark"/></svg>
-              Sharpen Image
+              AI Enhance Image
             </button>
-            <small class="helper-text">Enlarges and sharpens the real photograph. Free, about a second, and it cannot change a face.</small>
-
-            <details class="enhance-advanced">
-              <summary>Generative restore (changes the picture)</summary>
-              <button type="button" id="ai-restore-btn" class="btn-ghost" disabled
-                      style="margin-top:8px;width:100%;">AI Restore Image</button>
-              <small class="helper-text">Redraws the photo with gpt-image. It can recover detail a resample cannot,
-                but it re-composes the frame and alters faces — measured 0.80 layout match against the original.
-                Not for a named person. Uses paid credits (~$0.016).</small>
-              <label class="slider-container" style="margin-top:10px;">
-                <span class="slider-label">Strength</span>
-                <input type="range" id="enhance-strength" min="0" max="100" step="5" value="20" />
-              </label>
-              <small class="helper-text" id="enhance-strength-hint">20% — applies to the self-hosted upscaler only.</small>
-            </details>
+            <label class="slider-container" style="margin-top:10px;">
+              <span class="slider-label">Strength</span>
+              <input type="range" id="enhance-strength" min="0" max="100" step="5" value="20" />
+            </label>
+            <small class="helper-text" id="enhance-strength-hint">20% — raise this only if the image still looks soft.</small>
+            <small class="helper-text">Uses paid AI credits (~$0.016 per enhance). Runs only when you click.</small>
             <p id="ai-enhance-status" class="status-text" role="status" aria-live="polite"></p>
           </div></div>
         </div>
@@ -652,23 +641,10 @@
             <svg class="acc-chevron" width="14" height="14"><use href="#i-chevron"/></svg>
           </button>
           <div class="acc-body"><div class="acc-inner">
-            <!-- Zoom is a stepper, not a slider. Framing a face inside a
-                 920px poster slot is a nudge-and-look job: a 10-300 range on a
-                 ~150px track moves ~2% per pixel, so the mouse overshoots and
-                 the writer hunts. The range input stays as the value carrier
-                 (every existing reader — syncControl, page restore, the drag
-                 handler — reads img-zoom.value) and is simply hidden. -->
-            <div class="slider-container zoom-stepper">
+            <label class="slider-container">
               <span class="slider-label">Zoom</span>
-              <button type="button" class="zoom-step" id="img-zoom-out"
-                      aria-label="Zoom out" title="Zoom out">&minus;</button>
-              <output class="zoom-readout" id="img-zoom-value" for="img-zoom">100%</output>
-              <button type="button" class="zoom-step" id="img-zoom-in"
-                      aria-label="Zoom in" title="Zoom in">+</button>
-              <button type="button" class="zoom-reset" id="img-zoom-reset"
-                      title="Back to 100%" aria-label="Reset zoom to 100%" hidden>&#8635;</button>
-              <input type="range" id="img-zoom" min="10" max="300" value="100" hidden />
-            </div>
+              <input type="range" id="img-zoom" min="10" max="300" value="100" />
+            </label>
             <label class="slider-container">
               <span class="slider-label">Pan X</span>
               <input type="range" id="img-offset-x" min="-900" max="900" value="0" />

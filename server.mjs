@@ -4234,35 +4234,16 @@ const VISION_PROMPT =
 // `It accompanies this news story: "<headline>"` reliably produced photos
 // with the headline burned into them. The renderer already draws the
 // headline on the canvas — the model never needs to know it.
-/* `ratioLabel` is deliberately no longer used.
-
-   It used to carry the POSTER's shape and the prompt told the model to EXTEND
-   the scene to fill it. Two things went wrong with that. The invented
-   background is not the photograph and appeared on a published card as a
-   hard-edged box of model-drawn scenery. And extending forces the model to
-   re-lay-out the picture: the subject is moved and rescaled to make room, so
-   the result no longer lines up with the original — which is what the merge
-   needs in order to keep a real face. A misaligned result printed the model's
-   edges over the photograph as a ghost.
-
-   The requested size now matches the source, so there is nothing to extend,
-   and the rules below say plainly not to try. Framing belongs to the poster
-   canvas, where the writer controls it and every pixel is real. */
-function buildEnhancePrompt(description, _headlineNotUsed, _ratioNoLongerUsed) {
+function buildEnhancePrompt(description, _headlineNotUsed, ratioLabel) {
   return [
     "Professional photo restoration of a REAL news photograph.",
     description ? `CONTEXT — the photo shows: ${description}` : "",
     "",
     "TASK: upscale and enhance — recover fine detail, increase sharpness,",
     "remove compression artifacts and noise, correct exposure and colour balance.",
-    "",
-    "GEOMETRY — the output must line up with the input EXACTLY:",
-    "- Return the SAME framing and composition. Do not crop, zoom, pan, rotate,",
-    "  straighten, re-centre or re-compose anything.",
-    "- Every subject stays at the same position and the same scale, so the",
-    "  result can be laid over the original and match pixel for pixel.",
-    "- Do not extend, outpaint or fill beyond the edges of the photograph.",
-    "- Change no proportions: nothing stretched, squashed or resized.",
+    ratioLabel
+      ? `The output canvas is ${ratioLabel}. If the original photo has a different shape, EXTEND the scene naturally (continue the background/setting) to fill the ${ratioLabel} frame — keep the main subject fully visible, at the same relative scale, never cropped, stretched or distorted.`
+      : "",
     "",
     "ABSOLUTE RULES:",
     "- Every person's face must stay PIXEL-FAITHFUL to the original identity:",
@@ -4274,36 +4255,24 @@ function buildEnhancePrompt(description, _headlineNotUsed, _ratioNoLongerUsed) {
     "- Text physically present in the photograph (signage, jerseys, banners",
     "  held by people) is preserved exactly as it already appears — never",
     "  invented, completed, translated or extended.",
-    "- The original content itself is unchanged. Add no new people, objects,",
-    "  scenery or background of any kind. This is journalism, not art.",
+    "- The original content itself is unchanged — only the surrounding scene",
+    "  may be extended to fill the frame. Add no new people or objects of",
+    "  interest. This is journalism, not art.",
     "",
     "The result is a clean photograph with no added lettering or graphics.",
   ].filter(Boolean).join("\n");
 }
 
 // Map the poster's aspect ratio to the closest gpt-image output size.
-/* Ask for the SOURCE's shape, not the poster's.
-
-   This used to follow the poster ratio, so a landscape photo on a 9:16 poster
-   was requested as 1024x1536 and the model outpainted the missing height —
-   inventing sky and floor to fill a frame the photograph never had.
-
-   That was deliberate, to stop the canvas cropping a wide photo to shreds.
-   But the invented margin is not the photograph, and it shows: the enhanced
-   result carried a hard-edged band of model-drawn background above and below
-   the real picture, which is visible as a box on the published card. It also
-   breaks the merge — a reframed output cannot be aligned pixel-for-pixel with
-   the original, which is what preserves the subject's face.
-
-   Matching the source keeps the model doing the one job asked of it, which is
-   detail. Framing stays where it belongs: the poster canvas already crops and
-   pans to the chosen ratio, under the writer's control, using real pixels. */
 function sizeForRatio(ratio, orientationHint) {
+  switch (ratio) {
+    case "9:16":
+    case "4:5":  return "1024x1536";
+    case "1:1":  return "1024x1024";
+    case "16:9": return "1536x1024";
+  }
   if (orientationHint === "landscape") return "1536x1024";
   if (orientationHint === "portrait")  return "1024x1536";
-  /* No hint: let the model match the input rather than guessing from the
-     poster, which is what produced the outpainting in the first place. */
-  if (ratio === "1:1") return "1024x1024";
   return "auto";
 }
 
@@ -4381,103 +4350,11 @@ async function tryRailwayUpscale(buffer, mime, strength) {
   }
 }
 
-/* ── A real upscaler, not a generative one ──────────────────────────────────
-
-   gpt-image was doing this job and it is the wrong tool. It does not enlarge a
-   photograph, it re-imagines one: measured on a real enhance, the geometry
-   correlation between input and output is 0.80 (1.0 being an identical
-   layout), even with a prompt that forbids cropping, zooming and re-centring.
-   That is why faces came back subtly re-modelled and why published cards
-   carried faint doubled edges and invented wisps. No amount of prompting
-   fixes it, because redrawing is what the model does.
-
-   Enlarging an image is a solved problem that needs no model at all. Lanczos
-   is a windowed-sinc resampler — the standard high-quality choice — and CAS
-   (Contrast Adaptive Sharpen) restores the crispness resampling costs while
-   deliberately avoiding the halos plain unsharp masking leaves on hard edges.
-   Both ship with the ffmpeg already installed here for video.
-
-   What this cannot do is invent detail that was never captured; a genuinely
-   tiny, mushy source stays soft. What it can do is never invent a face,
-   never ghost, never hallucinate — it is arithmetic on the pixels that
-   exist. It also costs nothing and finishes in about a second rather than
-   twenty to ninety.
-
-   For real learned super-resolution — recovering detail rather than
-   preserving it — the right answer is a dedicated model such as Real-ESRGAN,
-   which is what UPSCALER_URL is for and what the Railway path above calls. */
-const UPSCALE_MAX_LONG_EDGE = Number(env("UPSCALE_MAX_LONG_EDGE") || 2048);
-const UPSCALE_SHARPEN = env("UPSCALE_SHARPEN") || "0.45";   // CAS strength, 0..1
-
-async function upscaleLocally(buffer, mime) {
-  if (!ffmpegAvailable) return null;
-
-  const job = randomUUID().replace(/-/g, "");
-  const dir = join(tmpdir(), `pix-upscale-${job}`);
-  mkdirSync(dir, { recursive: true });
-  const ext = mime === "image/jpeg" ? "jpg" : "png";
-  const inPath = join(dir, `in.${ext}`);
-  const outPath = join(dir, "out.png");
-
-  try {
-    writeFileSync(inPath, buffer);
-
-    const probe = await run("ffprobe", [
-      "-v", "error", "-select_streams", "v:0",
-      "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", inPath,
-    ], 20_000);
-    const [w, h] = probe.stdout.toString("utf-8").trim().split("x").map(Number);
-    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 2 || h < 2) {
-      console.warn("⚠ upscale: could not read image dimensions");
-      return null;
-    }
-
-    /* 2x, but never past the cap — the poster renders into a 920px slot and
-       DailyMattr re-encodes on top of that, so pixels beyond this are paid
-       for in bytes and thrown away downstream. Already-large images are
-       sharpened at their own size rather than bloated. */
-    const longEdge = Math.max(w, h);
-    const factor = Math.max(1, Math.min(2, UPSCALE_MAX_LONG_EDGE / longEdge));
-    const outW = Math.round(w * factor / 2) * 2;   // even dimensions keep every encoder happy
-    const outH = Math.round(h * factor / 2) * 2;
-
-    const filters = factor > 1.01
-      ? `scale=${outW}:${outH}:flags=lanczos,cas=strength=${UPSCALE_SHARPEN}`
-      : `cas=strength=${UPSCALE_SHARPEN}`;
-
-    const t0 = Date.now();
-    const enc = await run("ffmpeg", [
-      "-hide_banner", "-loglevel", "error", "-y", "-i", inPath,
-      "-vf", filters, "-frames:v", "1", outPath,
-    ], 60_000);
-
-    if (enc.code !== 0 || !existsSync(outPath)) {
-      console.warn(`⚠ upscale failed: ${enc.stderr.toString("utf-8").slice(-200)}`);
-      return null;
-    }
-
-    const out = readFileSync(outPath);
-    if (!out.length) return null;
-    console.log(
-      `✓ upscaled ${w}x${h} → ${outW}x${outH} (lanczos + cas ${UPSCALE_SHARPEN}) ` +
-      `in ${Date.now() - t0}ms, ${(out.length / 1048576).toFixed(2)} MB`,
-    );
-    return {
-      dataUrl: `data:image/png;base64,${out.toString("base64")}`,
-      engine: `lanczos+cas ${outW}x${outH}`,
-    };
-  } catch (err) {
-    console.warn(`⚠ upscale error: ${err.message}`);
-    return null;
-  } finally {
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* temp dir */ }
-  }
-}
-
 async function handleUpscaleImage(req, res) {
-  /* No OpenAI key needed to sharpen a picture. The local path below is
-     arithmetic, and gating the whole route on a key it may never use turned a
-     missing credential into "enhance is broken". */
+  if (!openaiApiKey) {
+    sendJson(res, 503, { error: "OPENAI_API_KEY not set on server." });
+    return;
+  }
 
   try {
     // Read raw image body (10 MB cap)
@@ -4509,49 +4386,11 @@ async function handleUpscaleImage(req, res) {
       sendJson(res, 200, { image: railway.dataUrl, engine: railway.engine });
       return;
     }
-    /* SECOND: enlarge and sharpen the photograph itself.
-
-       This is now the default, and generative restoration is opt-in. The
-       model was producing the artefacts this route exists to avoid — altered
-       faces, doubled edges, invented wisps — because it redraws rather than
-       enlarges. Arithmetic on the real pixels cannot do any of that, costs
-       nothing, and returns in about a second.
-
-       A caller that genuinely wants the model asks for it by name:
-         X-Enhance-Mode: generative
-       Everything else gets the true upscale. */
-    const mode = String(req.headers["x-enhance-mode"] || "").toLowerCase();
-    if (mode !== "generative") {
-      const localT0 = Date.now();
-      const local = await upscaleLocally(buffer, mime);
-      if (local) {
-        console.log(`✓ enhance via ${local.engine} in ${Date.now() - localT0}ms (no model, no cost)`);
-        sendJson(res, 200, { image: local.dataUrl, engine: local.engine });
-        return;
-      }
-      /* ffmpeg missing or the encode failed. Falling through to a paid model
-         that rewrites faces would be a surprising way to answer "sharpen
-         this", so say what happened instead. */
-      if (!openaiApiKey || gptImageDisabled) {
-        sendJson(res, 503, {
-          error: ffmpegAvailable
-            ? "The image could not be enlarged. Check the server log for the ffmpeg error."
-            : "Sharpening needs ffmpeg, which is not installed on this server.",
-        });
-        return;
-      }
-      console.warn("⚠ local upscale unavailable — falling back to gpt-image for this request");
-    }
-
     // The paid fallback is opt-out. Without this guard a momentary failure of
     // the self-hosted upscaler silently spends OpenAI credits — the caller
     // still gets an enhanced image, so nothing looks wrong until the bill
     // arrives. Set DISABLE_GPT_IMAGE=true to make that spend impossible and
     // surface the real problem instead.
-    if (!openaiApiKey) {
-      sendJson(res, 503, { error: "Generative restore needs OPENAI_API_KEY on the server." });
-      return;
-    }
     if (gptImageDisabled) {
       console.warn("⚠ upscaler unavailable and DISABLE_GPT_IMAGE is set — refusing to spend OpenAI credits");
       sendJson(res, 503, {

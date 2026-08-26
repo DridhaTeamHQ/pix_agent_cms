@@ -1691,65 +1691,16 @@ if (filterPresetsContainer) {
   });
 }
 
-/* ── Zoom ──
-   The range input is still the single source of truth for the value — page
-   restore, syncControl and the drag handler all read img-zoom.value — but it
-   is hidden, and the writer drives it with − / + instead. Everything below
-   goes through applyZoom() so the stepper, a restore and any future caller
-   cannot drift apart. */
-const ZOOM_MIN = 10;
-const ZOOM_MAX = 300;
-const ZOOM_STEP = 5;
-const imgZoomOut = document.getElementById("img-zoom-out");
-const imgZoomIn = document.getElementById("img-zoom-in");
-const imgZoomReset = document.getElementById("img-zoom-reset");
-const imgZoomValue = document.getElementById("img-zoom-value");
-
-function syncZoomReadout() {
-  const z = Math.round(Number(imgZoom.value) || 100);
-  if (imgZoomValue) imgZoomValue.textContent = `${z}%`;
-  if (imgZoomOut) imgZoomOut.disabled = z <= ZOOM_MIN;
-  if (imgZoomIn) imgZoomIn.disabled = z >= ZOOM_MAX;
-  // Nothing to undo at 100%, and the column has no room to spare.
-  if (imgZoomReset) imgZoomReset.hidden = z === 100;
-}
-
-function applyZoom(next) {
-  const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(Number(next) || 100)));
-  /* Zooming OUT re-centres. A pan set while zoomed in can leave the picture
-     off-canvas entirely once it shrinks, and hunting it back with two more
-     sliders is worse than starting from the middle. */
-  if (clamped < state.imageZoom) {
+// Zoom slider
+imgZoom.addEventListener("input", () => {
+  const nextZoom = Number(imgZoom.value);
+  if (nextZoom < state.imageZoom) {
     state.imageOffset = { x: 0, y: 0 };
     imgOffsetX.value = 0;
     imgOffsetY.value = 0;
   }
-  state.imageZoom = clamped;
-  imgZoom.value = String(clamped);
-  syncZoomReadout();
+  state.imageZoom = nextZoom;
   renderPoster();
-}
-
-imgZoom.addEventListener("input", () => applyZoom(imgZoom.value));
-imgZoomOut?.addEventListener("click", () => applyZoom(Number(imgZoom.value) - ZOOM_STEP));
-imgZoomIn?.addEventListener("click", () => applyZoom(Number(imgZoom.value) + ZOOM_STEP));
-imgZoomReset?.addEventListener("click", () => applyZoom(100));
-
-/* Press-and-hold to run, for crossing a wide range without forty clicks. */
-[[imgZoomOut, -ZOOM_STEP], [imgZoomIn, ZOOM_STEP]].forEach(([btn, delta]) => {
-  if (!btn) return;
-  let hold = null;
-  let repeat = null;
-  const stop = () => { clearTimeout(hold); clearInterval(repeat); hold = null; repeat = null; };
-  btn.addEventListener("pointerdown", () => {
-    hold = setTimeout(() => {
-      repeat = setInterval(() => {
-        if (btn.disabled) return stop();
-        applyZoom(Number(imgZoom.value) + delta);
-      }, 70);
-    }, 400);
-  });
-  ["pointerup", "pointerleave", "pointercancel", "blur"].forEach((ev) => btn.addEventListener(ev, stop));
 });
 
 // Font size slider (0 = auto)
@@ -3791,10 +3742,6 @@ function paintPoster() {
   const enhanceBtn = document.getElementById("ai-enhance-btn");
   if (enhanceBtn && !enhanceBtn.classList.contains("working")) {
     enhanceBtn.disabled = !state.mainImage;
-    const restoreBtn = document.getElementById("ai-restore-btn");
-    if (restoreBtn && !restoreBtn.classList.contains("working")) {
-      restoreBtn.disabled = !state.mainImage;
-    }
   }
 }
 
@@ -6789,7 +6736,6 @@ if (copyAllBtn) {
 /* ═══════════════════════ AI Enhance (gpt-image-1) ═══════════════════════ */
 
 const aiEnhanceBtn    = document.getElementById("ai-enhance-btn");
-const aiRestoreBtn    = document.getElementById("ai-restore-btn");
 const aiEnhanceStatus = document.getElementById("ai-enhance-status");
 
 function setEnhanceStatus(msg, kind) {
@@ -6799,23 +6745,15 @@ function setEnhanceStatus(msg, kind) {
 }
 
 if (aiEnhanceBtn) {
-  /* Two operations behind one code path. "sharpen" enlarges the real
-     photograph with lanczos + CAS on the server: free, about a second, and
-     incapable of altering a face. "generative" asks gpt-image to redraw it,
-     which recovers detail a resample cannot but re-composes the frame — that
-     is what put altered faces and doubled edges on published cards, so it is
-     opt-in and labelled. */
-  const runEnhance = async (mode, button) => {
+  aiEnhanceBtn.addEventListener("click", async () => {
     const img = state.mainImage;
     if (!img) return;
     // Whose picture this is. Read before the first await — see the commit below.
     const enhanceOwner = activePage();
 
-    button.disabled = true;
-    button.classList.add("working");
-    setEnhanceStatus(mode === "generative"
-      ? "Redrawing with AI — analysing the photo, then rebuilding detail (30–90s)…"
-      : "Enlarging and sharpening…");
+    aiEnhanceBtn.disabled = true;
+    aiEnhanceBtn.classList.add("working");
+    setEnhanceStatus("Enhancing with AI — analysing photo, then rebuilding detail (30–90s)…");
 
     try {
       // Snapshot the current background to a temp canvas, capped at 1536 on
@@ -6847,7 +6785,6 @@ if (aiEnhanceBtn) {
           // reads as a painted face; mixing back toward a plain resample is
           // the dial for that.
           "X-Enhance-Strength": String((state.enhanceStrength ?? 20) / 100),
-          "X-Enhance-Mode": mode,
         },
         body: blob,
       });
@@ -6862,46 +6799,6 @@ if (aiEnhanceBtn) {
         enhanced.onerror = () => reject(new Error("Enhanced image failed to load."));
         enhanced.src = data.image;
       });
-      /* Blend the enhance back over the original at the chosen strength.
-
-         gpt-image does not sharpen a photograph — it REDRAWS it. Even with
-         input_fidelity=high, a face comes back subtly re-modelled: different
-         jawline, different eyes, a person who is nearly but not quite the one
-         in the photograph. On a news poster of a named public figure that is
-         not a cosmetic problem, it is a factual one.
-
-         The Strength slider was supposed to be the dial for exactly this — its
-         own hint says "20% — raise this only if the image still looks soft" —
-         but the value was only ever forwarded to the self-hosted upscaler, and
-         UPSCALER_URL is unset, so that request never happens. Every enhance
-         was landing at full replacement with the slider inert.
-
-         Compositing here restores the meaning: the original supplies the
-         pixels, the enhance is laid over at `strength`, so at the 20% default
-         the face is 80% the real photograph. 0 leaves the photo untouched;
-         100 is the old behaviour for anyone who wants it. Done on the client
-         because the original is already in memory here — the server no longer
-         has it by then. */
-      /* The model's output, used as it comes.
-
-         It was briefly composited back over the original to protect faces —
-         identity from the photograph, sharpness from the model. That needs the
-         two frames to line up, and measurement says they do not: on a real
-         enhance the geometry correlation between input and output is 0.80,
-         where 1.0 is an identical layout. gpt-image re-composes the picture
-         even when the prompt explicitly forbids cropping, zooming, panning and
-         re-centring.
-
-         Detail lifted from a frame laid out differently prints the model's
-         edges over the real ones — the doubled outline that reached a
-         published card. Guarding against that instead made Enhance hand back
-         the original untouched, so the call was paid for and did nothing.
-         Both failures come from the same false premise: a generative model is
-         not an aligner. The honest way to use one as an upscaler is to take
-         what it returns.
-
-         Faces are defended where it actually works: input_fidelity=high, and
-         the geometry and identity rules in buildEnhancePrompt. */
       await ensureImageFocalPoint(enhanced);
       /* Onto the page that was selected when Enhance was pressed. This runs
          30-90 seconds after the click and had no page guard at all, so a
@@ -6918,15 +6815,12 @@ if (aiEnhanceBtn) {
       const engineLabel = ENGINE_LABELS[data.engine] || data.engine || "AI";
       setEnhanceStatus(`✓ Enhanced via ${engineLabel}. Re-pick a stock image to undo.`, "success");
     } catch (err) {
-      setEnhanceStatus(`${mode === "generative" ? "Restore" : "Sharpen"} failed: ${err.message}`, "error");
+      setEnhanceStatus(`Enhance failed: ${err.message}`, "error");
     } finally {
-      button.classList.remove("working");
-      button.disabled = !state.mainImage;
+      aiEnhanceBtn.classList.remove("working");
+      aiEnhanceBtn.disabled = !state.mainImage;
     }
-  };
-
-  aiEnhanceBtn.addEventListener("click", () => runEnhance("sharpen", aiEnhanceBtn));
-  aiRestoreBtn?.addEventListener("click", () => runEnhance("generative", aiRestoreBtn));
+  });
 }
 
 /* ── Theme toggle (dark default; persisted in localStorage) ── */
@@ -9170,14 +9064,11 @@ if (showTimestampInput) {
 const enhanceStrengthInput = document.getElementById("enhance-strength");
 const enhanceStrengthHint = document.getElementById("enhance-strength-hint");
 if (enhanceStrengthInput) {
-  /* This dial reaches the SELF-HOSTED upscaler only (UPSCALER_URL), where it
-     mixes the model output back toward a plain resample. gpt-image has no such
-     control — it returns one image and that is what you get — so with no
-     upscaler configured this slider changes nothing. Saying so is better than
-     implying a precision the path does not have; the honest lever on a
-     gpt-image enhance is IMAGE_QUALITY. */
   const describe = (v) =>
-    `${v}% — applies to the self-hosted upscaler. With gpt-image the result is whatever the model returns.`;
+    v >= 90 ? `${v}% — full model output, sharpest but most artificial.`
+    : v >= 60 ? `${v}% — strong, and where faces start to look painted.`
+    : v >= 25 ? `${v}% — mostly a clean resample, very natural.`
+    : `${v}% — raise this only if the image still looks soft.`;
   enhanceStrengthInput.addEventListener("input", () => {
     state.enhanceStrength = Number(enhanceStrengthInput.value);
     if (enhanceStrengthHint) enhanceStrengthHint.textContent = describe(state.enhanceStrength);
@@ -10107,9 +9998,6 @@ function numberOr(value, fallback) {
 
 function syncControl(el, value) {
   if (el && value !== undefined && value !== null) el.value = value;
-  // The zoom readout is a separate element, so pushing the range value in
-  // from a page restore has to bring the label with it.
-  if (el === imgZoom && typeof syncZoomReadout === "function") syncZoomReadout();
 }
 
 /* A session can expire mid-edit. Say so once, plainly, and put the login back

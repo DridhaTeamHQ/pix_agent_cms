@@ -2292,16 +2292,7 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
    Targeted by content rather than by position — :has() on a control each
    section owns — so re-ordering the markup later cannot silently scramble
    this the way nth-child would. */
-/* Adjustments first. Framing is what you do to EVERY picture — the first
-   thing after one lands and the thing you come back to — while Custom Upload
-   is how a picture arrives at all and AI Enhance is the occasional paid step.
-   The most-used control should not sit under two boxes. */
-/* The top row carries the two controls a reviewer actually reaches for:
-   Adjustments to frame the picture, AI Enhance to sharpen it. Custom Upload
-   is how a picture arrives ONCE and Filters is a finishing touch, so they take
-   the second row. Putting Adjustments first must not cost AI Enhance its place
-   above the fold — that was the point of moving it up in the first place. */
-.cms-media-strip .image-panel>.acc:has(#img-zoom) {
+.cms-media-strip .image-panel>.acc:has(#bg-upload-zone) {
   order: 1;
 }
 
@@ -2309,7 +2300,7 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
   order: 2;
 }
 
-.cms-media-strip .image-panel>.acc:has(#bg-upload-zone) {
+.cms-media-strip .image-panel>.acc:has(#img-zoom) {
   order: 3;
 }
 
@@ -2440,101 +2431,4 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
 .review-filters {
   flex-wrap: wrap;
   max-width: 100%;
-}
-
-
-/* ═══ Zoom stepper ══════════════════════════════════════════════════════════
-   − and + instead of a range. On a ~150px track a 10-300 zoom moves about 2%
-   per pixel, so framing a face became a hunt: overshoot, correct, overshoot.
-   A step is 5% and predictable, the readout says exactly where you are, and
-   press-and-hold covers the long distances. */
-/* The column runs from ~240px at 1900 down to ~120px at 1250, so a single
-   row of label + − + readout + + + reset cannot be made to fit at both. It
-   wraps instead: the label takes its own line the moment the controls need
-   the width, which costs one line of height and never clips. min-width:0 is
-   what lets the readout shrink rather than forcing the row wider than the
-   column — without it the buttons hang over into the next panel, which is
-   exactly how it shipped. */
-.zoom-stepper {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.zoom-stepper .slider-label {
-  min-width: 0;
-}
-
-/* Below this the label cannot share a line with the controls. */
-@media (max-width: 1500px) {
-  .zoom-stepper .slider-label {
-    flex: 1 0 100%;
-  }
-}
-
-.zoom-step {
-  flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  font-size: 1.05rem;
-  line-height: 1;
-  font-weight: 600;
-  border-radius: 9px;
-  border: 1px solid var(--hairline);
-  background: var(--surface-2, transparent);
-  color: var(--text-primary);
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
-  /* Repeated presses must not select the glyph or fire the double-tap zoom. */
-  user-select: none;
-  touch-action: manipulation;
-}
-
-.zoom-step:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.zoom-step:active:not(:disabled) { transform: translateY(1px); }
-
-.zoom-step:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.zoom-readout {
-  flex: 1 1 34px;      /* enough for "105%", and free to grow when there is room */
-  min-width: 0;
-  text-align: center;
-  font-variant-numeric: tabular-nums;   /* 100% and 95% must not jiggle */
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-}
-
-/* An icon, and only while it has something to undo. A word-width "Reset"
-   parked permanently at the end is what pushed this row past the column. */
-.zoom-reset {
-  flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  font-size: 0.85rem;
-  line-height: 1;
-  border-radius: 8px;
-  border: 1px solid var(--hairline);
-  background: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.zoom-reset[hidden] { display: none; }
-
-.zoom-reset:hover {
-  border-color: var(--accent);
-  color: var(--accent-dim);
 }

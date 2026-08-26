@@ -2286,13 +2286,19 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
    Custom Upload and Adjustments takes the second row.
 
    Writers never see the AI Enhance box at all (.qa-only), and a hidden box
-   takes no grid cell — so their strip still reads Custom Upload | Adjustments
-   over Filters, exactly as before.
+   takes no grid cell — so their strip reads Adjustments | Custom Upload over
+   Filters, with nothing left standing where the hidden box was.
 
    Targeted by content rather than by position — :has() on a control each
    section owns — so re-ordering the markup later cannot silently scramble
    this the way nth-child would. */
-.cms-media-strip .image-panel>.acc:has(#bg-upload-zone) {
+
+/* The top row carries the two controls that get used on every picture:
+   Adjustments to frame it and AI Super Resolution to clean it up. Custom
+   Upload is how a picture arrives ONCE and Filters is a finishing touch, so
+   they take the second row. The strip is two columns, so promoting
+   Adjustments does not cost Super Resolution its place above the fold. */
+.cms-media-strip .image-panel>.acc:has(#img-zoom) {
   order: 1;
 }
 
@@ -2300,7 +2306,7 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
   order: 2;
 }
 
-.cms-media-strip .image-panel>.acc:has(#img-zoom) {
+.cms-media-strip .image-panel>.acc:has(#bg-upload-zone) {
   order: 3;
 }
 

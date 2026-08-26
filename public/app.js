@@ -167,6 +167,11 @@ const bgPasteBtn = document.getElementById("bg-paste-btn");
 const stockImagesSection = document.getElementById("stock-images-section");
 const stockImagesGrid = document.getElementById("stock-images-grid");
 const imgZoom = document.getElementById("img-zoom");
+/* Bounds live with the input: the range attributes are the contract, and the
+   - / + buttons must clamp to exactly the same numbers the restore path does. */
+const ZOOM_MIN = 10;
+const ZOOM_MAX = 300;
+const ZOOM_STEP = 5;
 const fontSizeInput = document.getElementById("font-size");
 const accentColorInput = document.getElementById("accent-color");
 const accentHexLabel = document.getElementById("accent-hex");
@@ -1692,15 +1697,75 @@ if (filterPresetsContainer) {
 }
 
 // Zoom slider
-imgZoom.addEventListener("input", () => {
-  const nextZoom = Number(imgZoom.value);
-  if (nextZoom < state.imageZoom) {
+/* ── Zoom ──
+   The range input remains the single source of truth for the value — page
+   restore, syncControl and the drag handler all read img-zoom.value — but it
+   is hidden and driven by − / + instead. Everything routes through applyZoom()
+   so the buttons, a restore and any future caller cannot drift apart. */
+const imgZoomOut = document.getElementById("img-zoom-out");
+const imgZoomIn = document.getElementById("img-zoom-in");
+const imgZoomValue = document.getElementById("img-zoom-value");
+
+/* Called from renderPoster rather than from each of the four places that write
+   img-zoom.value. Zoom is a render input by definition, so anything that
+   changes it must re-render or the poster itself would be stale — which makes
+   the readout provably agree with what is on screen, including restores that
+   set .value directly (a programmatic write fires no "input" event).
+   Elements are looked up lazily: renderPoster can run during boot, before the
+   consts above are initialised, and reading one then would throw on the TDZ. */
+let zoomReadoutShown = null;
+function syncZoomReadout() {
+  const z = Math.round(Number(imgZoom.value) || 100);
+  if (z === zoomReadoutShown) return;
+  zoomReadoutShown = z;
+  const out = document.getElementById("img-zoom-value");
+  const minus = document.getElementById("img-zoom-out");
+  const plus = document.getElementById("img-zoom-in");
+  if (out) {
+    out.textContent = `${z}%`;
+    // The readout is also the reset, so it is inert at 100 — nothing to undo.
+    out.disabled = z === 100;
+  }
+  if (minus) minus.disabled = z <= ZOOM_MIN;
+  if (plus) plus.disabled = z >= ZOOM_MAX;
+}
+
+function applyZoom(next) {
+  const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(Number(next) || 100)));
+  /* Zooming OUT re-centres. A pan set while zoomed in can leave the picture
+     off-canvas entirely once it shrinks, and hunting it back with two more
+     sliders is worse than starting from the middle. */
+  if (clamped < state.imageZoom) {
     state.imageOffset = { x: 0, y: 0 };
     imgOffsetX.value = 0;
     imgOffsetY.value = 0;
   }
-  state.imageZoom = nextZoom;
+  state.imageZoom = clamped;
+  imgZoom.value = String(clamped);
+  syncZoomReadout();
   renderPoster();
+}
+
+imgZoom.addEventListener("input", () => applyZoom(imgZoom.value));
+imgZoomOut?.addEventListener("click", () => applyZoom(Number(imgZoom.value) - ZOOM_STEP));
+imgZoomIn?.addEventListener("click", () => applyZoom(Number(imgZoom.value) + ZOOM_STEP));
+imgZoomValue?.addEventListener("click", () => applyZoom(100));
+
+/* Press-and-hold to run, so crossing the range does not take forty clicks. */
+[[imgZoomOut, -ZOOM_STEP], [imgZoomIn, ZOOM_STEP]].forEach(([btn, delta]) => {
+  if (!btn) return;
+  let hold = null;
+  let repeat = null;
+  const stop = () => { clearTimeout(hold); clearInterval(repeat); hold = null; repeat = null; };
+  btn.addEventListener("pointerdown", () => {
+    hold = setTimeout(() => {
+      repeat = setInterval(() => {
+        if (btn.disabled) return stop();
+        applyZoom(Number(imgZoom.value) + delta);
+      }, 70);
+    }, 400);
+  });
+  ["pointerup", "pointerleave", "pointercancel", "blur"].forEach((ev) => btn.addEventListener(ev, stop));
 });
 
 // Font size slider (0 = auto)
@@ -2900,6 +2965,7 @@ function renderPoster() {
   // Export paths swap ctx themselves and want a single paint.
   if (state._targetedRender) { paintPoster(); return; }
 
+  syncZoomReadout();
   syncActivePageContent();
   recomputeDetailSlices();
 

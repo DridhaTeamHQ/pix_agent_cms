@@ -1554,6 +1554,81 @@ a:hover {
   min-width: 58px;
 }
 
+/* Zoom stepper. The label keeps its 58px so the - / + line up with the start
+   of the Pan tracks below and the three rows read as one control group. The
+   Adjustments cell is ~238px wide, so the gap here is tighter than the slider
+   rows' and the readout is fixed-width: a bare percentage reflowing between
+   "95%" and "100%" would shove the + button sideways on every click. */
+.cms-media-strip .zoom-stepper {
+  gap: var(--space-2);
+  /* The strip is two columns, so a narrow window can leave this cell around
+     130px. A range track just shrinks; -/+ cannot, so instead of letting the
+     row spill the controls drop below the label as one unit. Wrapping the
+     group rather than the row keeps "- 100% +" from breaking across lines. */
+  flex-wrap: wrap;
+}
+
+.cms-media-strip .zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  /* Right-aligned so the group ends where the Pan tracks below end, which is
+     what makes the three rows read as one column of controls. */
+  margin-left: auto;
+}
+
+.cms-media-strip .zoom-step {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.cms-media-strip .zoom-step:hover:not(:disabled) {
+  background: var(--accent-bright);
+  border-color: var(--accent-bright);
+  color: #222831;
+}
+
+.cms-media-strip .zoom-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Fixed width and tabular figures: a percentage that reflows between "95%"
+   and "100%" would shove the + button sideways on every single click. */
+.cms-media-strip .zoom-readout {
+  flex: 0 0 38px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted, var(--text));
+  cursor: pointer;
+}
+
+.cms-media-strip .zoom-readout:hover:not(:disabled) {
+  color: var(--accent-bright);
+}
+
+.cms-media-strip .zoom-readout:disabled {
+  cursor: default;
+  color: var(--text-muted, var(--text));
+}
+
 /* ═══ Teal, placed where it is legible ══════════════════════════════════════
    Every teal FILL carries #222831, never white — 5.38:1 against 2.76:1. */
 

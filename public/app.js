@@ -6753,7 +6753,7 @@ if (aiEnhanceBtn) {
 
     aiEnhanceBtn.disabled = true;
     aiEnhanceBtn.classList.add("working");
-    setEnhanceStatus("Enhancing with AI — analysing photo, then rebuilding detail (30–90s)…");
+    setEnhanceStatus("Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…");
 
     try {
       // Snapshot the current background to a temp canvas, capped at 1536 on
@@ -6813,9 +6813,9 @@ if (aiEnhanceBtn) {
         codeformer: "CodeFormer (self-hosted, free)",
       };
       const engineLabel = ENGINE_LABELS[data.engine] || data.engine || "AI";
-      setEnhanceStatus(`✓ Enhanced via ${engineLabel}. Re-pick a stock image to undo.`, "success");
+      setEnhanceStatus(`✓ Restored and upscaled via ${engineLabel}. Re-pick a stock image to undo.`, "success");
     } catch (err) {
-      setEnhanceStatus(`Enhance failed: ${err.message}`, "error");
+      setEnhanceStatus(`Restore failed: ${err.message}`, "error");
     } finally {
       aiEnhanceBtn.classList.remove("working");
       aiEnhanceBtn.disabled = !state.mainImage;

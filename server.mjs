@@ -163,7 +163,6 @@ if (twitterClient) {
 // Enhance routing. The self-hosted upscaler is free; gpt-image is not, and
 // it is only ever a fallback. DISABLE_GPT_IMAGE turns that fallback into a
 // hard error so a broken upscaler cannot quietly become a bill.
-const upscalerConfigured = Boolean(env("UPSCALER_URL"));
 const gptImageDisabled = /^(1|true|yes)$/i.test(env("DISABLE_GPT_IMAGE"));
 
 /* Read the quality actually in force rather than hardcoding a figure. It is
@@ -171,14 +170,14 @@ const gptImageDisabled = /^(1|true|yes)$/i.test(env("DISABLE_GPT_IMAGE"));
    log line goes stale the moment someone edits the variable — which is how
    you end up reassured by a message that is quietly wrong. */
 function enhanceCostLabel() {
-  const q = (process.env.IMAGE_QUALITY || "low").toLowerCase();
-  const per = { low: "~$0.016", medium: "~$0.06", high: "~$0.25" }[q] || "cost unknown";
+  const q = (process.env.IMAGE_QUALITY || "high").toLowerCase();
+  const per = { low: "~$0.011", medium: "~$0.042", high: "~$0.25" }[q] || "cost unknown";
   return `quality=${q}, ${per} each`;
 }
 if (gptImageDisabled) {
-  console.log("\u2713 gpt-image fallback DISABLED — AI Enhance will only use the self-hosted upscaler");
-} else if (!upscalerConfigured) {
-  console.warn("\u26a0 No UPSCALER_URL — every AI Enhance will bill gpt-image (" + enhanceCostLabel() + ").");
+  console.log("Restore & Upscale is switched off (DISABLE_GPT_IMAGE).");
+} else {
+  console.log("Restore & Upscale: gpt-image (" + enhanceCostLabel() + ").");
 }
 
 const openaiApiKey = env("OPENAI_API_KEY");
@@ -472,7 +471,6 @@ const server = http.createServer(async (req, res) => {
       uptime: Math.round(process.uptime()),
       features: {
         openai: Boolean(env("OPENAI_API_KEY")),
-        upscaler: upscalerConfigured,
         gptImageFallback: !gptImageDisabled,
         // Video works when both binaries are on PATH; cookies are what make
         // YouTube reliable from a datacenter IP.
@@ -4234,60 +4232,76 @@ const VISION_PROMPT =
 // `It accompanies this news story: "<headline>"` reliably produced photos
 // with the headline burned into them. The renderer already draws the
 // headline on the canvas — the model never needs to know it.
-/* Restore, upscale, preserve — not "generate a better version".
+/* Super-resolution and restoration — explicitly NOT a generation task.
 
-   The order matters and so does what is left out. Three kinds of instruction
-   were removed from the previous version because each one asked the model to
-   invent rather than recover:
+   Framing matters to this model. Asked to "enhance", it reaches for
+   "improve": it re-renders the subject, re-lights the scene, and returns a
+   handsome picture of a slightly different person. Told that this is a
+   restoration and super-resolution job and that generation is out of scope,
+   it stays much closer to the pixels it was given.
 
-     "EXTEND the scene to fill the frame"  — the outpainting that produced the
-       overlay. Gone entirely; the canvas now matches the source.
-     "DSLR-level depth of field"           — asking to ADD depth of field is a
-       request to synthesise bokeh that was never photographed, i.e. to redraw
-       the background.
-     "cinematic tones", "high-end magazine", "premium editorial"  — style
-       targets pull toward stylisation, which is the over-smoothed magazine
-       look. They fight the same request's demand for real skin.
+   The constraints are enumerated per object — face, expression, beard, pose,
+   microphone, jewellery, clothing folds, stage elements, lighting, shadows —
+   because a general instruction to "preserve the photograph" is too abstract
+   to bind. Naming the things in the frame is what makes it stick, and a hard
+   source needs that most: a well-lit studio portrait survives a vague brief,
+   a low-resolution concert shot under heavy stage lighting does not.
 
-   What is left is a restoration brief: recover what the sensor captured,
-   change nothing about what the photograph shows. */
+   Deliberately NOT included: instructions about typography, gradients,
+   highlights, logos or card layout. The model never sees any of that. It is
+   handed the bare photograph; the headline, the gradient and the badge are
+   drawn onto the canvas afterwards, so a rule about them would be a rule
+   about pixels that are not in the request. Text INSIDE the photograph —
+   signage, a jersey, a banner — is a different thing and is covered. */
 function buildEnhancePrompt(description, _headlineNotUsed, _ratioNoLongerUsed) {
   return [
-    "Restore and upscale this REAL news photograph.",
+    "You are a professional image restoration and super-resolution model.",
+    "",
+    "Upscale this exact photograph while preserving 100% of the original",
+    "pixels, composition and subject identity.",
+    "",
+    "This is NOT an image generation task. Do not recreate, reinterpret or",
+    "re-render the image. Restore it.",
     description ? `CONTEXT — the photo shows: ${description}` : "",
     "",
-    "RESTORE:",
-    "- Remove compression artifacts, blur, noise and pixelation.",
-    "- Recover fine detail that the original capture contains: facial detail,",
-    "  skin texture, individual hair strands, fabric weave, fine edges.",
+    "ENHANCE ONLY:",
+    "- resolution",
+    "- sharpness",
+    "- natural detail already present in the capture",
+    "- texture clarity",
+    "- noise reduction",
+    "- compression artifact removal",
     "",
-    "UPSCALE:",
-    "- Increase resolution and sharpness. Keep it photographic — no halos, no",
-    "  oversharpening, no waxy or plastic surfaces, no AI-looking skin.",
+    "STRICT PRESERVATION RULES:",
+    "- Keep the exact same person's face and facial structure.",
+    "- Keep the exact same expression, eyes, nose, beard, hairstyle and skin",
+    "  detail. Do not beautify, smooth or idealise.",
+    "- Keep the exact same pose and body proportions.",
+    "- Keep microphones, instruments, jewellery, clothing folds and stage",
+    "  elements unchanged in shape, position and detail.",
+    "- Keep the exact same lighting, shadows and colour tone. Stage lights,",
+    "  haze and coloured wash stay exactly as photographed.",
+    "- Keep the background unchanged, including the shape of every light",
+    "  source and reflection.",
+    "- Any text, logo or marking physically present in the photograph stays",
+    "  exactly as it appears — never invented, completed or extended.",
     "",
-    "PRESERVE — the picture must come back as the same photograph:",
-    "- Identical composition, framing, crop and camera angle.",
-    "- Do not zoom, pan, rotate, straighten, re-centre or re-compose.",
-    "- Do not extend, outpaint or fill beyond the edges of the photograph.",
-    "- Every person's face stays PIXEL-FAITHFUL to the original identity: same",
-    "  facial structure, skin texture, wrinkles, expression, hairstyle and age.",
-    "  Do NOT beautify, smooth skin, slim, or idealise anyone.",
-    "- Same pose, clothing and body proportions. No change to anyone's build.",
-    "- Same background. Add no new people, objects or scenery.",
-    "- Preserve existing text, logos, icons and graphic elements exactly as",
-    "  they already appear — never invented, completed, translated or extended.",
-    "  Keep typography sharp and readable.",
+    "IMAGE QUALITY TARGET:",
+    "Professional DSLR photograph. Natural camera sharpness. Realistic skin",
+    "texture with visible pores and imperfections. Fine hair detail. Clean",
+    "fabric texture. High-resolution editorial news photography.",
     "",
-    "ENHANCE — gently, and only what the photograph already has:",
-    "- Restore realistic lighting, depth and contrast.",
-    "- Natural, accurate colour. Natural skin tones. No colour grading, no",
-    "  stylised or cinematic look.",
+    "DO NOT:",
+    "- regenerate the person",
+    "- beautify the face or change facial features",
+    "- add or remove objects",
+    "- change the background or the lighting",
+    "- hallucinate detail that is not in the source",
+    "- create plastic or AI-looking skin",
+    "- oversharpen or apply artistic effects",
     "",
-    "DO NOT: redesign the image, change faces, generate new objects, alter or",
-    "add text, modify logos, shift colours drastically, oversharpen, produce",
-    "AI-looking skin, or distort proportions. This is journalism, not art.",
-    "",
-    "The result is the same photograph, clean and sharp, at higher resolution.",
+    "The output should look like the same photograph taken with a higher-end",
+    "camera and lens. Same moment, same person, same light — more resolution.",
   ].filter(Boolean).join("\n");
 }
 
@@ -4348,181 +4362,6 @@ async function describeImageForEnhance(buffer, mime) {
 // Primary engine: the self-hosted CodeFormer + Real-ESRGAN service on Railway
 // (pixel-faithful, never regenerates faces). Returns a PNG data URL, or null
 // if the service isn't configured / errors / times out — caller then falls
-// back to gpt-image-1.5.
-async function tryRailwayUpscale(buffer, mime, strength) {
-  const base = (env("UPSCALER_URL")).replace(/\/+$/, "");
-  if (!base) return null;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 285000);
-  try {
-    const r = await fetch(`${base}/enhance`, {
-      method: "POST",
-      headers: {
-        "Content-Type": mime,
-        "X-Secret": env("UPSCALER_SECRET"),
-        // How much of the model output to keep. Passed through from the
-        // client so the slider is live, rather than baked in per deploy.
-        ...(strength ? { "X-Enhance-Strength": String(strength) } : {}),
-      },
-      body: buffer,
-      signal: ctrl.signal,
-    });
-    if (!r.ok) {
-      console.warn(`⚠ Railway upscaler ${r.status} — falling back to gpt-image`);
-      return null;
-    }
-    const out = Buffer.from(await r.arrayBuffer());
-    if (out.length < 1000) return null;
-    return {
-      dataUrl: `data:image/png;base64,${out.toString("base64")}`,
-      engine: r.headers.get("x-engine") || "railway",
-    };
-  } catch (e) {
-    console.warn("⚠ Railway upscaler unreachable — falling back to gpt-image:", e.message);
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/* ── A real upscaler, not a generative one ──────────────────────────────────
-
-   gpt-image was doing this job and it is the wrong tool. It does not enlarge a
-   photograph, it re-imagines one: measured on a real enhance, the geometry
-   correlation between input and output is 0.80 (1.0 being an identical
-   layout), even with a prompt that forbids cropping, zooming and re-centring,
-   and with the requested size matched to the source so there is nothing to
-   outpaint. It re-composes anyway. That is why faces came back subtly
-   re-modelled and why published cards carried a faint doubled outline of the
-   subject — the ghost on the Pocket FM card was raw model output, not
-   post-processing. No amount of prompting fixes it, because redrawing is what
-   a generative model does.
-
-   Enlarging an image is a solved problem that needs no model at all. Lanczos
-   is a windowed-sinc resampler — the standard high-quality choice — and CAS
-   (Contrast Adaptive Sharpen) restores the crispness resampling costs while
-   deliberately avoiding the halos plain unsharp masking leaves on hard edges.
-   Both ship with the ffmpeg already installed here for video, so this needs no
-   new service, no new key and no new dependency.
-
-   What this cannot do is invent detail that was never captured; a genuinely
-   tiny, mushy source stays soft. What it cannot do either — and this is the
-   point — is invent a face, ghost an outline or hallucinate a logo. It is
-   arithmetic on the pixels that exist. It also costs nothing and finishes in
-   about a second rather than twenty to ninety.
-
-   For real learned super-resolution — recovering detail rather than
-   preserving it — the right answer is a dedicated model such as Real-ESRGAN,
-   which is what UPSCALER_URL is for and what the Railway path above calls. */
-const UPSCALE_MAX_LONG_EDGE = Number(env("UPSCALE_MAX_LONG_EDGE") || 2048);
-
-/* Two sharpeners, because one of them alone does not show.
-
-   CAS is adaptive and deliberately gentle — that is its virtue on hard edges
-   and its problem as the only stage. Measured on a soft 420px source enlarged
-   to 840px, against the same resize with no sharpening at all:
-
-     cas 0.45 (the old default)      +2.4% edge energy
-     cas 0.60                        +3.1%
-     cas 0.80                        +4.8%
-     unsharp 1.2                    +10.7%
-     unsharp 1.2 + cas 0.4          +15.7%   ← this
-     cas 1.00                       +26.5%   (its whole range in the last step)
-
-   A 2% lift is invisible, which is why "it is not enhancing" was a fair
-   report even once the resampler was right: the pipeline was doing almost
-   nothing a viewer could see. Unsharp supplies the visible lift and CAS adds
-   edge crispness on top without the halos unsharp leaves when pushed alone —
-   neither is run hard enough to ring. No pixel was driven to 0 or 255 by any
-   chain above, this one included.
-
-   Both are knobs because the right amount depends on the source, and a news
-   photo that is already crisp wants less than a soft scrape. */
-const UPSCALE_SHARPEN = env("UPSCALE_SHARPEN") || "0.4";     // CAS strength, 0..1
-const UPSCALE_UNSHARP = env("UPSCALE_UNSHARP") || "1.2";     // unsharp luma amount
-
-// 5x5 is the standard kernel for this: wide enough to catch a real edge,
-// narrow enough not to smear a halo across it. Chroma is left alone —
-// sharpening colour channels buys nothing and amplifies compression blotches.
-const SHARPEN_CHAIN = `unsharp=5:5:${UPSCALE_UNSHARP}:5:5:0,cas=strength=${UPSCALE_SHARPEN}`;
-
-async function upscaleLocally(buffer, mime) {
-  if (!ffmpegAvailable) return null;
-
-  const job = randomUUID().replace(/-/g, "");
-  const dir = join(tmpdir(), `pix-upscale-${job}`);
-  mkdirSync(dir, { recursive: true });
-  const ext = mime === "image/jpeg" ? "jpg" : "png";
-  const inPath = join(dir, `in.${ext}`);
-  const outPath = join(dir, "out.png");
-
-  try {
-    writeFileSync(inPath, buffer);
-
-    const probe = await run("ffprobe", [
-      "-v", "error", "-select_streams", "v:0",
-      "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", inPath,
-    ], 20_000);
-    const [w, h] = probe.stdout.toString("utf-8").trim().split("x").map(Number);
-    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 2 || h < 2) {
-      console.warn("⚠ upscale: could not read image dimensions");
-      return null;
-    }
-
-    /* 2x, but never past the cap — the poster renders into a 920px slot and
-       DailyMattr re-encodes on top of that, so pixels beyond this are paid for
-       in bytes and thrown away downstream.
-
-       The `>= 1.5` is the part that matters, and it is why this is not simply
-       `min(2, cap/longEdge)`: that form enlarged a 1682px image to exactly
-       2048 — a 1.22x stretch that adds no detail a viewer can see and 40% more
-       bytes to carry it, on an image that was already big enough. Resampling
-       only earns its cost as a real enlargement; below that threshold the
-       honest answer is to leave the geometry alone and just sharpen, which is
-       what an already-large source actually needs.
-
-       Never below 1: this route enlarges or leaves alone, and silently
-       shrinking someone's upload would be a strange way to answer "enhance". */
-    const longEdge = Math.max(w, h);
-    const headroom = UPSCALE_MAX_LONG_EDGE / longEdge;
-    const factor = headroom >= 1.5 ? Math.min(2, headroom) : 1;
-    const outW = Math.round(w * factor / 2) * 2;   // even dimensions keep every encoder happy
-    const outH = Math.round(h * factor / 2) * 2;
-
-    const filters = factor > 1.01
-      ? `scale=${outW}:${outH}:flags=lanczos,${SHARPEN_CHAIN}`
-      : SHARPEN_CHAIN;
-
-    const t0 = Date.now();
-    const enc = await run("ffmpeg", [
-      "-hide_banner", "-loglevel", "error", "-y", "-i", inPath,
-      "-vf", filters, "-frames:v", "1", outPath,
-    ], 60_000);
-
-    if (enc.code !== 0 || !existsSync(outPath)) {
-      console.warn(`⚠ upscale failed: ${enc.stderr.toString("utf-8").slice(-200)}`);
-      return null;
-    }
-
-    const out = readFileSync(outPath);
-    if (!out.length) return null;
-    console.log(
-      `✓ upscaled ${w}x${h} → ${outW}x${outH} ` +
-      `(lanczos + unsharp ${UPSCALE_UNSHARP} + cas ${UPSCALE_SHARPEN}) ` +
-      `in ${Date.now() - t0}ms, ${(out.length / 1048576).toFixed(2)} MB`,
-    );
-    return {
-      dataUrl: `data:image/png;base64,${out.toString("base64")}`,
-      engine: `lanczos+sharpen ${outW}x${outH}`,
-    };
-  } catch (err) {
-    console.warn(`⚠ upscale error: ${err.message}`);
-    return null;
-  } finally {
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* temp dir */ }
-  }
-}
-
 async function handleUpscaleImage(req, res) {
   /* No OpenAI key needed to sharpen a picture. The local path below is
      arithmetic, and gating the whole route on a key it may never use turned a
@@ -4549,40 +4388,15 @@ async function handleUpscaleImage(req, res) {
     const mime = req.headers["content-type"]?.includes("jpeg") ? "image/jpeg" : "image/png";
     const headline = decodeURIComponent(req.headers["x-headline"] || "").trim().slice(0, 200);
 
-    // PRIMARY: self-hosted upscaler on Railway (pixel-faithful).
-    const railwayT0 = Date.now();
-    const strength = (req.headers["x-enhance-strength"] || "").toString();
-    const railway = await tryRailwayUpscale(buffer, mime, strength);
-    if (railway) {
-      console.log(`✓ AI enhance via Railway (${railway.engine}) in ${Date.now() - railwayT0}ms`);
-      sendJson(res, 200, { image: railway.dataUrl, engine: railway.engine });
-      return;
-    }
-    /* SECOND: gpt-image restores the photograph.
+    /* One engine: gpt-image restores the photograph.
 
-       The local lanczos path used to sit here as the default. It cannot alter
-       a face, but it also cannot recover detail that was never captured — it
-       is arithmetic on existing pixels, so a soft source stays soft. The model
-       is what actually restores, and it is what this route is for now.
-
-       X-Enhance-Mode: sharpen still reaches the resampler for anyone who wants
-       a free, pixel-exact enlargement instead. */
-    const mode = String(req.headers["x-enhance-mode"] || "").toLowerCase();
-    if (mode === "sharpen") {
-      const localT0 = Date.now();
-      const local = await upscaleLocally(buffer, mime);
-      if (local) {
-        console.log(`✓ enhance via ${local.engine} in ${Date.now() - localT0}ms (no model, no cost)`);
-        sendJson(res, 200, { image: local.dataUrl, engine: local.engine });
-        return;
-      }
-      sendJson(res, 503, {
-        error: ffmpegAvailable
-          ? "The image could not be enlarged. Check the server log for the ffmpeg error."
-          : "Sharpening needs ffmpeg, which is not installed on this server.",
-      });
-      return;
-    }
+       There used to be three paths here — a self-hosted Real-ESRGAN service,
+       a local lanczos resampler, and the model — tried in order. That is what
+       "two layers" looked like from the outside: the same button could return
+       three different kinds of picture depending on what happened to be
+       reachable, and the resampler had quietly become the default, so clicking
+       Enhance ran arithmetic and never called the model at all. The service is
+       deleted and the resampler is gone. This route does one thing. */
 
     // The paid fallback is opt-out. Without this guard a momentary failure of
     // the self-hosted upscaler silently spends OpenAI credits — the caller
@@ -4596,9 +4410,7 @@ async function handleUpscaleImage(req, res) {
     if (gptImageDisabled) {
       console.warn("⚠ upscaler unavailable and DISABLE_GPT_IMAGE is set — refusing to spend OpenAI credits");
       sendJson(res, 503, {
-        error: upscalerConfigured
-          ? "The self-hosted upscaler did not respond, and the paid gpt-image fallback is disabled (DISABLE_GPT_IMAGE). Check that the upscaler service is running."
-          : "No upscaler is configured (UPSCALER_URL unset) and the paid gpt-image fallback is disabled (DISABLE_GPT_IMAGE).",
+        error: "Restore & Upscale is switched off on this server (DISABLE_GPT_IMAGE).",
       });
       return;
     }

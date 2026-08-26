@@ -2292,15 +2292,19 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
    Targeted by content rather than by position — :has() on a control each
    section owns — so re-ordering the markup later cannot silently scramble
    this the way nth-child would. */
-.cms-media-strip .image-panel>.acc:has(#bg-upload-zone) {
+/* Adjustments first. Framing is what you do to EVERY picture — the first
+   thing after one lands and the thing you come back to — while Custom Upload
+   is how a picture arrives at all and AI Enhance is the occasional paid step.
+   The most-used control should not sit under two boxes. */
+.cms-media-strip .image-panel>.acc:has(#img-zoom) {
   order: 1;
 }
 
-.cms-media-strip .image-panel>.acc:has(#ai-enhance-btn) {
+.cms-media-strip .image-panel>.acc:has(#bg-upload-zone) {
   order: 2;
 }
 
-.cms-media-strip .image-panel>.acc:has(#img-zoom) {
+.cms-media-strip .image-panel>.acc:has(#ai-enhance-btn) {
   order: 3;
 }
 
@@ -2431,4 +2435,72 @@ body.nav-collapsed .cms-sidebar .view-tab:hover::after {
 .review-filters {
   flex-wrap: wrap;
   max-width: 100%;
+}
+
+
+/* ═══ Zoom stepper ══════════════════════════════════════════════════════════
+   − and + instead of a range. On a ~150px track a 10-300 zoom moves about 2%
+   per pixel, so framing a face became a hunt: overshoot, correct, overshoot.
+   A step is 5% and predictable, the readout says exactly where you are, and
+   press-and-hold covers the long distances. */
+.zoom-stepper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.zoom-step {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  font-size: 1.05rem;
+  line-height: 1;
+  font-weight: 600;
+  border-radius: 9px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  /* Repeated presses must not select the glyph or fire the double-tap zoom. */
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.zoom-step:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.zoom-step:active:not(:disabled) { transform: translateY(1px); }
+
+.zoom-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.zoom-readout {
+  flex: 1 1 auto;
+  text-align: center;
+  font-variant-numeric: tabular-nums;   /* 100% and 95% must not jiggle */
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.zoom-reset {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  font-size: 0.72rem;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.zoom-reset:hover {
+  border-color: var(--accent);
+  color: var(--accent-dim);
 }

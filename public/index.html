@@ -641,10 +641,23 @@
             <svg class="acc-chevron" width="14" height="14"><use href="#i-chevron"/></svg>
           </button>
           <div class="acc-body"><div class="acc-inner">
-            <label class="slider-container">
+            <!-- Zoom is a stepper, not a slider. Framing a face inside a
+                 920px poster slot is a nudge-and-look job: a 10-300 range on a
+                 ~150px track moves ~2% per pixel, so the mouse overshoots and
+                 the writer hunts. The range input stays as the value carrier
+                 (every existing reader — syncControl, page restore, the drag
+                 handler — reads img-zoom.value) and is simply hidden. -->
+            <div class="slider-container zoom-stepper">
               <span class="slider-label">Zoom</span>
-              <input type="range" id="img-zoom" min="10" max="300" value="100" />
-            </label>
+              <button type="button" class="zoom-step" id="img-zoom-out"
+                      aria-label="Zoom out" title="Zoom out">&minus;</button>
+              <output class="zoom-readout" id="img-zoom-value" for="img-zoom">100%</output>
+              <button type="button" class="zoom-step" id="img-zoom-in"
+                      aria-label="Zoom in" title="Zoom in">+</button>
+              <button type="button" class="zoom-reset" id="img-zoom-reset"
+                      title="Back to 100%">Reset</button>
+              <input type="range" id="img-zoom" min="10" max="300" value="100" hidden />
+            </div>
             <label class="slider-container">
               <span class="slider-label">Pan X</span>
               <input type="range" id="img-offset-x" min="-900" max="900" value="0" />

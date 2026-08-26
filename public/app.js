@@ -1016,6 +1016,39 @@ function resetImageControls() {
   imgZoom.value = 100;
 }
 
+/* Lay `top` over `base` at `alpha`, at the larger of the two sizes.
+
+   Returns a plain <img> so callers can treat it exactly like any other loaded
+   picture — same shape as what imageFromUrl gives back. The canvas is sized to
+   the enhanced copy, which is the higher resolution of the pair, so nothing is
+   thrown away by the merge. */
+async function blendImages(base, top, alpha) {
+  const w = Math.max(top.naturalWidth || top.width || 0, base.naturalWidth || base.width || 0);
+  const h = Math.max(top.naturalHeight || top.height || 0, base.naturalHeight || base.height || 0);
+  if (!w || !h) return top;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx2 = canvas.getContext("2d");
+  ctx2.imageSmoothingQuality = "high";
+  ctx2.drawImage(base, 0, 0, w, h);
+  ctx2.globalAlpha = alpha;
+  ctx2.drawImage(top, 0, 0, w, h);
+  ctx2.globalAlpha = 1;
+
+  /* Awaited, not returned raw: the data: URL decodes asynchronously, and
+     everything downstream — ensureImageFocalPoint, renderPoster, the upload —
+     reads naturalWidth immediately. */
+  const out = new Image();
+  await new Promise((resolve) => {
+    out.onload = resolve;
+    out.onerror = resolve;   // fall through with whatever loaded
+    out.src = canvas.toDataURL("image/png");
+  });
+  return out.naturalWidth ? out : top;
+}
+
 /* The page a pending image pick belongs to.
 
    The nonce alone answers "is this still the picture the writer wants"; it
@@ -1691,16 +1724,63 @@ if (filterPresetsContainer) {
   });
 }
 
-// Zoom slider
-imgZoom.addEventListener("input", () => {
-  const nextZoom = Number(imgZoom.value);
-  if (nextZoom < state.imageZoom) {
+/* ── Zoom ──
+   The range input is still the single source of truth for the value — page
+   restore, syncControl and the drag handler all read img-zoom.value — but it
+   is hidden, and the writer drives it with − / + instead. Everything below
+   goes through applyZoom() so the stepper, a restore and any future caller
+   cannot drift apart. */
+const ZOOM_MIN = 10;
+const ZOOM_MAX = 300;
+const ZOOM_STEP = 5;
+const imgZoomOut = document.getElementById("img-zoom-out");
+const imgZoomIn = document.getElementById("img-zoom-in");
+const imgZoomReset = document.getElementById("img-zoom-reset");
+const imgZoomValue = document.getElementById("img-zoom-value");
+
+function syncZoomReadout() {
+  const z = Math.round(Number(imgZoom.value) || 100);
+  if (imgZoomValue) imgZoomValue.textContent = `${z}%`;
+  if (imgZoomOut) imgZoomOut.disabled = z <= ZOOM_MIN;
+  if (imgZoomIn) imgZoomIn.disabled = z >= ZOOM_MAX;
+}
+
+function applyZoom(next) {
+  const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(Number(next) || 100)));
+  /* Zooming OUT re-centres. A pan set while zoomed in can leave the picture
+     off-canvas entirely once it shrinks, and hunting it back with two more
+     sliders is worse than starting from the middle. */
+  if (clamped < state.imageZoom) {
     state.imageOffset = { x: 0, y: 0 };
     imgOffsetX.value = 0;
     imgOffsetY.value = 0;
   }
-  state.imageZoom = nextZoom;
+  state.imageZoom = clamped;
+  imgZoom.value = String(clamped);
+  syncZoomReadout();
   renderPoster();
+}
+
+imgZoom.addEventListener("input", () => applyZoom(imgZoom.value));
+imgZoomOut?.addEventListener("click", () => applyZoom(Number(imgZoom.value) - ZOOM_STEP));
+imgZoomIn?.addEventListener("click", () => applyZoom(Number(imgZoom.value) + ZOOM_STEP));
+imgZoomReset?.addEventListener("click", () => applyZoom(100));
+
+/* Press-and-hold to run, for crossing a wide range without forty clicks. */
+[[imgZoomOut, -ZOOM_STEP], [imgZoomIn, ZOOM_STEP]].forEach(([btn, delta]) => {
+  if (!btn) return;
+  let hold = null;
+  let repeat = null;
+  const stop = () => { clearTimeout(hold); clearInterval(repeat); hold = null; repeat = null; };
+  btn.addEventListener("pointerdown", () => {
+    hold = setTimeout(() => {
+      repeat = setInterval(() => {
+        if (btn.disabled) return stop();
+        applyZoom(Number(imgZoom.value) + delta);
+      }, 70);
+    }, 400);
+  });
+  ["pointerup", "pointerleave", "pointercancel", "blur"].forEach((ev) => btn.addEventListener(ev, stop));
 });
 
 // Font size slider (0 = auto)
@@ -6799,14 +6879,37 @@ if (aiEnhanceBtn) {
         enhanced.onerror = () => reject(new Error("Enhanced image failed to load."));
         enhanced.src = data.image;
       });
-      await ensureImageFocalPoint(enhanced);
+      /* Blend the enhance back over the original at the chosen strength.
+
+         gpt-image does not sharpen a photograph — it REDRAWS it. Even with
+         input_fidelity=high, a face comes back subtly re-modelled: different
+         jawline, different eyes, a person who is nearly but not quite the one
+         in the photograph. On a news poster of a named public figure that is
+         not a cosmetic problem, it is a factual one.
+
+         The Strength slider was supposed to be the dial for exactly this — its
+         own hint says "20% — raise this only if the image still looks soft" —
+         but the value was only ever forwarded to the self-hosted upscaler, and
+         UPSCALER_URL is unset, so that request never happens. Every enhance
+         was landing at full replacement with the slider inert.
+
+         Compositing here restores the meaning: the original supplies the
+         pixels, the enhance is laid over at `strength`, so at the 20% default
+         the face is 80% the real photograph. 0 leaves the photo untouched;
+         100 is the old behaviour for anyone who wants it. Done on the client
+         because the original is already in memory here — the server no longer
+         has it by then. */
+      const strength = Math.max(0, Math.min(100, Number(state.enhanceStrength ?? 20))) / 100;
+      const merged = strength >= 1 ? enhanced : await blendImages(img, enhanced, strength);
+
+      await ensureImageFocalPoint(merged);
       /* Onto the page that was selected when Enhance was pressed. This runs
          30-90 seconds after the click and had no page guard at all, so a
          writer who clicked through the carousel while waiting watched the
          slide they happened to be looking at swap to page 1's enhanced photo
          — destroying that slide's own picture, unrecoverable when it was a
          drag-and-drop upload. */
-      commitFieldToPage(enhanceOwner, "mainImage", enhanced);
+      commitFieldToPage(enhanceOwner, "mainImage", merged);
       renderPoster();
       const ENGINE_LABELS = {
         realesrgan: "Real-ESRGAN (self-hosted, free)",
@@ -9998,6 +10101,9 @@ function numberOr(value, fallback) {
 
 function syncControl(el, value) {
   if (el && value !== undefined && value !== null) el.value = value;
+  // The zoom readout is a separate element, so pushing the range value in
+  // from a page restore has to bring the label with it.
+  if (el === imgZoom && typeof syncZoomReadout === "function") syncZoomReadout();
 }
 
 /* A session can expire mid-edit. Say so once, plainly, and put the login back

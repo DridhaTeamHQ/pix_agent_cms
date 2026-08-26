@@ -1052,12 +1052,32 @@ async function mergeEnhancement(original, enhanced, strength) {
   const oh = original.naturalHeight || original.height;
   if (!W || !H || !ow || !oh) return enhanced;
 
-  // Where the photograph sits inside the model's frame: contain, centred.
-  const scale = Math.min(W / ow, H / oh);
+  /* COVER, not contain. The photograph fills the model's frame and anything
+     that does not fit is cropped — the same crop the poster canvas would make
+     anyway.
+
+     Contain was the bug behind the box on the published card: it fitted the
+     photo inside the frame and left the model's outpainted invention showing
+     above and below it, with a hard edge where the two met. An invented
+     margin is not the photograph and must never be shown as if it were.
+
+     Nothing of the picture is lost by this — the canvas crops to the poster
+     ratio regardless, and the writer's zoom and pan still work on the result. */
+  const scale = Math.max(W / ow, H / oh);
   const dw = Math.round(ow * scale);
   const dh = Math.round(oh * scale);
   const dx = Math.round((W - dw) / 2);
   const dy = Math.round((H - dh) / 2);
+
+  /* How far the model's framing drifted from the source. Detail is added by
+     subtracting a blurred copy of the model's output from itself, which only
+     lines up if the two images show the same thing in the same place. When the
+     shapes disagree badly the model has reframed, the detail layer is
+     misaligned, and adding it would print ghost edges across the picture — so
+     the photograph is returned clean instead. Better a true picture with no
+     lift than a sharpened one with doubled edges. */
+  const aspectDrift = Math.abs((W / H) - (ow / oh)) / (ow / oh);
+  const aligned = aspectDrift <= 0.06;
 
   const surface = (draw, filter) => {
     const c = document.createElement("canvas");
@@ -1077,41 +1097,44 @@ async function mergeEnhancement(original, enhanced, strength) {
 
   let ai, aiBlur, base;
   try {
+    // The photograph, filling the frame. No model pixels underneath: there is
+    // no gap for them to show through.
+    base = surface((x) => x.drawImage(original, dx, dy, dw, dh));
+    if (!aligned) {
+      const clean = await canvasToImage(base, W, H);
+      return clean || original;
+    }
     ai     = surface((x) => x.drawImage(enhanced, 0, 0, W, H));
     aiBlur = surface((x) => x.drawImage(enhanced, 0, 0, W, H), `blur(${radius}px)`);
-    base   = surface((x) => {
-      x.drawImage(enhanced, 0, 0, W, H);          // keep the invented margins
-      x.drawImage(original, dx, dy, dw, dh);      // the real photograph, undistorted
-    });
   } catch {
-    return enhanced;   // tainted canvas or an allocation failure — take the model's
+    return original;   // tainted canvas or allocation failure — the real picture
   }
 
+  // The photograph covers every pixel, so detail applies to the whole frame.
   const out = base.data, hi = ai.data, lo = aiBlur.data;
-  const x0 = Math.max(0, dx), x1 = Math.min(W, dx + dw);
-  const y0 = Math.max(0, dy), y1 = Math.min(H, dy + dh);
-
-  for (let y = y0; y < y1; y += 1) {
-    let i = (y * W + x0) * 4;
-    for (let x = x0; x < x1; x += 1, i += 4) {
-      // Only inside the photograph. Outside it there is nothing to restore.
-      out[i]     = clamp255(out[i]     + strength * (hi[i]     - lo[i]));
-      out[i + 1] = clamp255(out[i + 1] + strength * (hi[i + 1] - lo[i + 1]));
-      out[i + 2] = clamp255(out[i + 2] + strength * (hi[i + 2] - lo[i + 2]));
-    }
+  for (let i = 0; i < out.length; i += 4) {
+    out[i]     = clamp255(out[i]     + strength * (hi[i]     - lo[i]));
+    out[i + 1] = clamp255(out[i + 1] + strength * (hi[i + 1] - lo[i + 1]));
+    out[i + 2] = clamp255(out[i + 2] + strength * (hi[i + 2] - lo[i + 2]));
   }
 
-  const canvas = document.createElement("canvas");
-  canvas.width = W; canvas.height = H;
-  canvas.getContext("2d").putImageData(base, 0, 0);
+  return (await canvasToImage(base, W, H)) || original;
+}
 
+/* ImageData -> a loaded <img>, so callers can treat the result exactly like
+   any other picture. Awaited, because the data: URL decodes asynchronously and
+   everything downstream reads naturalWidth straight away. */
+async function canvasToImage(imageData, w, h) {
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  canvas.getContext("2d").putImageData(imageData, 0, 0);
   const img = new Image();
   await new Promise((resolve) => {
     img.onload = resolve;
     img.onerror = resolve;
     img.src = canvas.toDataURL("image/png");
   });
-  return img.naturalWidth ? img : enhanced;
+  return img.naturalWidth ? img : null;
 }
 
 function clamp255(v) {

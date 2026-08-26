@@ -4264,15 +4264,28 @@ function buildEnhancePrompt(description, _headlineNotUsed, ratioLabel) {
 }
 
 // Map the poster's aspect ratio to the closest gpt-image output size.
+/* Ask for the SOURCE's shape, not the poster's.
+
+   This used to follow the poster ratio, so a landscape photo on a 9:16 poster
+   was requested as 1024x1536 and the model outpainted the missing height —
+   inventing sky and floor to fill a frame the photograph never had.
+
+   That was deliberate, to stop the canvas cropping a wide photo to shreds.
+   But the invented margin is not the photograph, and it shows: the enhanced
+   result carried a hard-edged band of model-drawn background above and below
+   the real picture, which is visible as a box on the published card. It also
+   breaks the merge — a reframed output cannot be aligned pixel-for-pixel with
+   the original, which is what preserves the subject's face.
+
+   Matching the source keeps the model doing the one job asked of it, which is
+   detail. Framing stays where it belongs: the poster canvas already crops and
+   pans to the chosen ratio, under the writer's control, using real pixels. */
 function sizeForRatio(ratio, orientationHint) {
-  switch (ratio) {
-    case "9:16":
-    case "4:5":  return "1024x1536";
-    case "1:1":  return "1024x1024";
-    case "16:9": return "1536x1024";
-  }
   if (orientationHint === "landscape") return "1536x1024";
   if (orientationHint === "portrait")  return "1024x1536";
+  /* No hint: let the model match the input rather than guessing from the
+     poster, which is what produced the outpainting in the first place. */
+  if (ratio === "1:1") return "1024x1024";
   return "auto";
 }
 

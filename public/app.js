@@ -4984,12 +4984,17 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
       const dx = wave * bendMax * depth;
       // A little vertical give as well, or the bend reads as a shear.
       const dy = Math.cos(t * 11.1) * bendMax * 0.35 * depth;
-      const sy = (i * stripH - bleed) / GLASS.downscale;
-      const shh = (stripH + bleed * 2) / GLASS.downscale;
+      /* Named for what it is, and NOT `sy` — that is the transform's scale-y,
+         declared above and load-bearing for export correctness. Shadowing it
+         inside the one loop that also does coordinate maths is how the
+         design-space/device-pixel bug this function exists to avoid gets
+         reintroduced by someone reading quickly. */
+      const stripSrcY = (i * stripH - bleed) / GLASS.downscale;
+      const stripSrcH = (stripH + bleed * 2) / GLASS.downscale;
       g.filter = smallBlur;
       g.drawImage(
         small,
-        0, Math.max(0, sy), sw, Math.min(sh, shh),
+        0, Math.max(0, stripSrcY), sw, Math.min(sh, stripSrcH),
         dx, i * stripH - bleed + dy, glass.width, stripH + bleed * 2,
       );
     }
@@ -5106,7 +5111,7 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
      multiplicatively — an 85% fill of #17130F under this — so leaving it
      would put the foot of every card at 0.97 and lose the photograph
      entirely. */
-  const FADE_MAX_ALPHA = 0.20;
+  const FADE_MAX_ALPHA = GLASS.fadeMax;
   const stopAt = (position, alpha) =>
     grad.addColorStop(
       Math.min(1, Math.max(0, position)),

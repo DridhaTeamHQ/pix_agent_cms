@@ -4743,8 +4743,22 @@ function drawBackground() {
 /* Matched to the fade's own reach so the two cannot drift apart, and scaled
    off the frame so a 1080-wide export is blurred by the same amount a 920
    preview is rather than a fifth less. */
-const FADE_BLUR_RADIUS = 26;          // against the 1700px reference frame
-const FADE_STRETCH = 1.6;             // must match paintBottomFade
+/* Frosted glass, not a soft focus. 26px only took the edge off detail; misting
+   the picture so the copy sits on glass rather than on a slightly softer
+   photograph takes roughly twice that. Against the 1700px reference frame, so
+   a 1080-wide export is misted the same amount a 920 preview is. */
+const FADE_BLUR_RADIUS = 55;
+
+/* How far above the first line any of this reaches, as a multiple of the
+   layout's fadeHeight.
+
+   It was 1.6, chosen when the fade was the only effect and had to do all the
+   work of separating copy from picture — which meant starting at 40% of the
+   frame and darkening a third of the photograph to get there. The blur does
+   that work now, and does it better, so the colour no longer needs the runway:
+   at 0.6 it begins just above the copy, around 59%, and the picture above is
+   left alone. */
+const FADE_STRETCH = 0.6;
 
 function fadeReach(layoutFade) {
   return layoutFade * FADE_STRETCH;

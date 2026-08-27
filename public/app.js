@@ -4743,11 +4743,9 @@ function drawBackground() {
 /* Matched to the fade's own reach so the two cannot drift apart, and scaled
    off the frame so a 1080-wide export is blurred by the same amount a 920
    preview is rather than a fifth less. */
-/* Frosted glass, not a soft focus. 26px only took the edge off detail; misting
-   the picture so the copy sits on glass rather than on a slightly softer
-   photograph takes roughly twice that. Against the 1700px reference frame, so
-   a 1080-wide export is misted the same amount a 920 preview is. */
-const FADE_BLUR_RADIUS = 55;
+/* Against the 1700px reference frame, so a 1080-wide export is misted the same
+   amount a 920 preview is rather than a fifth less. */
+const FADE_BLUR_RADIUS = 12;
 
 /* How far above the first line any of this reaches, as a multiple of the
    layout's fadeHeight.
@@ -4790,27 +4788,60 @@ function blurBehindCopy(target, { width, height, copyTop, fadeHeight, radius }) 
   if (!source) return;
 
   try {
+    /* ── Why the frame is padded before it is blurred ──
+
+       A blur samples outward, and past the edge of a canvas there is nothing
+       to sample: those samples come back transparent, so the outer band of the
+       blurred layer is partly see-through and the SHARP original shows through
+       it. At the bottom of the card that is a strip the width of the radius
+       that is visibly not frosted while everything above it is — and it lands
+       exactly where the mask is fully opaque and the blur is meant to be doing
+       all of the work.
+
+       So the picture is copied onto a canvas `pad` larger on every side, with
+       its edge rows and columns stretched out to fill that margin, and the
+       blur runs on THAT. Every sample inside the real frame now lands on real
+       pixels. The margin is cropped away when the result is composited back,
+       so nothing of the padding is ever seen — it exists only to give the blur
+       something to read. */
+    const pad = Math.ceil(radius) + 2;
+    const extW = width + pad * 2;
+    const extH = height + pad * 2;
+
+    const ext = document.createElement("canvas");
+    ext.width = extW;
+    ext.height = extH;
+    const ectx = ext.getContext("2d");
+    ectx.drawImage(source, 0, 0, width, height, pad, pad, width, height);
+    // Edge extension: one row/column each way, stretched across the margin.
+    ectx.drawImage(source, 0, 0, width, 1, pad, 0, width, pad);                     // top
+    ectx.drawImage(source, 0, height - 1, width, 1, pad, height + pad, width, pad); // bottom
+    ectx.drawImage(source, 0, 0, 1, height, 0, pad, pad, height);                   // left
+    ectx.drawImage(source, width - 1, 0, 1, height, width + pad, pad, pad, height); // right
+
     const off = document.createElement("canvas");
-    off.width = width;
-    off.height = height;
+    off.width = extW;
+    off.height = extH;
     const octx = off.getContext("2d");
 
     octx.filter = `blur(${radius}px)`;
-    octx.drawImage(source, 0, 0, width, height);
+    octx.drawImage(ext, 0, 0);
     octx.filter = "none";
 
     /* Keep only what the mask says to keep. `destination-in` intersects what
        is already on this canvas with the alpha being painted, which is how the
-       blur arrives gradually instead of as a panel. */
-    const mask = octx.createLinearGradient(0, start, 0, copyTop);
+       blur arrives gradually instead of as a panel. Offset by `pad`, since
+       this canvas is in padded coordinates. */
+    const mask = octx.createLinearGradient(0, start + pad, 0, copyTop + pad);
     mask.addColorStop(0, "rgba(0,0,0,0)");
     mask.addColorStop(1, "rgba(0,0,0,1)");
     octx.globalCompositeOperation = "destination-in";
     octx.fillStyle = mask;
-    octx.fillRect(0, start, width, height - start);
+    octx.fillRect(0, start + pad, extW, extH - (start + pad));
     octx.globalCompositeOperation = "source-over";
 
-    target.drawImage(off, 0, 0, width, height);
+    // Crop the padding back off on the way home.
+    target.drawImage(off, pad, pad, width, height, 0, 0, width, height);
   } catch {
     /* A tainted canvas cannot be read back. The fade still runs and the card
        is still legible — it just is not frosted, which is the right way for

@@ -4264,7 +4264,7 @@ function drawStoryScreen() {
     width: W,
     height: H,
     copyTop: top,
-    fadeHeight: fadeReach(L.gradient.fadeHeight),
+    fadeHeight: blurReach(L.gradient.fadeHeight),
     radius: FADE_BLUR_RADIUS * (H / 1700),
   });
   paintBottomFade(ctx, {
@@ -4760,8 +4760,26 @@ const FADE_BLUR_RADIUS = 55;
    left alone. */
 const FADE_STRETCH = 0.6;
 
+/* The blur gets its own, shorter reach.
+
+   Sharing one number with the colour was wrong in a way the numbers hid: the
+   mask ramps 0 to 1 across the reach, so at 0.6 the picture is already
+   half-blurred a third of the way up the frame from the copy. Softening starts
+   being visible long before it is complete, which is why it read as blurring
+   from halfway up the image when the colour was correctly placed.
+
+   At 0.25 the mist begins just above the first line and is done by it. The
+   colour still wants the longer run — it has to arrive gradually or it bands —
+   but the blur does not: going from sharp to frosted quickly is what makes it
+   look like a pane of glass sitting there rather than a lens going soft. */
+const FADE_BLUR_STRETCH = 0.25;
+
 function fadeReach(layoutFade) {
   return layoutFade * FADE_STRETCH;
+}
+
+function blurReach(layoutFade) {
+  return layoutFade * FADE_BLUR_STRETCH;
 }
 
 function blurBehindCopy(target, { width, height, copyTop, fadeHeight, radius }) {
@@ -4863,7 +4881,12 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
   // photograph, a short steep one under the words.
   // How dark it is directly behind the first line of copy. Everything above
   // ramps up to this; everything below continues on from it.
-  const COPY_LINE_ALPHA = 0.78;
+  /* Raised from 0.78. Once the picture behind the words is frosted rather than
+     merely darkened, the glass has to be dark enough to be glass — a light
+     frost over a bright photograph left the first line fighting the picture
+     for contrast. The colour ramp above is brightened to match, so the panel
+     reads as dark glass with light colour in it rather than as mud. */
+  const COPY_LINE_ALPHA = 0.86;
   const above = (progress, alpha) => stopAt(progress * copyFrac, alpha);
   const below = (progress, alpha) => stopAt(copyFrac + progress * (1 - copyFrac), alpha);
 
@@ -4953,7 +4976,7 @@ function drawHero() {
     width: canvas.width,
     height: canvas.height,
     copyTop: headlineTop,
-    fadeHeight: fadeReach(L.gradient.fadeHeight),
+    fadeHeight: blurReach(L.gradient.fadeHeight),
     radius: FADE_BLUR_RADIUS * (canvas.height / 1700),
   });
   paintBottomFade(ctx, {
@@ -5653,7 +5676,7 @@ const FADE_TINT_BRIGHTNESS = 0.08;
    rather than a grey one — while still arriving exactly where it was
    specified to arrive. */
 const FADE_TINT_TOP_SATURATION = 0.85;
-const FADE_TINT_TOP_BRIGHTNESS = 0.42;
+const FADE_TINT_TOP_BRIGHTNESS = 0.58;
 
 /* What FRACTION OF THE PIXELS carry a usable colour. Below this the hue is not
    a fact about the image, it is noise — a black-and-white press photo, a snow

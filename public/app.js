@@ -4384,25 +4384,50 @@ function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom
   const focal = image.__focalPoint || { x: image.width / 2, y: image.height / 2 };
 
   ctx.save();
+
+  /* ── The backdrop, which is what stops a zoomed-out photo ending in a line ──
+
+     The zoom slider runs down to 10% while IMAGE_PAN_HEADROOM is 1.1, so below
+     about 87% the picture no longer reaches the edges of the frame. The clamp
+     below cannot save it: with the image smaller than the frame the minimum
+     runs past the maximum, and clamp() collapses to the maximum, pinning the
+     picture to the top-left. Everything under it was the flat #070707 the page
+     starts with — a hard horizontal edge across the card, which is exactly the
+     line that kept being reported and kept not being the gradient.
+
+     This layer is drawn at COVER scale with no zoom and no offset applied, so
+     it always reaches every edge whatever the sliders say. It is blurred and
+     dimmed because it is scenery, not the subject. Above about 87% zoom the
+     sharp layer covers it completely and it makes no difference to anything —
+     it only becomes visible at the point where the alternative was a black
+     band. */
+  const backdropScale = baseScale * IMAGE_PAN_HEADROOM;
+  ctx.filter = `blur(${Math.round(26 * scale)}px) brightness(52%) saturate(78%)`;
+  drawLayer(backdropScale, null);
+
   ctx.filter = filter || `blur(${Math.round(18 * scale)}px) brightness(62%) contrast(108%) saturate(72%)`;
-  drawBlurredCoverLayer(null);
-  drawBlurredCoverLayer(offset);
+  drawLayer(imageScale, null);
+  drawLayer(imageScale, offset);
   ctx.restore();
 
-  function drawBlurredCoverLayer(layerOffset) {
-    let dx = drawX + drawW / 2 - focal.x * imageScale;
-    let dy = drawY + drawH / 2 - focal.y * imageScale;
+  function drawLayer(layerScale, layerOffset) {
+    const w = image.width * layerScale;
+    const h = image.height * layerScale;
+    let dx = drawX + drawW / 2 - focal.x * layerScale;
+    let dy = drawY + drawH / 2 - focal.y * layerScale;
 
     if (layerOffset) {
       dx += layerOffset.x;
       dy += layerOffset.y;
     }
 
-    const minX = drawX + drawW - drawWidth;
-    const minY = drawY + drawH - drawHeight;
-    dx = clamp(dx, minX, drawX);
-    dy = clamp(dy, minY, drawY);
-    ctx.drawImage(image, dx, dy, drawWidth, drawHeight);
+    /* Only worth clamping while the image is bigger than the frame — that is
+       what the clamp is for, keeping a pan from dragging an edge into view.
+       Below that it has no meaning, and applying it anyway is what jammed a
+       small picture into the corner instead of leaving it centred. */
+    if (w >= drawW) dx = clamp(dx, drawX + drawW - w, drawX);
+    if (h >= drawH) dy = clamp(dy, drawY + drawH - h, drawY);
+    ctx.drawImage(image, dx, dy, w, h);
   }
 }
 

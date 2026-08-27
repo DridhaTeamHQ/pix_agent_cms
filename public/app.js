@@ -3738,10 +3738,16 @@ function paintPoster() {
     drawNavBar();
   }
 
-  // AI Enhance is only meaningful once a real background image is loaded
-  const enhanceBtn = document.getElementById("ai-enhance-btn");
-  if (enhanceBtn && !enhanceBtn.classList.contains("working")) {
-    enhanceBtn.disabled = !state.mainImage;
+  // Both AI image jobs are only meaningful once a real background image is
+  // loaded, and neither is re-enabled while the other is mid-call — one paid
+  // gpt-image request at a time, and the second would land on a picture the
+  // first is about to replace.
+  const aiWorking = document.querySelector("#ai-enhance-btn.working, #ai-expand-btn.working");
+  for (const id of ["ai-enhance-btn", "ai-expand-btn"]) {
+    const btn = document.getElementById(id);
+    if (btn && !btn.classList.contains("working")) {
+      btn.disabled = !state.mainImage || Boolean(aiWorking);
+    }
   }
 }
 
@@ -6744,84 +6750,152 @@ function setEnhanceStatus(msg, kind) {
   aiEnhanceStatus.textContent = msg || "";
 }
 
-if (aiEnhanceBtn) {
-  aiEnhanceBtn.addEventListener("click", async () => {
-    const img = state.mainImage;
-    if (!img) return;
-    // Whose picture this is. Read before the first await — see the commit below.
-    const enhanceOwner = activePage();
+const aiExpandBtn     = document.getElementById("ai-expand-btn");
+const expandAmountSel = document.getElementById("expand-amount");
 
-    aiEnhanceBtn.disabled = true;
-    aiEnhanceBtn.classList.add("working");
-    setEnhanceStatus("Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…");
+/* Two jobs, one route, one handler.
 
-    try {
-      // Snapshot the current background to a temp canvas, capped at 1536 on
-      // the long edge (gpt-image-1's max output — no point uploading more).
-      const rawW = img.naturalWidth || img.width;
-      const rawH = img.naturalHeight || img.height;
-      const scale = Math.min(1, 1536 / Math.max(rawW, rawH));
-      const tmp = document.createElement("canvas");
-      tmp.width  = Math.round(rawW * scale);
-      tmp.height = Math.round(rawH * scale);
-      tmp.getContext("2d").drawImage(img, 0, 0, tmp.width, tmp.height);
+     restore  the photograph as it is framed, with detail recovered.
+     expand   the photograph placed smaller in a wider frame, with the rest of
+              the subject and the setting drawn outward into the margin — the
+              zoom-out. A press photo cropped at the chest comes back with the
+              body; a landscape photo comes back tall enough for a 9:16 poster
+              instead of being cut to a strip by the canvas.
 
-      const blob = await new Promise(r => tmp.toBlob(r, "image/png"));
-      if (!blob) throw new Error("Couldn't read the current image.");
+   Everything around the call is identical — the snapshot, the page guard, the
+   status line, the failure path — so they share this. What differs is the mode
+   header, and what happens to the writer's framing when the picture lands. */
+const ENHANCE_MODES = {
+  restore: {
+    button: () => aiEnhanceBtn,
+    working: "Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…",
+    done: "Restored and upscaled",
+    failed: "Restore failed",
+  },
+  expand: {
+    button: () => aiExpandBtn,
+    working: "Expanding — reading how the photo is cropped, then drawing the scene outward (30–90s)…",
+    done: "Expanded and reframed",
+    failed: "Expand failed",
+  },
+};
 
-      const resp = await fetch("/api/upscale-image", {
-        method: "POST",
-        headers: {
-          "Content-Type": "image/png",
-          "X-Image-Orientation": rawW >= rawH ? "landscape" : "portrait",
-          // The selected poster ratio drives the generated image's shape —
-          // a 9:16 poster gets a portrait render (outpainted if needed).
-          "X-Poster-Ratio": state.aspectRatio || "",
-          // Story context helps the vision stage understand what the photo
-          // shows, which sharpens the "preserve exactly this" instructions.
-          "X-Headline": encodeURIComponent((state.headline || "").slice(0, 200)),
-          // How much of the model output to keep. Both upscalers manufacture
-          // roughly twice the fine detail the original had, which is what
-          // reads as a painted face; mixing back toward a plain resample is
-          // the dial for that.
-          "X-Enhance-Strength": String((state.enhanceStrength ?? 20) / 100),
-        },
-        body: blob,
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-      if (!data.image) throw new Error("No image returned.");
+async function runImageAI(mode) {
+  const spec = ENHANCE_MODES[mode];
+  const btn = spec.button();
+  const img = state.mainImage;
+  if (!img) return;
+  // Whose picture this is. Read before the first await — see the commit below.
+  const enhanceOwner = activePage();
 
-      // Swap the background for the enhanced version
-      const enhanced = new Image();
-      await new Promise((resolve, reject) => {
-        enhanced.onload = resolve;
-        enhanced.onerror = () => reject(new Error("Enhanced image failed to load."));
-        enhanced.src = data.image;
-      });
-      await ensureImageFocalPoint(enhanced);
-      /* Onto the page that was selected when Enhance was pressed. This runs
-         30-90 seconds after the click and had no page guard at all, so a
-         writer who clicked through the carousel while waiting watched the
-         slide they happened to be looking at swap to page 1's enhanced photo
-         — destroying that slide's own picture, unrecoverable when it was a
-         drag-and-drop upload. */
-      commitFieldToPage(enhanceOwner, "mainImage", enhanced);
-      renderPoster();
-      const ENGINE_LABELS = {
-        realesrgan: "Real-ESRGAN (self-hosted, free)",
-        codeformer: "CodeFormer (self-hosted, free)",
-      };
-      const engineLabel = ENGINE_LABELS[data.engine] || data.engine || "AI";
-      setEnhanceStatus(`✓ Restored and upscaled via ${engineLabel}. Re-pick a stock image to undo.`, "success");
-    } catch (err) {
-      setEnhanceStatus(`Restore failed: ${err.message}`, "error");
-    } finally {
-      aiEnhanceBtn.classList.remove("working");
-      aiEnhanceBtn.disabled = !state.mainImage;
+  btn.disabled = true;
+  btn.classList.add("working");
+  // Whichever button was NOT pressed goes down too: the pair spends the same
+  // paid call on the same picture, and the second result would overwrite the
+  // first on a page the writer has already stopped looking at.
+  const otherBtn = mode === "expand" ? aiEnhanceBtn : aiExpandBtn;
+  if (otherBtn) otherBtn.disabled = true;
+  setEnhanceStatus(spec.working);
+
+  try {
+    // Snapshot the current background to a temp canvas, capped at 1536 on
+    // the long edge (gpt-image-1's max output — no point uploading more).
+    const rawW = img.naturalWidth || img.width;
+    const rawH = img.naturalHeight || img.height;
+    const scale = Math.min(1, 1536 / Math.max(rawW, rawH));
+    const tmp = document.createElement("canvas");
+    tmp.width  = Math.round(rawW * scale);
+    tmp.height = Math.round(rawH * scale);
+    tmp.getContext("2d").drawImage(img, 0, 0, tmp.width, tmp.height);
+
+    const blob = await new Promise(r => tmp.toBlob(r, "image/png"));
+    if (!blob) throw new Error("Couldn't read the current image.");
+
+    const resp = await fetch("/api/upscale-image", {
+      method: "POST",
+      headers: {
+        "Content-Type": "image/png",
+        "X-Image-Orientation": rawW >= rawH ? "landscape" : "portrait",
+        // Read by the expand path, which renders into the poster's shape so
+        // there is somewhere for the widened scene to go. The restore path
+        // ignores it and follows the source — see sizeForRatio() in
+        // server.mjs for why asking it for the poster's shape is what
+        // produced the invented margin.
+        "X-Poster-Ratio": state.aspectRatio || "",
+        // Story context helps the vision stage understand what the photo
+        // shows, which sharpens the "preserve exactly this" instructions.
+        "X-Headline": encodeURIComponent((state.headline || "").slice(0, 200)),
+        // Which of the two jobs to run. The server defaults to restore when
+        // this is absent or unrecognised.
+        "X-Enhance-Mode": mode,
+        // How far to pull back. Only read on the expand path; sent always so
+        // the request shape does not depend on the mode.
+        "X-Expand-Amount": expandAmountSel?.value || "moderate",
+        // How much of the model output to keep. Both upscalers manufacture
+        // roughly twice the fine detail the original had, which is what
+        // reads as a painted face; mixing back toward a plain resample is
+        // the dial for that.
+        "X-Enhance-Strength": String((state.enhanceStrength ?? 20) / 100),
+      },
+      body: blob,
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (!data.image) throw new Error("No image returned.");
+
+    // Swap the background for the enhanced version
+    const enhanced = new Image();
+    await new Promise((resolve, reject) => {
+      enhanced.onload = resolve;
+      enhanced.onerror = () => reject(new Error("Enhanced image failed to load."));
+      enhanced.src = data.image;
+    });
+    await ensureImageFocalPoint(enhanced);
+    /* Onto the page that was selected when Enhance was pressed. This runs
+       30-90 seconds after the click and had no page guard at all, so a
+       writer who clicked through the carousel while waiting watched the
+       slide they happened to be looking at swap to page 1's enhanced photo
+       — destroying that slide's own picture, unrecoverable when it was a
+       drag-and-drop upload. */
+    commitFieldToPage(enhanceOwner, "mainImage", enhanced);
+
+    /* An expanded picture is a different picture — wider, with the subject
+       smaller inside it — so the zoom and pan the writer set to rescue the
+       old framing now fight the new one. A 160% zoom applied to a frame that
+       was widened precisely to stop the canvas cropping crops it again, and
+       the call is paid for and looks like it did nothing.
+
+       Reset to the unframed defaults, exactly as a freshly picked image
+       arrives (see resetImageControls / stashImageForAbsentPage), and let
+       the writer reframe from there. A restore keeps its framing: same
+       picture, same shape, so the numbers still mean what they meant. */
+    if (data.mode === "expand") {
+      commitFieldToPage(enhanceOwner, "imageOffset", { x: 0, y: 0 });
+      commitFieldToPage(enhanceOwner, "imageZoom", 100);
+      if (activePage() === enhanceOwner) {
+        syncControl(imgOffsetX, 0);
+        syncControl(imgOffsetY, 0);
+        syncControl(imgZoom, 100);
+      }
     }
-  });
+
+    renderPoster();
+    const engineLabel = data.engine || "AI";
+    setEnhanceStatus(`✓ ${spec.done} via ${engineLabel}. Re-pick a stock image to undo.`, "success");
+  } catch (err) {
+    setEnhanceStatus(`${spec.failed}: ${err.message}`, "error");
+  } finally {
+    btn.classList.remove("working");
+    // Both come back: the pair was locked together for the duration of the
+    // call, so releasing only the one that was pressed would leave the other
+    // dead until the next repaint.
+    btn.disabled = !state.mainImage;
+    if (otherBtn) otherBtn.disabled = !state.mainImage;
+  }
 }
+
+if (aiEnhanceBtn) aiEnhanceBtn.addEventListener("click", () => runImageAI("restore"));
+if (aiExpandBtn)  aiExpandBtn.addEventListener("click", () => runImageAI("expand"));
 
 /* ── Theme toggle (dark default; persisted in localStorage) ── */
 (function initThemeToggle() {

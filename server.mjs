@@ -4226,6 +4226,38 @@ const VISION_PROMPT =
   "or quote the words themselves. " +
   "Do NOT guess names. Output only the description.";
 
+/* ── Vision, for the expand path ──
+   Restoring a photograph and extending one need different things from the
+   describe stage. Restoring needs to know what is IN the frame, so the edit
+   prompt can name it and pin it down. Extending needs to know what is MISSING:
+   where the picture cuts the subject off, which way the body is oriented, and
+   what the setting does past the edge — because that is precisely the part the
+   image model has to invent, and it invents far better from a stated
+   continuation than from a blank margin.
+
+   The anatomy question is the one that matters. "A man seated, cropped at
+   mid-chest, leaning slightly forward, arms angled down toward a desk" is
+   enough for the model to draw the rest of him in the right place. Without it
+   the model guesses the pose from the shoulders alone and returns a torso that
+   does not belong to the head above it. */
+const EXPAND_VISION_PROMPT =
+  "You are assisting a photo-extension pipeline for a news organisation. " +
+  "The photograph will be widened: an image model must draw what lies just " +
+  "outside the current frame. Report, in 4-6 short sentences: " +
+  "(1) the main subject — how many people, apparent age, facial hair, glasses, " +
+  "expression, and exactly what they are wearing including colours and fabric; " +
+  "(2) WHERE the frame cuts each person off (for example 'cropped at mid-chest', " +
+  "'legs out of frame below the knee', 'left arm leaves the frame'), and the " +
+  "posture and orientation of the body — seated or standing, leaning, turned, " +
+  "which way the arms and shoulders angle; " +
+  "(3) the setting, and what plausibly continues past each edge — floor, " +
+  "seating, walls, stage, crowd, sky, furniture; " +
+  "(4) the lighting: direction, hardness and colour temperature, and the camera " +
+  "look — focal length impression, depth of field, grain. " +
+  "If text, logos or signage appear, say only WHERE they are and how large — do " +
+  "NOT transcribe or quote the words themselves. " +
+  "Do NOT guess names. Output only the description.";
+
 // The headline is deliberately NOT given to the image model.
 //
 // Image models treat a quoted string in the prompt as text to RENDER, so
@@ -4305,6 +4337,104 @@ function buildEnhancePrompt(description, _headlineNotUsed, _ratioNoLongerUsed) {
   ].filter(Boolean).join("\n");
 }
 
+/* ── Expand: the same photograph, taken from further back ──
+   This is the job the restore prompt above spends its whole length forbidding,
+   and the two must never be run through one another. Restore says "do not
+   reframe"; expand says "reframe, outward, and draw what was never
+   photographed". Which one runs is the writer's choice at the button, never a
+   heuristic — a tight portrait that wants widening and a soft wire photo that
+   wants sharpening are not distinguishable from the pixels.
+
+   It was forbidden for a reason that no longer holds. When the enhance still
+   composited — the model's output laid back over the original as a detail
+   layer — an extended frame could not be aligned with the source, so
+   outpainting printed a doubled outline and a band of invented background
+   (c59b45a, ea99e81). That compositing was removed wholesale in d8bff9c: the
+   model's output is now used exactly as it comes back. Nothing downstream
+   needs the two frames to line up any more, so the constraint that killed
+   this went with it.
+
+   What is asked for, in the order the model drops it:
+
+   - The given photograph must survive INSIDE the result, unchanged. This is
+     what fails first. Asked to widen a picture, the model will happily redraw
+     the middle of it too and return a handsome stranger wearing the right
+     shirt. input_fidelity=high is the real control; the wording exists so the
+     prompt does not argue with it.
+   - The extension is anatomy before it is scenery. A subject cropped at the
+     chest needs a torso that belongs to those shoulders, arms leaving at the
+     angle they already leave at, and hands that are hands. The vision stage
+     supplies the pose; this restates it as a brief so the model treats it as
+     an instruction rather than as background colour.
+   - No new people, no new objects of interest, no lettering. The margin is
+     continuation, not invention. This is a newsroom: a face that was never in
+     the room cannot appear in the picture, and a banner cannot grow a slogan.
+   - The seam must not be findable. Same lens, same depth of field, same grain,
+     same light — a widened photograph, not a photograph pasted onto a
+     painting. */
+const EXPAND_AMOUNTS = {
+  slight:   "Pull back a little: show roughly 25% more of the scene around the subject than the photograph currently holds.",
+  moderate: "Pull back: show roughly 50% more of the scene around the subject than the photograph currently holds.",
+  wide:     "Pull back substantially: show roughly twice as much of the scene around the subject as the photograph currently holds.",
+};
+
+function buildExpandPrompt(description, ratioLabel, amount = "moderate") {
+  const pullBack = EXPAND_AMOUNTS[amount] || EXPAND_AMOUNTS.moderate;
+  return [
+    "You are extending a REAL news photograph — the same photograph, taken",
+    "from further back with a wider lens.",
+    "",
+    description ? `CONTEXT — the photo shows: ${description}` : null,
+    "",
+    "TASK:",
+    "Place the supplied photograph smaller within the output frame and draw",
+    "the scene continuing outward from its edges, so that more of the subject",
+    "and more of the setting are visible than the photograph shows.",
+    pullBack,
+    ratioLabel
+      ? `The output frame is ${ratioLabel}. Fill it completely — the subject stays fully visible and central in interest, never cropped, stretched or distorted.`
+      : null,
+    "",
+    "THE SUPPLIED PHOTOGRAPH IS UNCHANGED:",
+    "- Everything visible in the input appears in the output exactly as it is:",
+    "  the same faces and facial structure, the same expressions, the same skin",
+    "  texture and age, the same hair, the same clothing, the same objects, the",
+    "  same light falling on them.",
+    "- Do not beautify, smooth, slim, re-light or re-pose anyone.",
+    "- Do not shift, rotate or straighten what you were given. It is the middle",
+    "  of the new picture; you are drawing around it.",
+    "",
+    "WHAT YOU DRAW IN THE NEW MARGIN:",
+    "- Anatomy first. Where the frame cuts a person off, continue that person",
+    "  correctly: the torso, arms, hands, lap, legs and feet that belong to the",
+    "  visible head, shoulders and posture — in the clothing already visible,",
+    "  continuing its colour, fabric and folds.",
+    "- Then the setting: the same room, stage, street, seating, floor, wall or",
+    "  sky continuing naturally past each edge, at the correct perspective and",
+    "  scale.",
+    "- Match the photograph exactly: the same lens character and perspective,",
+    "  the same depth of field and focus falloff, the same grain and noise, the",
+    "  same light direction, hardness and colour temperature.",
+    "",
+    "ABSOLUTE RULES:",
+    "- Add NO new people. No extra faces, no bystanders, no crowd members the",
+    "  photograph does not already show at its edge.",
+    "- Add NO new objects of interest — nothing a caption would have to",
+    "  mention. This is journalism, not art.",
+    "- ADD NO TEXT OR GRAPHICS of any kind. No headline, caption, title, label,",
+    "  subtitle, watermark, banner, lower-third, scoreboard or logo. Write no",
+    "  words anywhere in the image.",
+    "- Text physically present in the photograph (signage, jerseys, banners) is",
+    "  preserved exactly as it already appears — never invented, completed,",
+    "  translated or extended into the new margin.",
+    "- No visible seam, border, frame, vignette or change in sharpness where",
+    "  the original photograph ends and the drawn margin begins.",
+    "",
+    "The result is one clean, believable press photograph of the same moment,",
+    "shot wider. No lettering, no collage, no illustration.",
+  ].filter((line) => line !== null).join("\n");
+}
+
 /* The SOURCE's shape, never the poster's.
 
    Asking for the poster ratio is what produced the overlay. A landscape photo
@@ -4325,7 +4455,35 @@ function sizeForRatio(_posterRatioNoLongerUsed, orientationHint) {
   return "auto";
 }
 
-async function describeImageForEnhance(buffer, mime) {
+/* The POSTER's shape — the opposite choice from sizeForRatio() above, and
+   deliberately so.
+
+   Restore asks for the source's shape because any difference forces the model
+   to invent. Expand asks for the poster's shape because the invention is the
+   whole point: a landscape photograph requested at 1024x1536 has to grow
+   downward, and downward is where the rest of a seated subject is. Asking for
+   the source's shape here would leave nothing to extend into, and the button
+   would hand back the picture it was given.
+
+   These are gpt-image's three output shapes; there is no 4:5 or 9:16, so each
+   poster ratio maps to the nearest one and the poster canvas trims the rest —
+   off a frame that now has margin to spare, which is the point of the
+   exercise. */
+function sizeForExpand(ratio, orientationHint) {
+  switch (ratio) {
+    case "9:16":
+    case "4:5":  return "1024x1536";
+    case "1:1":  return "1024x1024";
+    case "16:9": return "1536x1024";
+  }
+  // No poster ratio supplied: widen within the source's own orientation
+  // rather than guess at a shape the writer never chose.
+  if (orientationHint === "landscape") return "1536x1024";
+  if (orientationHint === "portrait")  return "1024x1536";
+  return "auto";
+}
+
+async function describeImageForEnhance(buffer, mime, visionPrompt = VISION_PROMPT) {
   try {
     const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -4339,7 +4497,7 @@ async function describeImageForEnhance(buffer, mime) {
         messages: [{
           role: "user",
           content: [
-            { type: "text", text: VISION_PROMPT },
+            { type: "text", text: visionPrompt },
             { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
           ],
         }],
@@ -4388,6 +4546,28 @@ async function handleUpscaleImage(req, res) {
     const mime = req.headers["content-type"]?.includes("jpeg") ? "image/jpeg" : "image/png";
     const headline = decodeURIComponent(req.headers["x-headline"] || "").trim().slice(0, 200);
 
+    /* Two jobs behind one route, chosen by the caller.
+
+         restore  keep the framing, recover detail — the default, and what
+                  every existing caller gets by sending no header at all.
+         expand   keep the photograph, widen the frame, draw the rest of the
+                  subject and setting outward into it.
+
+       They differ in three places below — the vision prompt, the requested
+       size and the edit prompt — and in nothing else, so they share the
+       transport, the model fallback, the quality rule and the error handling.
+
+       An unrecognised value falls back to restore rather than 400ing. This is
+       a header on a route that already works; a client sending something odd
+       should get the old behaviour, not a failure. */
+    const mode = (req.headers["x-enhance-mode"] || "restore").toString().toLowerCase() === "expand"
+      ? "expand"
+      : "restore";
+    // How far to pull back. Prompt-level, so it is a request rather than a
+    // measurement — the model lands near it, not on it.
+    const rawAmount = (req.headers["x-expand-amount"] || "moderate").toString().toLowerCase();
+    const expandAmount = ["slight", "moderate", "wide"].includes(rawAmount) ? rawAmount : "moderate";
+
     /* One engine: gpt-image restores the photograph.
 
        There used to be three paths here — a self-hosted Real-ESRGAN service,
@@ -4417,12 +4597,18 @@ async function handleUpscaleImage(req, res) {
 
     // else fall through to gpt-image-1.5 ↓
 
-    // The SELECTED POSTER RATIO drives the output size, so a 9:16 poster
-    // gets a portrait image (outpainted if the source is landscape) instead
-    // of a landscape image that the canvas then crops to shreds.
+    /* Which shape to ask for is the mode's decision, and the two want
+       opposite things — see sizeForRatio() and sizeForExpand().
+
+       Restore follows the SOURCE: any other shape forces the model to invent
+       margin it was not asked for. Expand follows the POSTER: the margin is
+       what the writer pressed the button for, and a 9:16 poster is where a
+       landscape photograph most needs the room. */
     const posterRatio = (req.headers["x-poster-ratio"] || "").toString();
     const sizeHint = (req.headers["x-image-orientation"] || "").toString();
-    const size = sizeForRatio(posterRatio, sizeHint);
+    const size = mode === "expand"
+      ? sizeForExpand(posterRatio, sizeHint)
+      : sizeForRatio(posterRatio, sizeHint);
 
     /* HIGH, deliberately. This is the setting that decides whether skin comes
        back as skin or as clay.
@@ -4446,14 +4632,22 @@ async function handleUpscaleImage(req, res) {
 
     const t0 = Date.now();
 
-    // Stage 1 — understand the image (cheap, fails soft)
-    const description = await describeImageForEnhance(buffer, mime);
+    // Stage 1 — understand the image (cheap, fails soft).
+    // Expand asks a different question: not "what is in this picture" but
+    // "where does it cut off, and what continues past the edge".
+    const description = await describeImageForEnhance(
+      buffer,
+      mime,
+      mode === "expand" ? EXPAND_VISION_PROMPT : VISION_PROMPT
+    );
     if (description) console.log(`✓ vision context (${Date.now() - t0}ms): ${description.slice(0, 140)}…`);
 
     // Stage 2 — context-aware enhancement.
     // gpt-image-1.5 first; automatic fallback to gpt-image-1 if the account
     // doesn't have the newer model.
-    const prompt = buildEnhancePrompt(description, headline, posterRatio);
+    const prompt = mode === "expand"
+      ? buildExpandPrompt(description, posterRatio, expandAmount)
+      : buildEnhancePrompt(description, headline, posterRatio);
     const callEdit = async (model) => {
       const form = new FormData();
       form.append("model", model);
@@ -4492,7 +4686,7 @@ async function handleUpscaleImage(req, res) {
       return;
     }
 
-    console.log(`✓ AI enhance done in ${Date.now() - t0}ms (${modelUsed}, ${size}, quality=${quality})`);
+    console.log(`✓ AI ${mode} done in ${Date.now() - t0}ms (${modelUsed}, ${size}, quality=${quality}${mode === "expand" ? `, ${expandAmount}` : ""})`);
     /* `quality` and `size` come back with the image so the setting can be
        checked from outside the box. IMAGE_QUALITY is an environment variable
        and an override in Railway silently reinstates the clay — without this
@@ -4503,6 +4697,10 @@ async function handleUpscaleImage(req, res) {
       engine: modelUsed,
       quality,
       size,
+      // Which job ran. The two return pictures that differ in framing, not
+      // just in sharpness, so the caller has to know which one it got before
+      // it decides whether the writer's existing zoom and pan still apply.
+      mode,
     });
   } catch (err) {
     console.error("✗ upscale-image error:", err);

@@ -630,6 +630,37 @@
             </label>
             <small class="helper-text" id="enhance-strength-hint">20% — raise this only if the image still looks soft.</small>
             <small class="helper-text">Restores and upscales the photograph — it does not redesign it. Uses paid AI credits. Runs only when you click.</small>
+
+            <!-- Expand & Reframe — the other AI job, and deliberately its own
+                 button rather than an option on the one above.
+
+                 Restore keeps the framing and recovers detail. Expand keeps
+                 the photograph and draws outward from it: the rest of a
+                 subject the photographer cropped at the chest, the rest of the
+                 room, enough margin that a landscape press photo can sit on a
+                 9:16 poster without the canvas cutting the story out of it.
+
+                 Nothing in the pixels says which one a picture wants — a tight
+                 portrait that needs widening and a soft wire photo that needs
+                 sharpening look the same to a heuristic — so the choice is the
+                 reviewer's, made once, at the moment they can see the poster.
+                 Both spend the same paid call, so neither is the other's
+                 fallback. -->
+            <div style="margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.08);">
+              <button type="button" id="ai-expand-btn" class="btn-ai" disabled>
+                <svg class="ai-spark" width="14" height="14" aria-hidden="true"><use href="#i-spark"/></svg>
+                Expand &amp; Reframe
+              </button>
+              <label class="field" style="margin-top:10px;">
+                <span class="field-label">Pull back</span>
+                <select id="expand-amount">
+                  <option value="slight">A little — about 25% more scene</option>
+                  <option value="moderate" selected>Moderate — about 50% more scene</option>
+                  <option value="wide">Wide — roughly twice the scene</option>
+                </select>
+              </label>
+              <small class="helper-text">Zooms out. Keeps the photograph and generates what continues past its edges — the rest of the body, the rest of the setting — to fill the poster's shape. For a photo cropped too tight. Uses paid AI credits.</small>
+            </div>
             <p id="ai-enhance-status" class="status-text" role="status" aria-live="polite"></p>
           </div></div>
         </div>

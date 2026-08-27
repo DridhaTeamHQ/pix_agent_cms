@@ -4649,10 +4649,20 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight, opacity =
   const above = (progress, alpha) => stopAt(progress * copyFrac, alpha);
   const below = (progress, alpha) => stopAt(copyFrac + progress * (1 - copyFrac), alpha);
 
+  /* The upper ramp is deliberately slow. Weight it any earlier and the ink
+     starts creeping over the subject — a face at two-thirds depth was coming
+     back murky while the same depth on a headline card was still clear
+     photograph. Holding it near-transparent through the first half of the
+     fade keeps the picture, and moves the darkening down toward the foot
+     where the copy actually needs it.
+
+     The value AT the copy line, and every value below it, is unchanged: that
+     is what the text is read against, and it was already right. This only
+     alters what happens above the words. */
   stopAt(0, 0);
-  above(0.22, 0.03);
-  above(0.48, 0.13);
-  above(0.72, 0.34);
+  above(0.22, 0.01);
+  above(0.48, 0.05);
+  above(0.72, 0.20);
   above(1.00, 0.78);
   below(0.38, 0.84);
   below(0.72, 0.94);

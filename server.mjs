@@ -4924,15 +4924,57 @@ async function handleUpscaleImage(req, res) {
        cost either way — a forced mode is not cheaper, it is just less
        advised. */
     const plan = await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
-    const mode = requestedMode === "auto" ? plan.mode : requestedMode;
+    const wantedMode = requestedMode === "auto" ? plan.mode : requestedMode;
+
+    /* ── Expand is off, and this is the gate ──────────────────────────────
+       Expand shipped today and went straight out with a picture-in-picture
+       in it: two published posters came back with the source photograph
+       rendered as a framed print — a hard white border and all — sitting in
+       the middle of a scene the model invented around it.
+
+       It is not a wording bug. Three things make it structural:
+
+         1. buildExpandPrompt's TASK line asks the model to "place the
+            supplied photograph smaller within the output frame". With no
+            mask, the most literal reading of that is to draw the photograph
+            as an object inside the picture, and that is what came back. The
+            only thing arguing otherwise is a NEGATIVE line thirty lines
+            below ("no visible seam, border, frame, vignette"), and naming a
+            frame is as likely to cue one as forbid it.
+         2. No mask and no padded canvas is sent, so images/edits is not
+            filling a margin — it regenerates the whole canvas conditioned on
+            the input. Nothing pins the original's pixels in place.
+         3. Expand asks for the POSTER's ratio, which is the exact condition
+            sizeForRatio's own comment below already identifies as "what
+            produced the overlay" the last time this happened.
+
+       The fix for (2) is real outpainting: pad the source onto a transparent
+       canvas at the target size in the browser, where the decoded image
+       already is, and send image + mask so the model can only paint the
+       margin. That is the follow-up, and it needs verifying against real
+       gpt-image calls before it goes anywhere near a published card — which
+       is the step expand skipped.
+
+       Until then the route resolves every request to restore. The planner
+       still runs: it is where `description` and `subject` come from, and the
+       restore prompt is built on them. Only its verdict is dropped. */
+    const mode = "restore";
+    const expandSuppressed = wantedMode === "expand";
     const expandAmount = requestedMode === "auto" ? plan.amount : requestedAmount;
-    const decidedBy = requestedMode === "auto" ? plan.decidedBy : "caller";
-    const reason = requestedMode === "auto" ? plan.reason : "";
+    const decidedBy = expandSuppressed ? "expand-disabled" : (requestedMode === "auto" ? plan.decidedBy : "caller");
+    /* Written for the reviewer, not the log. They pressed one button on a
+       photograph the planner judged too wide for the poster, and they are
+       owed the reason it came back at the same framing anyway. */
+    const reason = expandSuppressed
+      ? "kept the framing — zoom-out is switched off while it is rebuilt"
+      : (requestedMode === "auto" ? plan.reason : "");
     const { subject, description } = plan;
 
     console.log(
       `✓ plan (${Date.now() - t0}ms): ${subject} → ${mode}` +
-      `${mode === "expand" ? ` / ${expandAmount}` : ""} (${decidedBy})` +
+      // Say when a verdict was overruled, so the logs do not read as though
+      // the planner chose restore on the merits.
+      `${expandSuppressed ? ` (wanted expand / ${expandAmount} — suppressed)` : ` (${decidedBy})`}` +
       `${reason ? ` — ${reason}` : ""}`
     );
     if (description) console.log(`✓ vision context: ${description.slice(0, 140)}…`);

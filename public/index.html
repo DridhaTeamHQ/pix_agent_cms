@@ -637,37 +637,27 @@
                It is now, in the same call that was already being paid for, so
                the judgement costs nothing and the reviewer presses once.
 
-               The select below is an OVERRIDE, not the normal path. A reviewer
-               who disagrees with a verdict forces the other job on the next
-               press rather than arguing with it. Pull back appears only when
-               they have forced expand, because on Auto the stage that picks
-               the job picks the distance too. -->
+               There is one job again. Expand is disabled at the route — it
+               was returning the photograph as a framed print inside a scene
+               the model drew around it, because it asks for the reframe in
+               words and sends no mask to hold the original in place. The
+               planner still runs, for the description the restore prompt is
+               built on; only its verdict is dropped. See the gate in
+               server.mjs for what has to be true before it comes back. -->
             <button type="button" id="ai-enhance-btn" class="btn-ai" disabled>
               <svg class="ai-spark" width="14" height="14" aria-hidden="true"><use href="#i-spark"/></svg>
-              AI Enhance
+              Restore &amp; Upscale
             </button>
-            <label class="field" style="margin-top:10px;">
-              <span class="field-label">Job</span>
-              <select id="enhance-mode">
-                <option value="auto" selected>Auto — let the AI decide</option>
-                <option value="restore">Restore &amp; Upscale — keep the framing</option>
-                <option value="expand">Expand &amp; Reframe — zoom out</option>
-              </select>
-            </label>
-            <label class="field" id="expand-amount-field" style="margin-top:10px;" hidden>
-              <span class="field-label">Pull back</span>
-              <select id="expand-amount">
-                <option value="slight">A little — about 25% more scene</option>
-                <option value="moderate" selected>Moderate — about 50% more scene</option>
-                <option value="wide">Wide — roughly twice the scene</option>
-              </select>
-            </label>
+            <!-- Job and Pull back are gone with expand. app.js reads both with
+                 optional chaining and falls back to "auto", which the server
+                 now resolves to restore, so their absence is the safe state.
+                 They come back when expand does — with a mask behind it. -->
             <label class="slider-container" style="margin-top:10px;">
               <span class="slider-label">Strength</span>
               <input type="range" id="enhance-strength" min="0" max="100" step="5" value="20" />
             </label>
             <small class="helper-text" id="enhance-strength-hint">20% — raise this only if the image still looks soft.</small>
-            <small class="helper-text" id="enhance-mode-hint">Reads the photograph first, then either recovers detail or zooms out and generates what continues past its edges — whichever it needs, and it says which it chose. Uses paid AI credits. Runs only when you click.</small>
+            <small class="helper-text" id="enhance-mode-hint">Reads the photograph first, then recovers detail at the framing you set. It does not reframe, zoom out or generate anything past the edges. Uses paid AI credits. Runs only when you click.</small>
             <p id="ai-enhance-status" class="status-text" role="status" aria-live="polite"></p>
           </div></div>
         </div>

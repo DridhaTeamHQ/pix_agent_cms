@@ -7127,7 +7127,7 @@ const ENHANCE_LABELS = {
 };
 
 const ENHANCE_WORKING = {
-  auto:    "Reading the photograph, deciding what it needs, then running it (30–90s)…",
+  auto:    "Reading the photograph, then recovering detail at your framing (30–90s)…",
   restore: "Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…",
   expand:  "Expanding — reading how the photo is cropped, then drawing the scene outward (30–90s)…",
 };

@@ -4835,8 +4835,13 @@ const GLASS = (window.GLASS = Object.assign({
      photograph. That is the whole rule: a warm pitch gives H 33, a blue
      stadium H 215, and every card is otherwise identical, so a set of slides
      reads as one design rather than as a colour effect applied per picture. */
-  hue: 33,          // #17130F, with the saturation and brightness below.
-  saturation: 0.35, // FIXED. From the picker.
+  /* Neutral. The panel was #17130F — hue 33 at saturation 35 — and on a
+     photograph with no warm element in it that reads as an unexplained brown
+     wash rather than as glass. Saturation 0 makes it a true black tint: the
+     hue is kept only so the knob still exists for a deliberate warm or cool
+     panel later. Brightness stays at the 9 from the picker. */
+  hue: 33,
+  saturation: 0,    // 0 = neutral black. 0.35 was the brown.
   brightness: 0.09, // FIXED. From the picker.
 
   /* One colour on every card, rather than the hue read from each photograph.
@@ -4870,7 +4875,7 @@ const GLASS = (window.GLASS = Object.assign({
 
   refract: 0.022,   // how far the glass bends the picture, as a share of width
   refractStrips: 56,// depth resolution of the bend
-  sheen: 0.04,      // a breath of white along the leading edge
+  reach: 2.2,       // multiplies the caller's fadeHeight; the dissolve length
 
   /* The fill is 85% of a near-black, so it does the darkening the gradient
      used to. Left at 0.85 the two would stack to near-opaque and the
@@ -4879,7 +4884,13 @@ const GLASS = (window.GLASS = Object.assign({
 }, window.GLASS));
 
 function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 1 }) {
-  const start = Math.max(0, copyTop - fadeHeight);
+  /* The glass gets a longer run-up than the caller's fadeHeight gives it.
+     blurReach() hands over 149px on a 1700px card, and 149px is enough to
+     ARRIVE in but not enough to DISSOLVE in: the picture goes from sharp to
+     frosted inside a ninth of the card and the boundary is findable even
+     when the alpha curve under it is perfectly smooth. */
+  const reach = fadeHeight * GLASS.reach;
+  const start = Math.max(0, copyTop - reach);
   const span = height - start;
   if (span <= 0) return;
   const copyFrac = Math.min(1, Math.max(0, (copyTop - start) / span));
@@ -5043,9 +5054,19 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
   g.globalCompositeOperation = "destination-in";
   const mask = g.createLinearGradient(0, 0, 0, glass.height);
   const at = (p, a) => mask.addColorStop(Math.min(1, Math.max(0, p)), `rgba(0,0,0,${a})`);
-  for (let i = 0; i <= 12; i++) {
-    const t = i / 12;
-    // Smoothstep: no corner at either end, so the glass has no findable top.
+  /* Sampled at sixty-four points, not thirteen.
+
+     addColorStop interpolates LINEARLY between stops, so a curve described by
+     thirteen of them is thirteen straight segments with a change of slope at
+     every join — and the eye resolves a change in slope far more readily than
+     a change in value. That is Mach banding, and it is why the bottom fade in
+     this same file samples its curve forty-eight times rather than placing
+     four stops by hand. The glass had the same defect and showed it as a
+     findable horizontal edge where the frost begins. */
+  const MASK_SAMPLES = 64;
+  for (let i = 0; i <= MASK_SAMPLES; i++) {
+    const t = i / MASK_SAMPLES;
+    // Smoothstep: zero slope at both ends, so it has no top and no shoulder.
     at(t * copyFrac, t * t * (3 - 2 * t));
   }
   at(copyFrac, 1);
@@ -5059,19 +5080,11 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
   target.drawImage(glass, 0, 0, glass.width, glass.height, 0, start, width, span);
   target.globalAlpha = prevAlpha;
 
-  /* A breath of white along the leading edge. Real glass catches light where
-     it begins; without it the frost has no thickness and reads as a blur
-     someone applied rather than as a surface. Kept under a twentieth so it is
-     felt and not seen. */
-  if (GLASS.sheen > 0) {
-    const edge = Math.max(1, Math.round(span * 0.06));
-    const sheen = target.createLinearGradient(0, start + copyFrac * span - edge, 0, start + copyFrac * span + edge);
-    sheen.addColorStop(0, "rgba(255,255,255,0)");
-    sheen.addColorStop(0.5, `rgba(255,255,255,${(GLASS.sheen * opacity).toFixed(3)})`);
-    sheen.addColorStop(1, "rgba(255,255,255,0)");
-    target.fillStyle = sheen;
-    target.fillRect(0, start + copyFrac * span - edge, width, edge * 2);
-  }
+  /* The sheen that used to sit here is gone. It drew a white band across the
+     full width at the copy line to suggest the thickness of a glass edge, and
+     on a dark photograph that is not a suggestion of thickness, it is a
+     horizontal line drawn on the card — which is the one thing this treatment
+     must not do. */
 }
 
 function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFade, opacity = 1 }) {

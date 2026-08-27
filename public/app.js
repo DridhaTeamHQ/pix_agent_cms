@@ -4690,9 +4690,42 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight, opacity =
     const t = i / RAMP_SAMPLES;
     above(t, COPY_LINE_ALPHA * t ** 2);
   }
-  below(0.38, 0.84);
-  below(0.72, 0.94);
-  below(1.00, 1.00);
+
+  /* ── The join, which is where the line actually was ──
+
+     Everything above arrives at the copy line still climbing hard: a
+     quadratic over `fadeHeight` is gaining about 0.0047 alpha per pixel by
+     the time it gets there. What used to follow was 0.78 to 0.84 spread over
+     the next couple of hundred pixels — roughly 0.0003 per pixel, seventeen
+     times slower. Alpha was continuous across that seam, so no measurement of
+     VALUE ever showed a step, and the ramp above it was smooth to within two
+     levels of 255. But the eye reads the second derivative, and a
+     seventeen-fold change in slope is a Mach band: a hard line, drawn exactly
+     along the top of the copy.
+
+     It hid on the poster page because a three-line headline runs the width of
+     the frame and covers the seam. This card's heading is one short word, so
+     the join ran out into flat blue on both sides of it with nothing over it.
+
+     So the lower half now LEAVES at the same slope the upper half arrives
+     with, and eases to solid from there. `runway` is the distance that takes:
+     for a quadratic easing out to 1.0, twice the remaining alpha divided by
+     the incoming slope. Matching the slope is the whole point — it is what
+     makes the curve C1 continuous through the join, and a curve with no
+     corner has nothing for the eye to find. */
+  const incomingSlope = (2 * COPY_LINE_ALPHA) / fadeHeight;      // alpha per px
+  const remaining = 1 - COPY_LINE_ALPHA;
+  const belowSpan = height - copyTop;
+  const runway = Math.min(belowSpan, (2 * remaining) / incomingSlope);
+
+  const TAIL_SAMPLES = 16;
+  for (let i = 1; i <= TAIL_SAMPLES; i++) {
+    const x = (i / TAIL_SAMPLES) * runway;              // px below the copy line
+    const k = 1 - x / runway;
+    stopAt((copyTop - start + x) / span, 1 - remaining * k * k);
+  }
+  // Solid the rest of the way down.
+  stopAt(1, 1);
 
   target.fillStyle = grad;
   target.fillRect(0, start, width, span);

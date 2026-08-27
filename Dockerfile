@@ -1,4 +1,4 @@
-# ── Pix Post Builder — app + video pipeline in one container ──
+# ── PIXIE — app + video pipeline in one container ──
 #
 # Node serves the frontend and every /api/* route, and shells out to ffmpeg
 # and yt-dlp for the Slide 2 video feature. These used to be a separate

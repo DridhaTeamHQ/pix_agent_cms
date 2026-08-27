@@ -1,4 +1,4 @@
-# Deploying Pix Post Builder
+# Deploying PIXIE
 
 ## Architecture
 

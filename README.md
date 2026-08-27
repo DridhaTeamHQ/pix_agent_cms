@@ -1,4 +1,4 @@
-# Pix Post Builder
+# PIXIE
 
 This project includes a local frontend for creating fixed-style 9:16 news posts and a simple built-in scraper.
 

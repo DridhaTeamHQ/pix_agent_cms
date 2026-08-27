@@ -1,4 +1,4 @@
-/* ── Pix Post Builder — Scrape + Edit ── */
+/* ── PIXIE — Scrape + Edit ── */
 
 const canvas = document.getElementById("post-canvas");
 // `ctx` is `let` (not const) so renderToHighResCanvas() can temporarily swap

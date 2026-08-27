@@ -309,7 +309,7 @@ const server = http.createServer(async (req, res) => {
   if (apiPath.startsWith("/api/") && !PUBLIC_API_ROUTES.has(apiPath)) {
     const user = await currentUser(req);
     if (!user) {
-      sendJson(res, 401, { error: "Sign in to use Pix." });
+      sendJson(res, 401, { error: "Sign in to use PIXIE." });
       return;
     }
     // 403, not 401: the session is fine, the role is not. Reporting this as
@@ -561,7 +561,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, () => {
-  console.log(`Pix Post Builder running at http://localhost:${port}`);
+  console.log(`PIXIE running at http://localhost:${port}`);
 });
 
 // Railway sends SIGTERM on redeploy. Without this the process is killed

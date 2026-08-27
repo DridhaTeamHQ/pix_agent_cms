@@ -4743,9 +4743,23 @@ function drawBackground() {
 /* Matched to the fade's own reach so the two cannot drift apart, and scaled
    off the frame so a 1080-wide export is blurred by the same amount a 920
    preview is rather than a fifth less. */
-/* Against the 1700px reference frame, so a 1080-wide export is misted the same
-   amount a 920 preview is rather than a fifth less. */
-const FADE_BLUR_RADIUS = 12;
+/* Against the 1700px reference frame, so a 1080-wide export is treated the
+   same amount a 920 preview is rather than a fifth less. */
+const FADE_BLUR_RADIUS = 7;
+
+/* Smoked glass, which is not the same thing as more blur.
+
+   Blur alone only makes a photograph soft; the picture is still fully there,
+   still as colourful and as contrasty, just out of focus. Smoked glass reads
+   the way it does because it takes the LIFE out of what is behind it — colour
+   drains, darks and lights pull toward each other — and a little softening
+   comes along with that rather than being the whole effect.
+
+   So the blur drops and these do the work instead. Saturation first, because
+   that is what separates smoke from fog: fog is white and hides things,
+   smoke is grey and drains them. */
+const FADE_GLASS_SATURATE = 0.55;
+const FADE_GLASS_CONTRAST = 0.86;
 
 /* How far above the first line any of this reaches, as a multiple of the
    layout's fadeHeight.
@@ -4824,7 +4838,7 @@ function blurBehindCopy(target, { width, height, copyTop, fadeHeight, radius }) 
     off.height = extH;
     const octx = off.getContext("2d");
 
-    octx.filter = `blur(${radius}px)`;
+    octx.filter = `blur(${radius}px) saturate(${FADE_GLASS_SATURATE}) contrast(${FADE_GLASS_CONTRAST})`;
     octx.drawImage(ext, 0, 0);
     octx.filter = "none";
 

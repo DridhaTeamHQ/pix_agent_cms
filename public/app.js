@@ -530,6 +530,12 @@ document.fonts.ready.then(async () => {
   // at first paint would size the bar wrong.
   try {
     await document.fonts.load("600 49px 'Roboto Serif'");
+    /* The story slide measures its heading at 700 and wraps its body at 500,
+       and a face is not fetched until something asks for it. Warming only 600
+       meant the first paint wrapped both against a fallback and re-broke the
+       lines once the real faces arrived. */
+    await document.fonts.load("700 46px 'Roboto Serif'");
+    await document.fonts.load("500 41px 'Roboto Serif'");
     await document.fonts.load(TAG_FONT);
   } catch (e) { /* font may already be loaded */ }
   await waitForImage(defaultMain);
@@ -4139,10 +4145,19 @@ function drawPixTextScreen() {
    pick a height, and the reference slides do not agree on one — some are
    nearly full-photo, some are half. The gradient reads as either, and it
    never leaves a bare strip when a portrait image cannot fill a band. */
+/* Type is specified against the 382-wide card the design is drawn on, and
+   stored here already multiplied by 920/382 = 2.4084 — the reference frame
+   every other number in this file uses. Both are written out so a value can
+   be checked against the design without redoing the arithmetic:
+
+     heading      19px   / 26px  line   ->  45.8 / 62.6
+     description  16.8px / 26.8px line  ->  40.5 / 64.5 */
 const STORY = {
-  headingSize: 44,       // against the 920x1700 reference frame
-  bodySize: 46,
-  bodyLineHeight: 62,
+  headingSize: 45.8,       // 19px, Roboto Serif Bold
+  headingLineHeight: 62.6, // 26px
+  maxHeadingLines: 3,
+  bodySize: 40.5,          // 16.8px, Roboto Serif Medium
+  bodyLineHeight: 64.5,    // 26.8px
   /* Raised from 7 once typed line breaks started counting: a short list burns
      a line per item, so the old cap cut off copy that fitted the frame fine.
      Ten still clears the picture — ten lines plus a heading leaves the block
@@ -4159,10 +4174,11 @@ function storyHeadingText() {
      and an untouched page looked finished when it was not. Empty means empty:
      the heading is simply not drawn, and the body moves up to fill the space.
 
-     Whitespace is flattened because the heading is drawn as one line: the
-     accent box is measured across a single run, so a typed break would put
-     the highlight in the wrong place rather than start a second row. Breaks
-     belong in the body. */
+     Whitespace is flattened so the heading breaks on WIDTH and nothing else.
+     It wraps now — it did not when this was written — but a typed newline in
+     a two-line kicker gives a ragged break that the column width did not ask
+     for, and the same heading then sets differently on a 4:5 card than on a
+     9:16 one. Breaks belong in the body. */
   return (state.storyHeading || "").replace(/\s+/g, " ").trim();
 }
 
@@ -4177,46 +4193,87 @@ function storyBodyText() {
    block there fights the picture instead of sitting on it — so the same
    [bracket] markup paints the WORDS accent-blue and leaves the rest white.
    Marked and unmarked words therefore differ by colour, not by background. */
-function drawStoryHeading(text, left, baselineTop, fontSize, s) {
-  if (!text) return baselineTop;
-  ctx.save();
-  ctx.font = `600 ${Math.round(fontSize)}px 'Roboto Serif', 'Poppins', serif`;
-  ctx.textBaseline = "top";
+/* The heading's words, with their highlight state and their line breaks.
 
-  // Which words fall inside a highlighted run.
+   Split from the drawing because the layout has to know how many lines the
+   heading takes BEFORE it can place the block: the whole slide is laid out
+   from the foot upward, so a heading that wraps to two lines pushes
+   everything above it, and measuring during the draw would be too late.
+
+   Wrapping is done over the words with the bracket characters already
+   stripped, not over the raw string. Measuring the raw text would count
+   characters that are never drawn and break the line early. */
+function storyHeadingLayout(text, maxWidth, fontSize) {
+  if (!text) return [];
+  ctx.save();
+  ctx.font = `700 ${Math.round(fontSize)}px 'Roboto Serif', 'Poppins', serif`;
+
   const words = [];
   let open = false;
   text.split(" ").forEach((rawWord) => {
     const opening = HIGHLIGHT_OPEN_CHAR.test(rawWord);
     const closing = HIGHLIGHT_CLOSE_CHAR.test(rawWord);
     if (opening) open = true;
-    words.push({ text: rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, ""), marked: open });
+    const clean = rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, "");
+    if (clean.length) words.push({ text: clean, marked: open });
     if (closing) open = false;
   });
 
-  /* No brackets anywhere means the writer wants the whole heading marked — on
-     this layout the accent IS the heading treatment, and a plain white line
-     reads as a stray sentence rather than a kicker. */
-  if (!words.some((w) => w.marked)) words.forEach((w) => { w.marked = true; });
+  const space = ctx.measureText(" ").width;
+  const lines = [];
+  let line = [];
+  let width = 0;
+  for (const word of words) {
+    const w = ctx.measureText(word.text).width;
+    const next = line.length ? width + space + w : w;
+    if (line.length && next > maxWidth) {
+      lines.push(line);
+      line = [word];
+      width = w;
+      if (lines.length >= STORY.maxHeadingLines) break;
+    } else {
+      line.push(word);
+      width = next;
+    }
+  }
+  if (line.length && lines.length < STORY.maxHeadingLines) lines.push(line);
 
-  /* The shadow does the work the block used to: coloured text on a photograph
-     needs something to lift it off whatever happens to be behind it. */
+  ctx.restore();
+  return lines;
+}
+
+function drawStoryHeading(lines, left, top, fontSize, lineHeight, s) {
+  if (!lines.length) return top;
+  ctx.save();
+  ctx.font = `700 ${Math.round(fontSize)}px 'Roboto Serif', 'Poppins', serif`;
+  ctx.textBaseline = "top";
+
+  /* The shadow does the work the block used to: text on a photograph needs
+     something to lift it off whatever happens to be behind it. */
   ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
   ctx.shadowBlur = 14 * s;
   ctx.shadowOffsetY = 4 * s;
 
   const space = ctx.measureText(" ").width;
-  let cursor = left;
-  for (const word of words) {
-    if (!word.text.length) continue;
-    ctx.fillStyle = word.marked ? state.accent : "#ffffff";
-    ctx.fillText(word.text, cursor, baselineTop);
-    cursor += ctx.measureText(word.text).width + space;
-  }
+  lines.forEach((line, row) => {
+    let cursor = left;
+    const y = top + row * lineHeight;
+    for (const word of line) {
+      /* White unless the writer bracketed it.
+
+         This used to read "no brackets anywhere means mark the whole
+         heading", which made every unmarked heading accent-blue — a blue
+         sentence across a photograph with nothing marking it as a kicker.
+         Plain is now plain, and the accent stays available for the words
+         somebody actually chooses to mark. */
+      ctx.fillStyle = word.marked ? state.accent : "#ffffff";
+      ctx.fillText(word.text, cursor, y);
+      cursor += ctx.measureText(word.text).width + space;
+    }
+  });
 
   ctx.restore();
-
-  return baselineTop + fontSize;
+  return top + lines.length * lineHeight;
 }
 
 function drawStoryScreen() {
@@ -4243,13 +4300,21 @@ function drawStoryScreen() {
      different amounts of copy still line up as a set when swiped. */
   ctx.textBaseline = "top";
   const headingSize = STORY.headingSize * s;
+  const headingLine = STORY.headingLineHeight * s;
   const bodySize = STORY.bodySize * s;
   const bodyLine = STORY.bodyLineHeight * s;
 
-  ctx.font = `600 ${Math.round(bodySize)}px 'Roboto Serif', 'Poppins', serif`;
+  ctx.font = `500 ${Math.round(bodySize)}px 'Roboto Serif', 'Poppins', serif`;
   const bodyLines = body ? wrapPlainLines(body, maxWidth, STORY.maxBodyLines) : [];
 
-  const headingHeight = storyHeadingText() ? headingSize + STORY.gapAfterHeading * s : 0;
+  /* Measured, not assumed. The heading used to be one line by fiat — the text
+     was flattened and drawn as a single run, so anything longer than the
+     column simply ran off the right edge of the card. It wraps now, which
+     means its height is a count of lines rather than one fontSize. */
+  const headingLines = storyHeadingLayout(storyHeadingText(), maxWidth, headingSize);
+  const headingHeight = headingLines.length
+    ? headingLines.length * headingLine + STORY.gapAfterHeading * s
+    : 0;
   const bodyHeight = bodyLines.length * bodyLine;
   const stampHeight = state.showTimestamp ? bodyLine * 0.9 : 0;
   const blockHeight = headingHeight + bodyHeight + stampHeight;
@@ -4279,13 +4344,16 @@ function drawStoryScreen() {
   drawFixedLogos();
 
   let y = top;
-  if (storyHeadingText()) {
-    y = drawStoryHeading(storyHeadingText(), left, y, headingSize, s) + STORY.gapAfterHeading * s;
+  if (headingLines.length) {
+    y = drawStoryHeading(headingLines, left, y, headingSize, headingLine, s) + STORY.gapAfterHeading * s;
   }
 
   ctx.save();
-  ctx.font = `600 ${Math.round(bodySize)}px 'Roboto Serif', 'Poppins', serif`;
-  ctx.fillStyle = "#ffffff";
+  ctx.font = `500 ${Math.round(bodySize)}px 'Roboto Serif', 'Poppins', serif`;
+  // Solid white at 80%, per the spec — not a lighter grey, which would shift
+  // with whatever is behind it instead of staying a fixed step below the
+  // heading's pure white.
+  ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
   ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
   ctx.shadowBlur = 12 * s;
   ctx.shadowOffsetY = 3 * s;

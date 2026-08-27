@@ -4666,13 +4666,21 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight, opacity =
      each join now turns by a fraction of a percent, far below what the eye
      resolves, so there is no join left to see.
 
-     The shape is a cube. Worth knowing why, because the curve it replaces was
-     not arbitrary: measured segment by segment, the original four stops trace
-     a quadratic almost exactly. So the old look was a quadratic sampled four
-     times, and its only real fault was the sampling. A cube is one step later
-     than that — appreciably lighter over the subject at two-thirds depth than
-     the original was — while staying gentle enough that the rise itself never
-     resolves as an edge.
+     The shape is a quadratic, measured rather than chosen: segment by segment,
+     the original four stops trace a quadratic almost exactly. The poster page
+     has always looked right, so the curve it was already drawing is the
+     specification — the only thing wrong with it was that four samples turned
+     it into four straight lines with corners between them.
+
+     A cube was tried here and is worse, for a reason worth recording. Pushing
+     the darkening later necessarily steepens the tail: the ink still has to
+     reach full strength by the first line, so holding it back early means
+     covering the same ground in less space. At t^3 the last quarter of the
+     ramp climbs from 0.23 to 0.78, and that rise resolves as a hard edge just
+     above the copy — obvious over a flat, bright background, which is exactly
+     where the poster page tends to have a dark subject and hide it. Later and
+     smoother pull against each other; the poster's own curve is the balance
+     that had already been struck.
 
      The value AT the copy line, and every value below it, is unchanged: that
      is what the text is read against, and it was already right. */
@@ -4680,7 +4688,7 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight, opacity =
   stopAt(0, 0);
   for (let i = 1; i <= RAMP_SAMPLES; i++) {
     const t = i / RAMP_SAMPLES;
-    above(t, COPY_LINE_ALPHA * t ** 3);
+    above(t, COPY_LINE_ALPHA * t ** 2);
   }
   below(0.38, 0.84);
   below(0.72, 0.94);

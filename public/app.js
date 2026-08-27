@@ -4725,41 +4725,33 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
     above(t, COPY_LINE_ALPHA * t ** 2);
   }
 
-  /* ── The join, which is where the line actually was ──
+  /* ── Below the copy: keep some photograph ──
 
-     Everything above arrives at the copy line still climbing hard: a
-     quadratic over `fadeHeight` is gaining about 0.0047 alpha per pixel by
-     the time it gets there. What used to follow was 0.78 to 0.84 spread over
-     the next couple of hundred pixels — roughly 0.0003 per pixel, seventeen
-     times slower. Alpha was continuous across that seam, so no measurement of
-     VALUE ever showed a step, and the ramp above it was smooth to within two
-     levels of 255. But the eye reads the second derivative, and a
-     seventeen-fold change in slope is a Mach band: a hard line, drawn exactly
-     along the top of the copy.
+     This stretch used to ease to solid black within about 150px of the first
+     line and hold flat from there. That killed the one thing the poster was
+     liked for: you could still see the arm and the knee behind the headline.
+     A card whose lower third is an opaque panel is not the same design.
 
-     It hid on the poster page because a three-line headline runs the width of
-     the frame and covers the seam. This card's heading is one short word, so
-     the join ran out into flat blue on both sides of it with nothing over it.
+     So the rest of the frame is spent going from the value behind the copy to
+     full black, linearly, arriving only at the very foot. Straight rather than
+     eased because a straight line has no internal corners at all, and because
+     it lands almost exactly where the original four stops did — 0.86 and 0.94
+     against their 0.84 and 0.94 — which is the transparency being asked for,
+     arrived at from the measurements rather than by eye.
 
-     So the lower half now LEAVES at the same slope the upper half arrives
-     with, and eases to solid from there. `runway` is the distance that takes:
-     for a quadratic easing out to 1.0, twice the remaining alpha divided by
-     the incoming slope. Matching the slope is the whole point — it is what
-     makes the curve C1 continuous through the join, and a curve with no
-     corner has nothing for the eye to find. */
-  const incomingSlope = (2 * COPY_LINE_ALPHA) / fadeHeight;      // alpha per px
-  const remaining = 1 - COPY_LINE_ALPHA;
-  const belowSpan = height - copyTop;
-  const runway = Math.min(belowSpan, (2 * remaining) / incomingSlope);
-
-  const TAIL_SAMPLES = 16;
+     There is one slope change left, where this meets the ramp above it: the
+     ramp arrives at 0.0030 alpha per pixel and this leaves at 0.0004, about
+     seven times gentler. That is a real discontinuity and it is the price of
+     keeping the picture visible behind the words — spreading the remaining
+     ink over the whole frame is exactly what makes it gentle. It is well
+     below the seventeen- to twenty-two-fold change the original had, and the
+     line that was actually being reported turned out to be a zoomed-out photo
+     failing to cover the frame, not this join at all. */
+  const TAIL_SAMPLES = 24;
   for (let i = 1; i <= TAIL_SAMPLES; i++) {
-    const x = (i / TAIL_SAMPLES) * runway;              // px below the copy line
-    const k = 1 - x / runway;
-    stopAt((copyTop - start + x) / span, 1 - remaining * k * k);
+    const t = i / TAIL_SAMPLES;
+    below(t, COPY_LINE_ALPHA + (1 - COPY_LINE_ALPHA) * t);
   }
-  // Solid the rest of the way down.
-  stopAt(1, 1);
 
   target.fillStyle = grad;
   target.fillRect(0, start, width, span);

@@ -4783,7 +4783,7 @@ const FADE_STRETCH = 0.6;
    colour still wants the longer run — it has to arrive gradually or it bands —
    but the blur does not: going from sharp to frosted quickly is what makes it
    look like a pane of glass sitting there rather than a lens going soft. */
-const FADE_BLUR_STRETCH = 0.25;
+const FADE_BLUR_STRETCH = 0.45;
 
 function fadeReach(layoutFade) {
   return layoutFade * FADE_STRETCH;
@@ -4844,10 +4844,27 @@ function blurBehindCopy(target, { width, height, copyTop, fadeHeight, radius }) 
     /* Keep only what the mask says to keep. `destination-in` intersects what
        is already on this canvas with the alpha being painted, which is how the
        blur arrives gradually instead of as a panel. Offset by `pad`, since
-       this canvas is in padded coordinates. */
+       this canvas is in padded coordinates.
+
+       Eased, not linear, and that is the whole difference between a blur that
+       fades in and one with a findable edge. A linear mask goes from no change
+       at all to a constant rate of change in a single step: there is an
+       instant where the softening switches on, and the eye finds it, which is
+       the line appearing just above the first line of copy. Smoothstep leaves
+       at zero rate and arrives at zero rate, so there is no such instant at
+       either end — it is already slightly soft before anyone could say it had
+       started, and fully soft before it stops changing.
+
+       It also buys back the reach: linear crosses the threshold where
+       softening shows around a tenth of the way in, smoothstep not until a
+       fifth, so the ramp can be nearly twice as long and still not appear to
+       begin any higher up the picture. */
     const mask = octx.createLinearGradient(0, start + pad, 0, copyTop + pad);
-    mask.addColorStop(0, "rgba(0,0,0,0)");
-    mask.addColorStop(1, "rgba(0,0,0,1)");
+    const MASK_SAMPLES = 24;
+    for (let i = 0; i <= MASK_SAMPLES; i++) {
+      const t = i / MASK_SAMPLES;
+      mask.addColorStop(t, `rgba(0,0,0,${(t * t * (3 - 2 * t)).toFixed(4)})`);
+    }
     octx.globalCompositeOperation = "destination-in";
     octx.fillStyle = mask;
     octx.fillRect(0, start + pad, extW, extH - (start + pad));

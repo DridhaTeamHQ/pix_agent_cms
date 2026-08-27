@@ -4212,52 +4212,6 @@ async function handleGenerateArticle(req, res) {
      2. gpt-image-1 (quality=high, input_fidelity=high) enhances with that
         description embedded so it knows what it must NOT change. */
 
-// This description is embedded in the image-generation prompt, so anything
-// it quotes is at risk of being RENDERED into the photo. It therefore
-// describes where text sits without reproducing the words — enough for the
-// model to know a sign is there and leave it alone, without handing it a
-// string to draw.
-const VISION_PROMPT =
-  "You are assisting a photo-restoration pipeline for a news organisation. " +
-  "Describe this photograph in 2-4 sentences, factually and precisely: the people " +
-  "(count, apparent age, facial hair, glasses, expressions, clothing), the setting, " +
-  "and the lighting. If text, logos or signage appear, say only WHERE they are and " +
-  "how large (for example 'a sponsor banner across the back wall') — do NOT transcribe " +
-  "or quote the words themselves. " +
-  "Do NOT guess names. Output only the description.";
-
-/* ── Vision, for the expand path ──
-   Restoring a photograph and extending one need different things from the
-   describe stage. Restoring needs to know what is IN the frame, so the edit
-   prompt can name it and pin it down. Extending needs to know what is MISSING:
-   where the picture cuts the subject off, which way the body is oriented, and
-   what the setting does past the edge — because that is precisely the part the
-   image model has to invent, and it invents far better from a stated
-   continuation than from a blank margin.
-
-   The anatomy question is the one that matters. "A man seated, cropped at
-   mid-chest, leaning slightly forward, arms angled down toward a desk" is
-   enough for the model to draw the rest of him in the right place. Without it
-   the model guesses the pose from the shoulders alone and returns a torso that
-   does not belong to the head above it. */
-const EXPAND_VISION_PROMPT =
-  "You are assisting a photo-extension pipeline for a news organisation. " +
-  "The photograph will be widened: an image model must draw what lies just " +
-  "outside the current frame. Report, in 4-6 short sentences: " +
-  "(1) the main subject — how many people, apparent age, facial hair, glasses, " +
-  "expression, and exactly what they are wearing including colours and fabric; " +
-  "(2) WHERE the frame cuts each person off (for example 'cropped at mid-chest', " +
-  "'legs out of frame below the knee', 'left arm leaves the frame'), and the " +
-  "posture and orientation of the body — seated or standing, leaning, turned, " +
-  "which way the arms and shoulders angle; " +
-  "(3) the setting, and what plausibly continues past each edge — floor, " +
-  "seating, walls, stage, crowd, sky, furniture; " +
-  "(4) the lighting: direction, hardness and colour temperature, and the camera " +
-  "look — focal length impression, depth of field, grain. " +
-  "If text, logos or signage appear, say only WHERE they are and how large — do " +
-  "NOT transcribe or quote the words themselves. " +
-  "Do NOT guess names. Output only the description.";
-
 // The headline is deliberately NOT given to the image model.
 //
 // Image models treat a quoted string in the prompt as text to RENDER, so
@@ -4378,32 +4332,39 @@ const EXPAND_AMOUNTS = {
   wide:     "Pull back substantially: show roughly twice as much of the scene around the subject as the photograph currently holds.",
 };
 
-function buildExpandPrompt(description, ratioLabel, amount = "moderate") {
-  const pullBack = EXPAND_AMOUNTS[amount] || EXPAND_AMOUNTS.moderate;
-  return [
-    "You are extending a REAL news photograph — the same photograph, taken",
-    "from further back with a wider lens.",
-    "",
-    description ? `CONTEXT — the photo shows: ${description}` : null,
-    "",
-    "TASK:",
-    "Place the supplied photograph smaller within the output frame and draw",
-    "the scene continuing outward from its edges, so that more of the subject",
-    "and more of the setting are visible than the photograph shows.",
-    pullBack,
-    ratioLabel
-      ? `The output frame is ${ratioLabel}. Fill it completely — the subject stays fully visible and central in interest, never cropped, stretched or distorted.`
-      : null,
-    "",
-    "THE SUPPLIED PHOTOGRAPH IS UNCHANGED:",
-    "- Everything visible in the input appears in the output exactly as it is:",
-    "  the same faces and facial structure, the same expressions, the same skin",
-    "  texture and age, the same hair, the same clothing, the same objects, the",
-    "  same light falling on them.",
-    "- Do not beautify, smooth, slim, re-light or re-pose anyone.",
-    "- Do not shift, rotate or straighten what you were given. It is the middle",
-    "  of the new picture; you are drawing around it.",
-    "",
+/* What the new margin should contain, per kind of picture.
+
+   This is the part that had to exist before a logo could go through here at
+   all. The extend prompt was written for press photographs of people, and on
+   a wordmark every line of it is either useless or actively harmful: there is
+   no anatomy to continue, no setting past the edge, and a blanket "add no text
+   or graphics" aimed at stopping invented captions reads, on a picture that IS
+   text and graphics, as an instruction not to draw the only thing there is.
+   Asked to widen the boAt mark under those rules the model has no good move —
+   so it returns the picture roughly as it found it, which is exactly the
+   "it only enhanced it and didn't zoom out" that was reported.
+
+   The three cases differ in what continuation even means:
+
+     people   anatomy first. A subject cut at the chest needs the torso, arms
+              and lap that belong to those shoulders, then the room around
+              them. The original case.
+     scene    no person to continue, so it is all setting: the street, the
+              building, the landscape, the interior carrying on past the edge
+              at the right perspective.
+     graphic  a logo, wordmark, icon, screenshot, or a product on a plain
+              background. NOTHING about the mark is continued — it is finished
+              already. What continues is the FIELD it sits on: the flat
+              colour, the gradient, the surface. The mark stays exactly as
+              supplied, once, unrepeated, with no letterform touched.
+
+   The graphic rules are the strict ones, and deliberately. The failure mode
+   there is not a wrong-looking margin, it is a second half-drawn wordmark or
+   an invented tagline under the logo — a fabricated brand asset, on a card
+   that goes out with the newsroom's name on it. Extending a field of colour
+   is a job with no room to invent; that is the job it is given. */
+const EXPAND_SUBJECTS = {
+  people: [
     "WHAT YOU DRAW IN THE NEW MARGIN:",
     "- Anatomy first. Where the frame cuts a person off, continue that person",
     "  correctly: the torso, arms, hands, lap, legs and feet that belong to the",
@@ -4427,11 +4388,112 @@ function buildExpandPrompt(description, ratioLabel, amount = "moderate") {
     "- Text physically present in the photograph (signage, jerseys, banners) is",
     "  preserved exactly as it already appears — never invented, completed,",
     "  translated or extended into the new margin.",
-    "- No visible seam, border, frame, vignette or change in sharpness where",
-    "  the original photograph ends and the drawn margin begins.",
+  ],
+  scene: [
+    "WHAT YOU DRAW IN THE NEW MARGIN:",
+    "- The setting, continuing outward: the same street, building, interior,",
+    "  landscape, sky or water carrying on past each edge at the correct",
+    "  perspective, scale and vanishing point.",
+    "- Structures continue as they are built. A roofline, a road, a railing or",
+    "  a shoreline leaves the frame on a path — follow it, do not restart it.",
+    "- Match the photograph exactly: the same lens character and perspective,",
+    "  the same depth of field and focus falloff, the same grain and noise, the",
+    "  same light direction, hardness and colour temperature, the same weather.",
     "",
-    "The result is one clean, believable press photograph of the same moment,",
-    "shot wider. No lettering, no collage, no illustration.",
+    "ABSOLUTE RULES:",
+    "- Add NO people. Not one figure, near or far, that the photograph does not",
+    "  already show at its edge.",
+    "- Add NO new objects of interest — no vehicles, no animals, no landmarks,",
+    "  nothing a caption would have to mention. This is journalism, not art.",
+    "- ADD NO TEXT OR GRAPHICS of any kind. No caption, label, watermark,",
+    "  banner or logo. Write no words anywhere in the image.",
+    "- Text physically present in the photograph (signage, hoardings, number",
+    "  plates) is preserved exactly as it already appears — never invented,",
+    "  completed, translated or extended into the new margin.",
+  ],
+  graphic: [
+    "THIS IS A LOGO, WORDMARK, ICON, SCREENSHOT OR PRODUCT SHOT — NOT A SCENE.",
+    "",
+    "WHAT YOU DRAW IN THE NEW MARGIN:",
+    "- ONLY the background field the subject sits on, continuing outward: the",
+    "  flat colour, the gradient, the paper, the fabric, the studio sweep or",
+    "  the surface it rests on — seamlessly, at exactly the same tone, and with",
+    "  the same softness or texture.",
+    "- If it sits on a plain colour, the margin is that colour and nothing",
+    "  else. An empty margin is the correct answer here. Do not decorate it.",
+    "- If it casts a shadow or reflection, continue that shadow or reflection",
+    "  consistently with the light already in the picture.",
+    "",
+    "ABSOLUTE RULES — these matter more here than anywhere else:",
+    "- The mark, wordmark, icon, device or product is reproduced EXACTLY as",
+    "  supplied: same shapes, same letterforms, same spacing, same weight, same",
+    "  colours, same proportions. Do not redraw it. Do not clean it up. Do not",
+    "  straighten or re-space it.",
+    "- Draw it ONCE. No second copy, no reflection of it, no faded version of",
+    "  it in the margin, no tiling, no pattern made out of it.",
+    "- Write NO letters, words, numbers or symbols anywhere. Not a tagline, not",
+    "  a slogan, not a registered mark, not a domain, not a strapline under the",
+    "  logo, not a caption. If lettering is cut off at the edge of the supplied",
+    "  image, LEAVE IT CUT OFF — a half-letter is correct and a guessed word is",
+    "  a fabricated brand asset.",
+    "- Add NO other logos, badges, icons, devices, borders, frames, rules,",
+    "  glows, sparkles or decorative elements.",
+    "- Add NO people, hands, props or scenery. This is not a photograph of a",
+    "  place; do not turn it into one.",
+  ],
+};
+
+/* ── Expand: the same picture, seen from further back ──
+   The prompt is assembled per subject because the three want different things
+   in the margin — see EXPAND_SUBJECTS above. What they share is the part that
+   fails first: the supplied image must survive INSIDE the result untouched.
+   Asked to widen a picture, the model will happily redraw the middle of it too
+   and come back with a handsome stranger wearing the right shirt, or a
+   wordmark whose letters are subtly not the brand's. input_fidelity=high is
+   the real control; the wording exists so the prompt does not argue with it. */
+function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject = "people") {
+  const pullBack = EXPAND_AMOUNTS[amount] || EXPAND_AMOUNTS.moderate;
+  const kind = EXPAND_SUBJECTS[subject] ? subject : "people";
+  const isGraphic = kind === "graphic";
+
+  return [
+    isGraphic
+      ? "You are extending the background of a REAL brand or product image so it fills a taller frame."
+      : "You are extending a REAL news photograph — the same photograph, taken",
+    isGraphic ? null : "from further back with a wider lens.",
+    "",
+    description ? `CONTEXT — the image shows: ${description}` : null,
+    "",
+    "TASK:",
+    isGraphic
+      ? "Place the supplied image smaller within the output frame, centred, and fill everything around it by continuing the background it already sits on."
+      : "Place the supplied photograph smaller within the output frame and draw",
+    isGraphic ? null : "the scene continuing outward from its edges, so that more of the subject",
+    isGraphic ? null : "and more of the setting are visible than the photograph shows.",
+    pullBack,
+    ratioLabel
+      ? `The output frame is ${ratioLabel}. Fill it completely — the subject stays fully visible and central, never cropped, stretched or distorted.`
+      : null,
+    "",
+    "THE SUPPLIED IMAGE IS UNCHANGED:",
+    isGraphic
+      ? "- Every pixel of the supplied image appears in the output exactly as it is: the same shapes, colours, edges and proportions."
+      : "- Everything visible in the input appears in the output exactly as it is:",
+    isGraphic ? null : "  the same faces and facial structure, the same expressions, the same skin",
+    isGraphic ? null : "  texture and age, the same hair, the same clothing, the same objects, the",
+    isGraphic ? null : "  same light falling on them.",
+    isGraphic ? null : "- Do not beautify, smooth, slim, re-light or re-pose anyone.",
+    "- Do not shift, rotate, straighten or rescale what you were given relative",
+    "  to itself. It is the middle of the new picture; you are drawing around it.",
+    "",
+    ...EXPAND_SUBJECTS[kind],
+    "- No visible seam, border, frame, vignette or change in sharpness where",
+    "  the supplied image ends and the drawn margin begins.",
+    "",
+    isGraphic
+      ? "The result is the same mark on a larger field of its own background. Nothing added, nothing written, nothing invented."
+      : "The result is one clean, believable press photograph of the same moment,",
+    isGraphic ? null : "shot wider. No lettering, no collage, no illustration.",
   ].filter((line) => line !== null).join("\n");
 }
 
@@ -4453,6 +4515,36 @@ function sizeForRatio(_posterRatioNoLongerUsed, orientationHint) {
   if (orientationHint === "portrait")  return "1024x1536";
   // Unknown: let the model match the input rather than guess from the poster.
   return "auto";
+}
+
+/* What the poster canvas will DISCARD if this picture is used as it is.
+
+   drawCoverImage() scales the picture to cover the frame — Math.max(W/w, H/h)
+   — and clips whatever hangs over. So a source whose shape differs from the
+   poster's does not get letterboxed, it gets cut, and the cut is total: a
+   square logo on a 9:16 poster loses 44% of its width, a 16:9 press photo
+   loses 68% of it. That is the complaint this answers. A writer uploads a
+   rectangle or a square, the canvas takes a tall slice out of the middle, and
+   most of the picture — most of a wordmark, most of a product — is simply
+   gone.
+
+   Returned as a fraction so the planner is handed the number rather than
+   asked to estimate it from two dimensions and a ratio string. Models are
+   poor at that arithmetic and excellent at using it once it is stated, and
+   this particular number is the difference between "the framing is a bit
+   tight" and "you are about to bin two thirds of this picture".
+
+   0 when anything needed is missing or unparseable — an unknown loss must not
+   read as a catastrophic one. */
+const RATIO_VALUES = { "9:16": 9 / 16, "4:5": 4 / 5, "1:1": 1, "16:9": 16 / 9 };
+
+function coverCropLoss(sourceW, sourceH, posterRatio) {
+  const target = RATIO_VALUES[posterRatio];
+  if (!target || !sourceW || !sourceH) return 0;
+  const source = sourceW / sourceH;
+  // Cover keeps the smaller of the two aspects' worth of the larger dimension.
+  // Whichever way round they are, the survivor is min/max.
+  return 1 - Math.min(source, target) / Math.max(source, target);
 }
 
 /* The POSTER's shape — the opposite choice from sizeForRatio() above, and
@@ -4481,40 +4573,6 @@ function sizeForExpand(ratio, orientationHint) {
   if (orientationHint === "landscape") return "1536x1024";
   if (orientationHint === "portrait")  return "1024x1536";
   return "auto";
-}
-
-async function describeImageForEnhance(buffer, mime, visionPrompt = VISION_PROMPT) {
-  try {
-    const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${openaiApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [{
-          role: "user",
-          content: [
-            { type: "text", text: visionPrompt },
-            { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
-          ],
-        }],
-        temperature: 0.2,
-        max_tokens: 220,
-      }),
-    });
-    if (!r.ok) {
-      console.warn(`⚠ vision describe failed (${r.status}) — enhancing without context`);
-      return "";
-    }
-    const data = await r.json();
-    return (data?.choices?.[0]?.message?.content || "").trim();
-  } catch (e) {
-    console.warn("⚠ vision describe error — enhancing without context:", e.message);
-    return "";
-  }
 }
 
 /* ── Deciding which job the picture needs ──
@@ -4556,68 +4614,102 @@ async function describeImageForEnhance(buffer, mime, visionPrompt = VISION_PROMP
    it. No JSON, bad JSON, an unknown verdict or a dead endpoint all land on
    restore with an empty description — the conservative half of the pair, and
    the behaviour this route had before any of this existed. */
-function buildPlanPrompt(posterRatio, sourceW, sourceH) {
+function buildPlanPrompt(posterRatio, sourceW, sourceH, cropLoss) {
   const shape = sourceW && sourceH
-    ? `The photograph is ${sourceW}x${sourceH} pixels.`
-    : "The photograph's pixel dimensions are unknown.";
-  const target = posterRatio
-    ? `It will be placed on a ${posterRatio} poster, which crops whatever does not fit.`
-    : "The poster's shape is unknown; assume the photograph's own shape is kept.";
+    ? `The image is ${sourceW}x${sourceH} pixels.`
+    : "The image's pixel dimensions are unknown.";
+
+  /* The crop, stated rather than implied. Given the ratio and the dimensions
+     a model will happily reason about whether the shapes "roughly match" and
+     be wrong by half; given "62% of this picture will be discarded" it stops
+     guessing. This one number is what makes a square logo on a 9:16 poster an
+     obvious expand instead of a judgement call. */
+  const pct = Math.round(cropLoss * 100);
+  const crop = posterRatio
+    ? (cropLoss > 0.02
+        ? `It goes on a ${posterRatio} poster. The poster scales the image to COVER the frame and clips the overflow — it does not letterbox — so used as it is, about ${pct}% of this picture will be cut away and never seen.`
+        : `It goes on a ${posterRatio} poster, and its shape already matches, so almost nothing would be cropped.`)
+    : "The poster's shape is unknown; assume the image's own shape is kept.";
 
   return [
-    "You are the first stage of a photo pipeline for a news organisation.",
-    "Look at this photograph and do two things.",
+    "You are the first stage of an image pipeline for a news organisation.",
+    "The picture may be a photograph, or it may be a logo, a wordmark, a",
+    "screenshot or a product shot — writers upload all of these. Look at it",
+    "and do three things.",
     "",
     shape,
-    target,
+    crop,
     "",
-    "1. DESCRIBE it, factually and precisely, in 4-6 short sentences:",
-    "   - the people: count, apparent age, facial hair, glasses, expression,",
-    "     and exactly what they are wearing including colours and fabric;",
-    "   - WHERE the frame cuts each person off (for example 'cropped at",
-    "     mid-chest', 'legs out of frame below the knee', 'left arm leaves the",
-    "     frame'), and the posture and orientation of the body — seated or",
-    "     standing, leaning, turned, which way the arms and shoulders angle;",
-    "   - the setting, and what plausibly continues past each edge — floor,",
-    "     seating, walls, stage, crowd, sky, furniture;",
-    "   - the lighting: direction, hardness and colour temperature, and the",
-    "     camera look — focal length impression, depth of field, grain.",
-    "   If text, logos or signage appear, say only WHERE they are and how",
-    "   large. Do NOT transcribe or quote the words. Do NOT guess names.",
+    "1. SAY WHAT KIND of picture it is, as \"subject\":",
+    "   \"people\"   one or more people are the subject.",
+    "   \"scene\"    no people: a place, building, street, landscape, interior,",
+    "               object or animal, photographed.",
+    "   \"graphic\"  a logo, wordmark, icon, badge, app screenshot, chart, or a",
+    "               product photographed on a plain or studio background. If",
+    "               the picture is mostly a designed mark rather than a",
+    "               photographed moment, it is \"graphic\".",
     "",
-    "2. DECIDE which of two jobs this photograph needs.",
+    "2. DESCRIBE it, factually and precisely, in 4-6 short sentences.",
+    "   For \"people\": count, apparent age, facial hair, glasses, expression,",
+    "   and exactly what they are wearing including colours and fabric; WHERE",
+    "   the frame cuts each person off (for example 'cropped at mid-chest',",
+    "   'legs out of frame below the knee'), and the posture and orientation of",
+    "   the body — seated or standing, leaning, turned, which way the arms and",
+    "   shoulders angle; the setting and what plausibly continues past each",
+    "   edge; the lighting and camera look.",
+    "   For \"scene\": what the place is, what occupies each edge, what would",
+    "   plausibly continue past it, the perspective, and the light and weather.",
+    "   For \"graphic\": what the mark or product is and its colours and shape;",
+    "   EXACTLY what the background is — flat colour, gradient, paper, studio",
+    "   sweep, surface — and its tone; how much empty room sits between the",
+    "   mark and each edge; and whether anything is cut off at an edge.",
+    "   If words or lettering appear, say only WHERE they sit and how large.",
+    "   Do NOT transcribe or quote them. Do NOT guess names or brands.",
     "",
-    "   \"expand\" — the frame is the problem. Choose this when a person is cut",
-    "   off where it hurts (at or above the chest, or a head close to the top",
-    "   edge), when the subject is pressed against an edge with no room, or",
-    "   when the photograph's shape is far enough from the poster's that",
-    "   filling the poster would crop the subject or the context away. The",
-    "   photograph will be placed smaller in the frame and the scene drawn",
-    "   outward from its edges.",
+    "3. DECIDE which of two jobs this picture needs.",
     "",
-    "   \"restore\" — the frame is fine and the picture is the problem: soft,",
+    "   \"expand\" — the FRAME is the problem. The image is placed smaller in the",
+    "   output and the background or scene is drawn outward to fill it. Choose",
+    "   this when any of these is true:",
+    "     - a large share of the picture would be cropped away by the poster —",
+    "       the percentage above is the measure, and anything over about 20% is",
+    "       on its own a strong reason to expand, because the alternative is",
+    "       losing that much of the picture outright;",
+    "     - a person is cut off where it hurts (at or above the chest, or a head",
+    "       close to the top edge), or the subject is pressed against an edge;",
+    "     - a logo, mark or product fills its frame edge to edge with no room",
+    "       around it, so the poster would slice through it.",
+    "",
+    "   \"restore\" — the frame is fine and the PICTURE is the problem: soft,",
     "   noisy, small, or full of compression artifacts. Nothing is reframed;",
     "   detail is recovered.",
     "",
-    "   Weigh this against expanding: the output is a fixed size either way, so",
-    "   placing the photograph smaller inside it leaves FEWER pixels on the",
-    "   face than the photograph already has. A large, sharp source can afford",
-    "   that. A small or soft one cannot — if the source is under about 900",
-    "   pixels on its long edge, prefer \"restore\", or \"slight\" at most.",
-    "   When the framing genuinely works, always prefer \"restore\": it is the",
-    "   job that cannot invent anything.",
+    "   Weighing the two:",
+    "     - When the shapes MISMATCH, expand almost always wins. Cropping",
+    "       discards real picture permanently; expanding keeps all of it and",
+    "       adds margin that can be plain. This is true for logos and product",
+    "       shots especially — a square mark on a tall poster must be expanded,",
+    "       never cropped, and its margin is simply more of its own background.",
+    "     - When the shapes ALREADY MATCH and you would only be pulling back for",
+    "       composition, be conservative. The output is a fixed size, so placing",
+    "       the picture smaller inside it leaves fewer pixels on the subject",
+    "       than it already has. If the source is under about 900 pixels on its",
+    "       long edge, prefer \"restore\", or \"slight\" at most.",
+    "     - When the framing genuinely works, prefer \"restore\": it is the job",
+    "       that cannot invent anything.",
     "",
-    "3. If the verdict is \"expand\", say how far to pull back:",
-    "   \"slight\"   about 25% more scene — a head or chest crop that needs a",
-    "               little breathing room, or a small source.",
-    "   \"moderate\" about 50% more scene — the usual answer: a subject cut at",
-    "               the chest that should be seen to the waist.",
-    "   \"wide\"     roughly twice the scene — a very tight crop, or a shape far",
-    "               from the poster's, where a lot has to be built.",
+    "4. If the verdict is \"expand\", say how far to pull back:",
+    "   \"slight\"   about 25% more scene — a little breathing room, or a small",
+    "               source, or a shape close to the poster's already.",
+    "   \"moderate\" about 50% more — the usual answer: a subject cut at the",
+    "               chest, or a moderate shape mismatch.",
+    "   \"wide\"     roughly twice — a very tight crop, or a shape far from the",
+    "               poster's (a square or landscape image on a tall poster),",
+    "               where a lot of margin has to be built.",
     "   If the verdict is \"restore\", set amount to \"slight\"; it is ignored.",
     "",
     "Answer as JSON, and nothing else:",
-    '{"description": "...", "verdict": "restore" | "expand", "amount": "slight" | "moderate" | "wide", "reason": "one short sentence, plain English, naming what you saw"}',
+    '{"subject": "people" | "scene" | "graphic", "description": "...", "verdict": "restore" | "expand", "amount": "slight" | "moderate" | "wide", "reason": "one short sentence, plain English, naming what you saw"}',
   ].join("\n");
 }
 
@@ -4625,7 +4717,8 @@ async function planEnhance(buffer, mime, { posterRatio = "", sourceW = 0, source
   // What every failure below returns. Restore is the half of the pair that
   // reframes nothing, so a broken planner degrades to the safe job rather
   // than to an outpaint nobody asked for.
-  const fallback = { mode: "restore", amount: "moderate", description: "", reason: "", decidedBy: "fallback" };
+  const fallback = { mode: "restore", amount: "moderate", subject: "people", description: "", reason: "", decidedBy: "fallback" };
+  const cropLoss = coverCropLoss(sourceW, sourceH, posterRatio);
   try {
     const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -4639,7 +4732,7 @@ async function planEnhance(buffer, mime, { posterRatio = "", sourceW = 0, source
         messages: [{
           role: "user",
           content: [
-            { type: "text", text: buildPlanPrompt(posterRatio, sourceW, sourceH) },
+            { type: "text", text: buildPlanPrompt(posterRatio, sourceW, sourceH, cropLoss) },
             /* "low" is a 512px thumbnail, and that is the right input for this
                question. Framing — where a body is cut, how much room is around
                it, how the shape sits against the poster's — survives the
@@ -4672,7 +4765,13 @@ async function planEnhance(buffer, mime, { posterRatio = "", sourceW = 0, source
 
     const verdict = String(parsed?.verdict || "").toLowerCase();
     const amount = String(parsed?.amount || "").toLowerCase();
+    const subject = String(parsed?.subject || "").toLowerCase();
     return {
+      /* Which extend prompt to build if this expands. Unrecognised falls to
+         "people", the original case and the most heavily constrained of the
+         three — it forbids adding text, objects and figures, so a graphic
+         mislabelled into it comes back conservative rather than decorated. */
+      subject: ["people", "scene", "graphic"].includes(subject) ? subject : "people",
       // Anything but a clean "expand" is a restore. An unrecognised verdict is
       // a planner that misunderstood the question, and the answer to that is
       // the job that cannot invent anything.
@@ -4810,35 +4909,32 @@ async function handleUpscaleImage(req, res) {
 
     const t0 = Date.now();
 
-    /* Stage 1 — look at the photograph (cheap, fails soft).
+    /* Stage 1 — look at the picture (cheap, fails soft).
 
-       Three questions, and which one is asked depends on what the caller
-       wants. On auto it is the planner, which describes AND returns a verdict
-       in one response; on a forced mode it is the plain describe, with the
-       prompt that suits the job the caller already chose — restore wants to
-       know what is IN the frame, expand wants to know where the frame cuts
-       off and what continues past it. */
-    let mode = requestedMode;
-    let expandAmount = requestedAmount;
-    let decidedBy = "caller";
-    let reason = "";
-    let description = "";
+       The planner runs on EVERY path, not only on auto. It used to be one of
+       two describe prompts, picked by the mode the caller asked for, and that
+       left the forced-expand path with no idea what it was widening — the
+       margin around a logo and the margin around a seated politician are not
+       the same job, and the prompt that draws one wrecks the other. The
+       planner is the thing that knows which, so it answers first and the
+       caller's choice is applied to its answer.
 
-    if (requestedMode === "auto") {
-      const plan = await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
-      mode = plan.mode;
-      expandAmount = plan.amount;
-      decidedBy = plan.decidedBy;
-      reason = plan.reason;
-      description = plan.description;
-      console.log(`✓ plan (${Date.now() - t0}ms): ${mode}${mode === "expand" ? ` / ${expandAmount}` : ""} — ${reason || "no reason given"}`);
-    } else {
-      description = await describeImageForEnhance(
-        buffer,
-        mime,
-        mode === "expand" ? EXPAND_VISION_PROMPT : VISION_PROMPT
-      );
-    }
+       On auto its verdict stands. On a forced mode the verdict is discarded
+       and the description and subject are kept. Same call either way, same
+       cost either way — a forced mode is not cheaper, it is just less
+       advised. */
+    const plan = await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
+    const mode = requestedMode === "auto" ? plan.mode : requestedMode;
+    const expandAmount = requestedMode === "auto" ? plan.amount : requestedAmount;
+    const decidedBy = requestedMode === "auto" ? plan.decidedBy : "caller";
+    const reason = requestedMode === "auto" ? plan.reason : "";
+    const { subject, description } = plan;
+
+    console.log(
+      `✓ plan (${Date.now() - t0}ms): ${subject} → ${mode}` +
+      `${mode === "expand" ? ` / ${expandAmount}` : ""} (${decidedBy})` +
+      `${reason ? ` — ${reason}` : ""}`
+    );
     if (description) console.log(`✓ vision context: ${description.slice(0, 140)}…`);
 
     /* Which shape to ask for is the resolved mode's decision, and the two want
@@ -4859,7 +4955,7 @@ async function handleUpscaleImage(req, res) {
     // gpt-image-1.5 first; automatic fallback to gpt-image-1 if the account
     // doesn't have the newer model.
     const prompt = mode === "expand"
-      ? buildExpandPrompt(description, posterRatio, expandAmount)
+      ? buildExpandPrompt(description, posterRatio, expandAmount, subject)
       : buildEnhancePrompt(description, headline, posterRatio);
     const callEdit = async (model) => {
       const form = new FormData();
@@ -4918,6 +5014,11 @@ async function handleUpscaleImage(req, res) {
       mode,
       // How far it pulled back, when it expanded.
       amount: mode === "expand" ? expandAmount : null,
+      // What stage 1 took the picture to be. Reported because it changes what
+      // the margin was allowed to contain, and a wrong call here is the one
+      // worth being able to see from the outside — a logo read as a scene
+      // gets a margin of invented room rather than more of its own field.
+      subject,
       /* Who chose, and why. A reviewer watching a paid call reframe a
          photograph is owed both: "expand" alone reads as the software having
          opinions, while "expand — he is cropped at the chest with no room

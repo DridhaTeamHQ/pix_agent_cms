@@ -4650,7 +4650,16 @@ function drawBackground() {
 
    `opacity` scales the whole curve, for the story page's overlay control. It
    multiplies rather than replaces, so the shape survives at every setting. */
-function paintBottomFade(target, { width, height, copyTop, fadeHeight, opacity = 1 }) {
+function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFade, opacity = 1 }) {
+  /* How far the fade reaches above the copy, as a multiple of the layout's
+     own fadeHeight. That value was tuned for a fade that lands quickly, and
+     the ink still has to reach full strength by the first line — so a short
+     ramp arrives there steeply and then has nothing left to do but sit at
+     flat black for the rest of the frame. Stretching it lowers the arrival
+     slope by the same proportion, 38% gentler at 1.6, which is what turns the
+     darkening into a steady build rather than a late rush onto a flat panel. */
+  const FADE_STRETCH = 1.6;
+  const fadeHeight = layoutFade * FADE_STRETCH;
   const start = Math.max(0, copyTop - fadeHeight);
   const span = height - start;
   // Copy sitting at or below the foot leaves nothing to fade.

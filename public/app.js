@@ -4646,24 +4646,42 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight, opacity =
     );
   // Two ramps meeting at the first line of copy: a slow one over the
   // photograph, a short steep one under the words.
+  // How dark it is directly behind the first line of copy. Everything above
+  // ramps up to this; everything below continues on from it.
+  const COPY_LINE_ALPHA = 0.78;
   const above = (progress, alpha) => stopAt(progress * copyFrac, alpha);
   const below = (progress, alpha) => stopAt(copyFrac + progress * (1 - copyFrac), alpha);
 
-  /* The upper ramp is deliberately slow. Weight it any earlier and the ink
-     starts creeping over the subject — a face at two-thirds depth was coming
-     back murky while the same depth on a headline card was still clear
-     photograph. Holding it near-transparent through the first half of the
-     fade keeps the picture, and moves the darkening down toward the foot
-     where the copy actually needs it.
+  /* The upper ramp is a sampled curve, not a handful of hand-placed stops.
+
+     Four stops make a piecewise-LINEAR gradient, and the slope changes where
+     the segments meet. The eye is far better at spotting a change in slope
+     than a change in value — Mach banding — so those joins read as faint
+     horizontal lines drawn across the photograph, which is exactly what they
+     looked like. Widening the gap between the stops to hold the top lighter
+     made it worse, because it steepened the last segment and sharpened the
+     corner feeding into it.
+
+     Sampling a continuous curve at forty-eight points removes the corners:
+     each join now turns by a fraction of a percent, far below what the eye
+     resolves, so there is no join left to see.
+
+     The shape is a cube. Worth knowing why, because the curve it replaces was
+     not arbitrary: measured segment by segment, the original four stops trace
+     a quadratic almost exactly. So the old look was a quadratic sampled four
+     times, and its only real fault was the sampling. A cube is one step later
+     than that — appreciably lighter over the subject at two-thirds depth than
+     the original was — while staying gentle enough that the rise itself never
+     resolves as an edge.
 
      The value AT the copy line, and every value below it, is unchanged: that
-     is what the text is read against, and it was already right. This only
-     alters what happens above the words. */
+     is what the text is read against, and it was already right. */
+  const RAMP_SAMPLES = 48;
   stopAt(0, 0);
-  above(0.22, 0.01);
-  above(0.48, 0.05);
-  above(0.72, 0.20);
-  above(1.00, 0.78);
+  for (let i = 1; i <= RAMP_SAMPLES; i++) {
+    const t = i / RAMP_SAMPLES;
+    above(t, COPY_LINE_ALPHA * t ** 3);
+  }
   below(0.38, 0.84);
   below(0.72, 0.94);
   below(1.00, 1.00);

@@ -4260,6 +4260,13 @@ function drawStoryScreen() {
      line. The fade used to be painted first, which is exactly why it could
      only ever be a fixed wash over the whole frame: at that point nothing
      here knew where the copy was going to land. */
+  blurBehindCopy(ctx, {
+    width: W,
+    height: H,
+    copyTop: top,
+    fadeHeight: fadeReach(L.gradient.fadeHeight),
+    radius: FADE_BLUR_RADIUS * (H / 1700),
+  });
   paintBottomFade(ctx, {
     width: W,
     height: H,
@@ -4717,6 +4724,68 @@ function drawBackground() {
 
    `opacity` scales the whole curve, for the story page's overlay control. It
    multiplies rather than replaces, so the shape survives at every setting. */
+/* ── Frosted glass under the copy ────────────────────────────────────────────
+
+   The fade darkens the picture; this softens it. Together they are what makes
+   text sitting on a photograph look deliberate rather than dropped on top —
+   the eye stops reading detail exactly where it starts reading words.
+
+   Blur alone would be worse than nothing, because a blurred band has edges. So
+   it is masked with the same shape the fade uses: nothing at the top, full
+   blur by the copy line, which means there is no boundary anywhere for the eye
+   to catch. Same anchor, same reach, so the two effects move together when the
+   copy moves.
+
+   The whole frame is blurred and then masked, rather than blurring just the
+   band. Blurring a band samples the transparent nothing beyond its edges and
+   comes back with a dark rim along them; blurring the full canvas means every
+   sample has real pixels under it and the mask decides what survives. */
+/* Matched to the fade's own reach so the two cannot drift apart, and scaled
+   off the frame so a 1080-wide export is blurred by the same amount a 920
+   preview is rather than a fifth less. */
+const FADE_BLUR_RADIUS = 26;          // against the 1700px reference frame
+const FADE_STRETCH = 1.6;             // must match paintBottomFade
+
+function fadeReach(layoutFade) {
+  return layoutFade * FADE_STRETCH;
+}
+
+function blurBehindCopy(target, { width, height, copyTop, fadeHeight, radius }) {
+  const start = Math.max(0, copyTop - fadeHeight);
+  if (height - start <= 0 || radius <= 0) return;
+
+  const source = target.canvas;
+  if (!source) return;
+
+  try {
+    const off = document.createElement("canvas");
+    off.width = width;
+    off.height = height;
+    const octx = off.getContext("2d");
+
+    octx.filter = `blur(${radius}px)`;
+    octx.drawImage(source, 0, 0, width, height);
+    octx.filter = "none";
+
+    /* Keep only what the mask says to keep. `destination-in` intersects what
+       is already on this canvas with the alpha being painted, which is how the
+       blur arrives gradually instead of as a panel. */
+    const mask = octx.createLinearGradient(0, start, 0, copyTop);
+    mask.addColorStop(0, "rgba(0,0,0,0)");
+    mask.addColorStop(1, "rgba(0,0,0,1)");
+    octx.globalCompositeOperation = "destination-in";
+    octx.fillStyle = mask;
+    octx.fillRect(0, start, width, height - start);
+    octx.globalCompositeOperation = "source-over";
+
+    target.drawImage(off, 0, 0, width, height);
+  } catch {
+    /* A tainted canvas cannot be read back. The fade still runs and the card
+       is still legible — it just is not frosted, which is the right way for
+       this to degrade. */
+  }
+}
+
 function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFade, opacity = 1, tint = null }) {
   /* How far the fade reaches above the copy, as a multiple of the layout's
      own fadeHeight. That value was tuned for a fade that lands quickly, and
@@ -4725,8 +4794,7 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
      flat black for the rest of the frame. Stretching it lowers the arrival
      slope by the same proportion, 38% gentler at 1.6, which is what turns the
      darkening into a steady build rather than a late rush onto a flat panel. */
-  const FADE_STRETCH = 1.6;
-  const fadeHeight = layoutFade * FADE_STRETCH;
+  const fadeHeight = fadeReach(layoutFade);
   const start = Math.max(0, copyTop - fadeHeight);
   const span = height - start;
   // Copy sitting at or below the foot leaves nothing to fade.
@@ -4867,6 +4935,13 @@ function drawHero() {
   // the same one, anchored to its own copy.
   const L = getLayout();
   const headlineTop = state._render?.top ?? (canvas.height - L.headline.bottomPadding - 200);
+  blurBehindCopy(ctx, {
+    width: canvas.width,
+    height: canvas.height,
+    copyTop: headlineTop,
+    fadeHeight: fadeReach(L.gradient.fadeHeight),
+    radius: FADE_BLUR_RADIUS * (canvas.height / 1700),
+  });
   paintBottomFade(ctx, {
     width: canvas.width,
     height: canvas.height,

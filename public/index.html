@@ -619,48 +619,55 @@
           <svg class="acc-chevron" width="14" height="14"><use href="#i-chevron"/></svg>
         </button>
         <div class="acc-body"><div class="acc-inner">
-          <!-- gpt-image-1 enhance: regenerates the background at higher clarity -->
+          <!-- One button, and a stage that decides what it does.
+
+               There are two jobs here. Restore keeps the framing and recovers
+               detail. Expand keeps the photograph and draws outward from it:
+               the rest of a subject the photographer cropped at the chest, the
+               rest of the room, enough margin that a landscape press photo can
+               sit on a 9:16 poster without the canvas cutting the story out of
+               it.
+
+               They were briefly two buttons, on the reasoning that nothing in
+               the pixels tells a picture that wants widening from one that
+               wants sharpening. That is true of a heuristic and false of a
+               model that looks at the photograph — and one has been reading
+               every photograph in stage 1 of this route all along, describing
+               it for the edit prompt. It was never asked which job it needed.
+               It is now, in the same call that was already being paid for, so
+               the judgement costs nothing and the reviewer presses once.
+
+               The select below is an OVERRIDE, not the normal path. A reviewer
+               who disagrees with a verdict forces the other job on the next
+               press rather than arguing with it. Pull back appears only when
+               they have forced expand, because on Auto the stage that picks
+               the job picks the distance too. -->
             <button type="button" id="ai-enhance-btn" class="btn-ai" disabled>
               <svg class="ai-spark" width="14" height="14" aria-hidden="true"><use href="#i-spark"/></svg>
-              Restore &amp; Upscale
+              AI Enhance
             </button>
+            <label class="field" style="margin-top:10px;">
+              <span class="field-label">Job</span>
+              <select id="enhance-mode">
+                <option value="auto" selected>Auto — let the AI decide</option>
+                <option value="restore">Restore &amp; Upscale — keep the framing</option>
+                <option value="expand">Expand &amp; Reframe — zoom out</option>
+              </select>
+            </label>
+            <label class="field" id="expand-amount-field" style="margin-top:10px;" hidden>
+              <span class="field-label">Pull back</span>
+              <select id="expand-amount">
+                <option value="slight">A little — about 25% more scene</option>
+                <option value="moderate" selected>Moderate — about 50% more scene</option>
+                <option value="wide">Wide — roughly twice the scene</option>
+              </select>
+            </label>
             <label class="slider-container" style="margin-top:10px;">
               <span class="slider-label">Strength</span>
               <input type="range" id="enhance-strength" min="0" max="100" step="5" value="20" />
             </label>
             <small class="helper-text" id="enhance-strength-hint">20% — raise this only if the image still looks soft.</small>
-            <small class="helper-text">Restores and upscales the photograph — it does not redesign it. Uses paid AI credits. Runs only when you click.</small>
-
-            <!-- Expand & Reframe — the other AI job, and deliberately its own
-                 button rather than an option on the one above.
-
-                 Restore keeps the framing and recovers detail. Expand keeps
-                 the photograph and draws outward from it: the rest of a
-                 subject the photographer cropped at the chest, the rest of the
-                 room, enough margin that a landscape press photo can sit on a
-                 9:16 poster without the canvas cutting the story out of it.
-
-                 Nothing in the pixels says which one a picture wants — a tight
-                 portrait that needs widening and a soft wire photo that needs
-                 sharpening look the same to a heuristic — so the choice is the
-                 reviewer's, made once, at the moment they can see the poster.
-                 Both spend the same paid call, so neither is the other's
-                 fallback. -->
-            <div style="margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.08);">
-              <button type="button" id="ai-expand-btn" class="btn-ai" disabled>
-                <svg class="ai-spark" width="14" height="14" aria-hidden="true"><use href="#i-spark"/></svg>
-                Expand &amp; Reframe
-              </button>
-              <label class="field" style="margin-top:10px;">
-                <span class="field-label">Pull back</span>
-                <select id="expand-amount">
-                  <option value="slight">A little — about 25% more scene</option>
-                  <option value="moderate" selected>Moderate — about 50% more scene</option>
-                  <option value="wide">Wide — roughly twice the scene</option>
-                </select>
-              </label>
-              <small class="helper-text">Zooms out. Keeps the photograph and generates what continues past its edges — the rest of the body, the rest of the setting — to fill the poster's shape. For a photo cropped too tight. Uses paid AI credits.</small>
-            </div>
+            <small class="helper-text" id="enhance-mode-hint">Reads the photograph first, then either recovers detail or zooms out and generates what continues past its edges — whichever it needs, and it says which it chose. Uses paid AI credits. Runs only when you click.</small>
             <p id="ai-enhance-status" class="status-text" role="status" aria-live="polite"></p>
           </div></div>
         </div>

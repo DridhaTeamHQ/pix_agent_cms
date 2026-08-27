@@ -4517,6 +4517,177 @@ async function describeImageForEnhance(buffer, mime, visionPrompt = VISION_PROMP
   }
 }
 
+/* ── Deciding which job the picture needs ──
+   Restore and expand were originally two buttons because of an argument that
+   does not survive contact with this pipeline: that nothing in the pixels
+   distinguishes a photograph that wants widening from one that wants
+   sharpening, so a person has to choose. That is true of a HEURISTIC — of
+   anything reasoning from dimensions and file size. It is not true of a model
+   that looks at the picture, and there has been one in stage 1 of this route
+   all along, describing the photograph before the edit call. It was being
+   asked what the photograph contains and not what it needs.
+
+   So it is asked both, in the same call. This costs nothing extra: the
+   describe already ran, its answer is already the context the edit prompt is
+   built from, and a verdict is a few more tokens on a response that was
+   already being paid for. Two calls would have been the wasteful design.
+
+   What it weighs, and the second one is the part a person tends to miss:
+
+     framing   is a subject cut off where it hurts — at or above the chest, or
+               pressed into an edge — and would filling the poster's shape crop
+               away the subject or the context that makes the picture mean
+               something? That is the case for expand.
+     detail    is the framing already right for the poster, with the picture
+               only soft, noisy or small? That is the case for restore.
+     cost      expanding SHRINKS the subject. The output is a fixed 1024x1536
+               either way, so a photograph placed at 60% of the frame keeps
+               about 60% of its former resolution on the face, and a source
+               that was already small comes back worse than it went in. A
+               tight crop of a low-resolution photo is the hard case, and the
+               answer there is usually restore, or slight.
+
+   The verdict is advisory in exactly one direction: it can only choose
+   between the two jobs the caller already paid for. It cannot decline to run,
+   cannot pick a model, and cannot spend anything.
+
+   Fails soft, in the same way and for the same reason as the describe it
+   replaces: a vision stage that is down must not take the enhance down with
+   it. No JSON, bad JSON, an unknown verdict or a dead endpoint all land on
+   restore with an empty description — the conservative half of the pair, and
+   the behaviour this route had before any of this existed. */
+function buildPlanPrompt(posterRatio, sourceW, sourceH) {
+  const shape = sourceW && sourceH
+    ? `The photograph is ${sourceW}x${sourceH} pixels.`
+    : "The photograph's pixel dimensions are unknown.";
+  const target = posterRatio
+    ? `It will be placed on a ${posterRatio} poster, which crops whatever does not fit.`
+    : "The poster's shape is unknown; assume the photograph's own shape is kept.";
+
+  return [
+    "You are the first stage of a photo pipeline for a news organisation.",
+    "Look at this photograph and do two things.",
+    "",
+    shape,
+    target,
+    "",
+    "1. DESCRIBE it, factually and precisely, in 4-6 short sentences:",
+    "   - the people: count, apparent age, facial hair, glasses, expression,",
+    "     and exactly what they are wearing including colours and fabric;",
+    "   - WHERE the frame cuts each person off (for example 'cropped at",
+    "     mid-chest', 'legs out of frame below the knee', 'left arm leaves the",
+    "     frame'), and the posture and orientation of the body — seated or",
+    "     standing, leaning, turned, which way the arms and shoulders angle;",
+    "   - the setting, and what plausibly continues past each edge — floor,",
+    "     seating, walls, stage, crowd, sky, furniture;",
+    "   - the lighting: direction, hardness and colour temperature, and the",
+    "     camera look — focal length impression, depth of field, grain.",
+    "   If text, logos or signage appear, say only WHERE they are and how",
+    "   large. Do NOT transcribe or quote the words. Do NOT guess names.",
+    "",
+    "2. DECIDE which of two jobs this photograph needs.",
+    "",
+    "   \"expand\" — the frame is the problem. Choose this when a person is cut",
+    "   off where it hurts (at or above the chest, or a head close to the top",
+    "   edge), when the subject is pressed against an edge with no room, or",
+    "   when the photograph's shape is far enough from the poster's that",
+    "   filling the poster would crop the subject or the context away. The",
+    "   photograph will be placed smaller in the frame and the scene drawn",
+    "   outward from its edges.",
+    "",
+    "   \"restore\" — the frame is fine and the picture is the problem: soft,",
+    "   noisy, small, or full of compression artifacts. Nothing is reframed;",
+    "   detail is recovered.",
+    "",
+    "   Weigh this against expanding: the output is a fixed size either way, so",
+    "   placing the photograph smaller inside it leaves FEWER pixels on the",
+    "   face than the photograph already has. A large, sharp source can afford",
+    "   that. A small or soft one cannot — if the source is under about 900",
+    "   pixels on its long edge, prefer \"restore\", or \"slight\" at most.",
+    "   When the framing genuinely works, always prefer \"restore\": it is the",
+    "   job that cannot invent anything.",
+    "",
+    "3. If the verdict is \"expand\", say how far to pull back:",
+    "   \"slight\"   about 25% more scene — a head or chest crop that needs a",
+    "               little breathing room, or a small source.",
+    "   \"moderate\" about 50% more scene — the usual answer: a subject cut at",
+    "               the chest that should be seen to the waist.",
+    "   \"wide\"     roughly twice the scene — a very tight crop, or a shape far",
+    "               from the poster's, where a lot has to be built.",
+    "   If the verdict is \"restore\", set amount to \"slight\"; it is ignored.",
+    "",
+    "Answer as JSON, and nothing else:",
+    '{"description": "...", "verdict": "restore" | "expand", "amount": "slight" | "moderate" | "wide", "reason": "one short sentence, plain English, naming what you saw"}',
+  ].join("\n");
+}
+
+async function planEnhance(buffer, mime, { posterRatio = "", sourceW = 0, sourceH = 0 } = {}) {
+  // What every failure below returns. Restore is the half of the pair that
+  // reframes nothing, so a broken planner degrades to the safe job rather
+  // than to an outpaint nobody asked for.
+  const fallback = { mode: "restore", amount: "moderate", description: "", reason: "", decidedBy: "fallback" };
+  try {
+    const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${openaiApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: buildPlanPrompt(posterRatio, sourceW, sourceH) },
+            /* "low" is a 512px thumbnail, and that is the right input for this
+               question. Framing — where a body is cut, how much room is around
+               it, how the shape sits against the poster's — survives the
+               downscale intact. Grain and pore detail do not, and are not what
+               is being judged. */
+            { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
+          ],
+        }],
+        // Asking for JSON rather than parsing prose out of a sentence. The
+        // verdict drives which prompt runs, so it has to be a value, not an
+        // interpretation.
+        response_format: { type: "json_object" },
+        temperature: 0.2,
+        max_tokens: 500,
+      }),
+    });
+    if (!r.ok) {
+      console.warn(`⚠ enhance planner failed (${r.status}) — restoring without context`);
+      return fallback;
+    }
+    const data = await r.json();
+    const raw = data?.choices?.[0]?.message?.content || "";
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      console.warn("⚠ enhance planner returned unparseable JSON — restoring without context");
+      return fallback;
+    }
+
+    const verdict = String(parsed?.verdict || "").toLowerCase();
+    const amount = String(parsed?.amount || "").toLowerCase();
+    return {
+      // Anything but a clean "expand" is a restore. An unrecognised verdict is
+      // a planner that misunderstood the question, and the answer to that is
+      // the job that cannot invent anything.
+      mode: verdict === "expand" ? "expand" : "restore",
+      amount: ["slight", "moderate", "wide"].includes(amount) ? amount : "moderate",
+      description: String(parsed?.description || "").trim(),
+      reason: String(parsed?.reason || "").trim().slice(0, 200),
+      decidedBy: "ai",
+    };
+  } catch (e) {
+    console.warn("⚠ enhance planner error — restoring without context:", e.message);
+    return fallback;
+  }
+}
+
 // Primary engine: the self-hosted CodeFormer + Real-ESRGAN service on Railway
 // (pixel-faithful, never regenerates faces). Returns a PNG data URL, or null
 // if the service isn't configured / errors / times out — caller then falls
@@ -4546,27 +4717,44 @@ async function handleUpscaleImage(req, res) {
     const mime = req.headers["content-type"]?.includes("jpeg") ? "image/jpeg" : "image/png";
     const headline = decodeURIComponent(req.headers["x-headline"] || "").trim().slice(0, 200);
 
-    /* Two jobs behind one route, chosen by the caller.
+    /* Two jobs behind one route, and a third value that picks between them.
 
-         restore  keep the framing, recover detail — the default, and what
-                  every existing caller gets by sending no header at all.
+         restore  keep the framing, recover detail.
          expand   keep the photograph, widen the frame, draw the rest of the
                   subject and setting outward into it.
+         auto     let stage 1 look at the photograph and choose. What the UI
+                  sends unless a reviewer has overridden it.
 
-       They differ in three places below — the vision prompt, the requested
-       size and the edit prompt — and in nothing else, so they share the
-       transport, the model fallback, the quality rule and the error handling.
+       restore and expand differ in three places below — the vision prompt,
+       the requested size and the edit prompt — and in nothing else, so they
+       share the transport, the model fallback, the quality rule and the error
+       handling. auto is not a fourth path: it resolves to one of the two
+       before any of that runs.
 
-       An unrecognised value falls back to restore rather than 400ing. This is
-       a header on a route that already works; a client sending something odd
-       should get the old behaviour, not a failure. */
-    const mode = (req.headers["x-enhance-mode"] || "restore").toString().toLowerCase() === "expand"
-      ? "expand"
-      : "restore";
-    // How far to pull back. Prompt-level, so it is a request rather than a
-    // measurement — the model lands near it, not on it.
+       The DEFAULT here is restore, not auto, and deliberately so. This header
+       is the only thing standing between a caller that knows nothing about
+       any of this and a reframe it never asked for; a request that says
+       nothing should get the job that invents nothing. The UI asks for auto
+       explicitly, in one place, where the choice is visible.
+
+       An unrecognised value falls back to restore rather than 400ing, for the
+       same reason: this is a header on a route that already works, and a
+       client sending something odd should get the conservative behaviour, not
+       a failure. */
+    const rawMode = (req.headers["x-enhance-mode"] || "restore").toString().toLowerCase();
+    const requestedMode = ["auto", "expand", "restore"].includes(rawMode) ? rawMode : "restore";
+    // How far to pull back, when a reviewer has forced expand. Prompt-level,
+    // so it is a request rather than a measurement — the model lands near it,
+    // not on it. On the auto path stage 1 sets this instead.
     const rawAmount = (req.headers["x-expand-amount"] || "moderate").toString().toLowerCase();
-    const expandAmount = ["slight", "moderate", "wide"].includes(rawAmount) ? rawAmount : "moderate";
+    const requestedAmount = ["slight", "moderate", "wide"].includes(rawAmount) ? rawAmount : "moderate";
+    /* The source's real pixel dimensions, for the planner. Aspect alone is not
+       enough to answer "can this picture afford to be made smaller inside the
+       output" — a 400px crop and a 3000px one have the same shape and opposite
+       answers. Sent by the browser, which has the decoded image in hand. */
+    const srcDims = (req.headers["x-source-size"] || "").toString().match(/^(\d{1,5})x(\d{1,5})$/);
+    const sourceW = srcDims ? Number(srcDims[1]) : 0;
+    const sourceH = srcDims ? Number(srcDims[2]) : 0;
 
     /* One engine: gpt-image restores the photograph.
 
@@ -4597,18 +4785,8 @@ async function handleUpscaleImage(req, res) {
 
     // else fall through to gpt-image-1.5 ↓
 
-    /* Which shape to ask for is the mode's decision, and the two want
-       opposite things — see sizeForRatio() and sizeForExpand().
-
-       Restore follows the SOURCE: any other shape forces the model to invent
-       margin it was not asked for. Expand follows the POSTER: the margin is
-       what the writer pressed the button for, and a 9:16 poster is where a
-       landscape photograph most needs the room. */
     const posterRatio = (req.headers["x-poster-ratio"] || "").toString();
     const sizeHint = (req.headers["x-image-orientation"] || "").toString();
-    const size = mode === "expand"
-      ? sizeForExpand(posterRatio, sizeHint)
-      : sizeForRatio(posterRatio, sizeHint);
 
     /* HIGH, deliberately. This is the setting that decides whether skin comes
        back as skin or as clay.
@@ -4632,15 +4810,50 @@ async function handleUpscaleImage(req, res) {
 
     const t0 = Date.now();
 
-    // Stage 1 — understand the image (cheap, fails soft).
-    // Expand asks a different question: not "what is in this picture" but
-    // "where does it cut off, and what continues past the edge".
-    const description = await describeImageForEnhance(
-      buffer,
-      mime,
-      mode === "expand" ? EXPAND_VISION_PROMPT : VISION_PROMPT
-    );
-    if (description) console.log(`✓ vision context (${Date.now() - t0}ms): ${description.slice(0, 140)}…`);
+    /* Stage 1 — look at the photograph (cheap, fails soft).
+
+       Three questions, and which one is asked depends on what the caller
+       wants. On auto it is the planner, which describes AND returns a verdict
+       in one response; on a forced mode it is the plain describe, with the
+       prompt that suits the job the caller already chose — restore wants to
+       know what is IN the frame, expand wants to know where the frame cuts
+       off and what continues past it. */
+    let mode = requestedMode;
+    let expandAmount = requestedAmount;
+    let decidedBy = "caller";
+    let reason = "";
+    let description = "";
+
+    if (requestedMode === "auto") {
+      const plan = await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
+      mode = plan.mode;
+      expandAmount = plan.amount;
+      decidedBy = plan.decidedBy;
+      reason = plan.reason;
+      description = plan.description;
+      console.log(`✓ plan (${Date.now() - t0}ms): ${mode}${mode === "expand" ? ` / ${expandAmount}` : ""} — ${reason || "no reason given"}`);
+    } else {
+      description = await describeImageForEnhance(
+        buffer,
+        mime,
+        mode === "expand" ? EXPAND_VISION_PROMPT : VISION_PROMPT
+      );
+    }
+    if (description) console.log(`✓ vision context: ${description.slice(0, 140)}…`);
+
+    /* Which shape to ask for is the resolved mode's decision, and the two want
+       opposite things — see sizeForRatio() and sizeForExpand().
+
+       Restore follows the SOURCE: any other shape forces the model to invent
+       margin it was not asked for. Expand follows the POSTER: the margin is
+       the point, and a 9:16 poster is where a landscape photograph most needs
+       the room.
+
+       Chosen here rather than beside the headers, because until stage 1 has
+       run the mode may still be "auto" and there is nothing to choose from. */
+    const size = mode === "expand"
+      ? sizeForExpand(posterRatio, sizeHint)
+      : sizeForRatio(posterRatio, sizeHint);
 
     // Stage 2 — context-aware enhancement.
     // gpt-image-1.5 first; automatic fallback to gpt-image-1 if the account
@@ -4686,7 +4899,7 @@ async function handleUpscaleImage(req, res) {
       return;
     }
 
-    console.log(`✓ AI ${mode} done in ${Date.now() - t0}ms (${modelUsed}, ${size}, quality=${quality}${mode === "expand" ? `, ${expandAmount}` : ""})`);
+    console.log(`✓ AI ${mode} done in ${Date.now() - t0}ms (${modelUsed}, ${size}, quality=${quality}${mode === "expand" ? `, ${expandAmount}` : ""}, chosen by ${decidedBy})`);
     /* `quality` and `size` come back with the image so the setting can be
        checked from outside the box. IMAGE_QUALITY is an environment variable
        and an override in Railway silently reinstates the clay — without this
@@ -4700,7 +4913,19 @@ async function handleUpscaleImage(req, res) {
       // Which job ran. The two return pictures that differ in framing, not
       // just in sharpness, so the caller has to know which one it got before
       // it decides whether the writer's existing zoom and pan still apply.
+      // On the auto path the caller asked a question rather than gave an
+      // order, so this is also the answer to it.
       mode,
+      // How far it pulled back, when it expanded.
+      amount: mode === "expand" ? expandAmount : null,
+      /* Who chose, and why. A reviewer watching a paid call reframe a
+         photograph is owed both: "expand" alone reads as the software having
+         opinions, while "expand — he is cropped at the chest with no room
+         below" is a judgement they can agree or disagree with, and override
+         on the next press. "fallback" says the planner never answered and the
+         safe job ran, which must not be mistaken for the planner choosing it. */
+      decidedBy,
+      reason,
     });
   } catch (err) {
     console.error("✗ upscale-image error:", err);

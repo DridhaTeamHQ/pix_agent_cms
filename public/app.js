@@ -3738,16 +3738,10 @@ function paintPoster() {
     drawNavBar();
   }
 
-  // Both AI image jobs are only meaningful once a real background image is
-  // loaded, and neither is re-enabled while the other is mid-call — one paid
-  // gpt-image request at a time, and the second would land on a picture the
-  // first is about to replace.
-  const aiWorking = document.querySelector("#ai-enhance-btn.working, #ai-expand-btn.working");
-  for (const id of ["ai-enhance-btn", "ai-expand-btn"]) {
-    const btn = document.getElementById(id);
-    if (btn && !btn.classList.contains("working")) {
-      btn.disabled = !state.mainImage || Boolean(aiWorking);
-    }
+  // AI Enhance is only meaningful once a real background image is loaded
+  const enhanceBtn = document.getElementById("ai-enhance-btn");
+  if (enhanceBtn && !enhanceBtn.classList.contains("working")) {
+    enhanceBtn.disabled = !state.mainImage;
   }
 }
 
@@ -6750,10 +6744,11 @@ function setEnhanceStatus(msg, kind) {
   aiEnhanceStatus.textContent = msg || "";
 }
 
-const aiExpandBtn     = document.getElementById("ai-expand-btn");
-const expandAmountSel = document.getElementById("expand-amount");
+const enhanceModeSel    = document.getElementById("enhance-mode");
+const expandAmountSel   = document.getElementById("expand-amount");
+const expandAmountField = document.getElementById("expand-amount-field");
 
-/* Two jobs, one route, one handler.
+/* Two jobs behind one button.
 
      restore  the photograph as it is framed, with detail recovered.
      expand   the photograph placed smaller in a wider frame, with the rest of
@@ -6762,27 +6757,39 @@ const expandAmountSel = document.getElementById("expand-amount");
               body; a landscape photo comes back tall enough for a 9:16 poster
               instead of being cut to a strip by the canvas.
 
-   Everything around the call is identical — the snapshot, the page guard, the
-   status line, the failure path — so they share this. What differs is the mode
-   header, and what happens to the writer's framing when the picture lands. */
-const ENHANCE_MODES = {
-  restore: {
-    button: () => aiEnhanceBtn,
-    working: "Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…",
-    done: "Restored and upscaled",
-    failed: "Restore failed",
-  },
-  expand: {
-    button: () => aiExpandBtn,
-    working: "Expanding — reading how the photo is cropped, then drawing the scene outward (30–90s)…",
-    done: "Expanded and reframed",
-    failed: "Expand failed",
-  },
+   Which one runs is normally the server's stage 1 to decide, from the
+   photograph itself — see planEnhance() in server.mjs. The select is there for
+   a reviewer who disagrees with a verdict.
+
+   Everything around the call is identical either way — the snapshot, the page
+   guard, the status line, the failure path — so there is one of it. What
+   differs is the mode header, and what happens to the writer's framing when
+   the picture lands. */
+const ENHANCE_LABELS = {
+  restore: { done: "Restored and upscaled", failed: "Restore failed" },
+  expand:  { done: "Expanded and reframed", failed: "Expand failed" },
 };
 
-async function runImageAI(mode) {
-  const spec = ENHANCE_MODES[mode];
-  const btn = spec.button();
+const ENHANCE_WORKING = {
+  auto:    "Reading the photograph, deciding what it needs, then running it (30–90s)…",
+  restore: "Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…",
+  expand:  "Expanding — reading how the photo is cropped, then drawing the scene outward (30–90s)…",
+};
+
+/* Pull back is the distance to zoom out, and it only means anything when a
+   reviewer has forced expand. On Auto the stage that picks the job picks the
+   distance from the same look at the photograph, so leaving the control up
+   would offer a choice nothing is reading. */
+function syncEnhanceModeUI() {
+  if (!expandAmountField) return;
+  expandAmountField.hidden = (enhanceModeSel?.value || "auto") !== "expand";
+}
+if (enhanceModeSel) enhanceModeSel.addEventListener("change", syncEnhanceModeUI);
+syncEnhanceModeUI();
+
+async function runImageAI() {
+  const btn = aiEnhanceBtn;
+  const requestedMode = enhanceModeSel?.value || "auto";
   const img = state.mainImage;
   if (!img) return;
   // Whose picture this is. Read before the first await — see the commit below.
@@ -6790,12 +6797,7 @@ async function runImageAI(mode) {
 
   btn.disabled = true;
   btn.classList.add("working");
-  // Whichever button was NOT pressed goes down too: the pair spends the same
-  // paid call on the same picture, and the second result would overwrite the
-  // first on a page the writer has already stopped looking at.
-  const otherBtn = mode === "expand" ? aiEnhanceBtn : aiExpandBtn;
-  if (otherBtn) otherBtn.disabled = true;
-  setEnhanceStatus(spec.working);
+  setEnhanceStatus(ENHANCE_WORKING[requestedMode] || ENHANCE_WORKING.auto);
 
   try {
     // Snapshot the current background to a temp canvas, capped at 1536 on
@@ -6825,12 +6827,22 @@ async function runImageAI(mode) {
         // Story context helps the vision stage understand what the photo
         // shows, which sharpens the "preserve exactly this" instructions.
         "X-Headline": encodeURIComponent((state.headline || "").slice(0, 200)),
-        // Which of the two jobs to run. The server defaults to restore when
-        // this is absent or unrecognised.
-        "X-Enhance-Mode": mode,
-        // How far to pull back. Only read on the expand path; sent always so
-        // the request shape does not depend on the mode.
+        // Which job to run, or "auto" to let the server's stage 1 choose from
+        // the photograph. The server defaults to restore when this is absent
+        // or unrecognised — a caller that says nothing gets the job that
+        // reframes nothing.
+        "X-Enhance-Mode": requestedMode,
+        // How far to pull back, when expand has been forced. Ignored on the
+        // auto path, where stage 1 sets it; sent always so the request shape
+        // does not depend on the mode.
         "X-Expand-Amount": expandAmountSel?.value || "moderate",
+        /* The real pixel size, which the server cannot cheaply read out of the
+           PNG and the browser has in hand. The planner needs it: an expand
+           places the photograph smaller inside a fixed-size output, so a small
+           source comes back with less on the face than it started with, and
+           shape alone cannot tell a 400px crop from a 3000px one. These are
+           the capped dimensions, which is what the model will actually see. */
+        "X-Source-Size": `${tmp.width}x${tmp.height}`,
         // How much of the model output to keep. Both upscalers manufacture
         // roughly twice the fine detail the original had, which is what
         // reads as a painted face; mixing back toward a plain resample is
@@ -6880,22 +6892,30 @@ async function runImageAI(mode) {
     }
 
     renderPoster();
+
+    /* Say what ran, and on the auto path say why.
+
+       A reviewer who pressed one button and got a reframed photograph is owed
+       the reason — not to justify the software, but because the verdict is the
+       thing they might disagree with, and the select above is how they say so
+       on the next press. "Expanded and reframed" alone gives them nothing to
+       push against; "he was cropped at mid-chest with no room below" does. */
+    const label = ENHANCE_LABELS[data.mode] || ENHANCE_LABELS.restore;
     const engineLabel = data.engine || "AI";
-    setEnhanceStatus(`✓ ${spec.done} via ${engineLabel}. Re-pick a stock image to undo.`, "success");
+    const why = requestedMode === "auto" && data.reason ? ` — ${data.reason}` : "";
+    setEnhanceStatus(`✓ ${label.done} via ${engineLabel}${why}. Re-pick a stock image to undo.`, "success");
   } catch (err) {
-    setEnhanceStatus(`${spec.failed}: ${err.message}`, "error");
+    // Before the response lands there is no resolved mode, so the failure is
+    // named after what was asked for. On auto that is neither job yet.
+    const failed = ENHANCE_LABELS[requestedMode]?.failed || "Enhance failed";
+    setEnhanceStatus(`${failed}: ${err.message}`, "error");
   } finally {
     btn.classList.remove("working");
-    // Both come back: the pair was locked together for the duration of the
-    // call, so releasing only the one that was pressed would leave the other
-    // dead until the next repaint.
     btn.disabled = !state.mainImage;
-    if (otherBtn) otherBtn.disabled = !state.mainImage;
   }
 }
 
-if (aiEnhanceBtn) aiEnhanceBtn.addEventListener("click", () => runImageAI("restore"));
-if (aiExpandBtn)  aiExpandBtn.addEventListener("click", () => runImageAI("expand"));
+if (aiEnhanceBtn) aiEnhanceBtn.addEventListener("click", () => runImageAI());
 
 /* ── Theme toggle (dark default; persisted in localStorage) ── */
 (function initThemeToggle() {

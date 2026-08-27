@@ -4753,12 +4753,30 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
      scales the whole thing at the end, so the darkest point on the card is 85%
      of a very dark colour rather than an opaque one. */
   const FADE_MAX_ALPHA = 0.85;
-  const ink = tint || { r: 0, g: 0, b: 0 };
-  const stopAt = (position, alpha) =>
-    grad.addColorStop(
-      Math.min(1, Math.max(0, position)),
-      `rgba(${ink.r},${ink.g},${ink.b},${(alpha * FADE_MAX_ALPHA * opacity).toFixed(3)})`,
+
+  /* The colour is not one value down the whole gradient. It rides from a
+     visible mid-brightness version of the photograph's hue at the top down to
+     the picker point at the foot — see FADE_TINT_TOP_BRIGHTNESS for why a
+     single value cannot work. `position` doubles as the ramp parameter, which
+     it can because the gradient is defined over exactly the painted span.
+
+     An image with no usable hue passes null and gets the neutral this has
+     always been: black at every stop, no ramp, nothing to see. */
+  const hue = tint && typeof tint.hue === "number" ? tint.hue : null;
+  const inkAt = (position) => {
+    if (hue === null) return tint || { r: 0, g: 0, b: 0 };
+    const t = Math.min(1, Math.max(0, position));
+    return hsbToRgb(
+      hue,
+      FADE_TINT_TOP_SATURATION + (FADE_TINT_SATURATION - FADE_TINT_TOP_SATURATION) * t,
+      FADE_TINT_TOP_BRIGHTNESS + (FADE_TINT_BRIGHTNESS - FADE_TINT_TOP_BRIGHTNESS) * t,
     );
+  };
+  const stopAt = (position, alpha) => {
+    const at = Math.min(1, Math.max(0, position));
+    const ink = inkAt(at);
+    grad.addColorStop(at, `rgba(${ink.r},${ink.g},${ink.b},${(alpha * FADE_MAX_ALPHA * opacity).toFixed(3)})`);
+  };
   // Two ramps meeting at the first line of copy: a slow one over the
   // photograph, a short steep one under the words.
   // How dark it is directly behind the first line of copy. Everything above
@@ -5527,8 +5545,26 @@ async function ensureImageFocalPoint(image) {
    washed-out grey and a neon one to something luminous, and the fade would
    stop being a fade. Fixing S and B is what makes every card behave the same
    while still being its own colour. */
+/* The picker point: where the fade ENDS, at the foot of the card. */
 const FADE_TINT_SATURATION = 0.78;
 const FADE_TINT_BRIGHTNESS = 0.08;
+
+/* Where it starts, and the reason there is a second pair at all.
+
+   The picker point is #140404 — arithmetically red, visually black. Blended
+   over a mid-tone photograph at the alphas this fade actually uses, the
+   separation between its channels is 3 to 13 levels out of 255, which the eye
+   reads as grey. So the first version tinted correctly and looked exactly
+   like no tint at all: the colour was there and nobody could see it.
+
+   A gradient has a whole length to work with, though, and only its END has to
+   be that dark. Carrying the hue at a visible brightness through the middle
+   and easing down to the picker point gives 12 to 16 levels of separation
+   where the fade is most of what you are looking at — a colour gradient
+   rather than a grey one — while still arriving exactly where it was
+   specified to arrive. */
+const FADE_TINT_TOP_SATURATION = 0.85;
+const FADE_TINT_TOP_BRIGHTNESS = 0.42;
 
 /* What FRACTION OF THE PIXELS carry a usable colour. Below this the hue is not
    a fact about the image, it is noise — a black-and-white press photo, a snow
@@ -5642,7 +5678,10 @@ function imageFadeTint(image) {
         if (weight[best] > 0) {
           let hue = (Math.atan2(sinSum[best], cosSum[best]) * 180) / Math.PI;
           if (hue < 0) hue += 360;
-          tint = hsbToRgb(hue, FADE_TINT_SATURATION, FADE_TINT_BRIGHTNESS);
+          /* The hue travels with the colour: paintBottomFade needs it to build
+             the intermediate stops, and r/g/b stay the endpoint so anything
+             wanting just "the fade colour" still gets the picker point. */
+          tint = { hue, ...hsbToRgb(hue, FADE_TINT_SATURATION, FADE_TINT_BRIGHTNESS) };
         }
       }
     }

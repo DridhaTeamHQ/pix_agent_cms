@@ -4274,7 +4274,6 @@ function drawStoryScreen() {
     fadeHeight: L.gradient.fadeHeight,
     // The story page's own overlay control still rides on top of the shape.
     opacity: clamp(numberOr(state.storyOverlayOpacity, 100) / 100, 0, 1),
-    tint: imageFadeTint(image),
   });
 
   drawFixedLogos();
@@ -4863,7 +4862,7 @@ function blurBehindCopy(target, { width, height, copyTop, fadeHeight, radius }) 
   }
 }
 
-function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFade, opacity = 1, tint = null }) {
+function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFade, opacity = 1 }) {
   /* How far the fade reaches above the copy, as a multiple of the layout's
      own fadeHeight. That value was tuned for a fade that lands quickly, and
      the ink still has to reach full strength by the first line — so a short
@@ -4886,42 +4885,23 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
   const copyFrac = Math.min(1, Math.max(0, (copyTop - start) / span));
   const grad = target.createLinearGradient(0, start, 0, height);
 
-  /* The colour, and how far it is allowed to go.
-
-     `tint` is the photograph's own dark hue (see imageFadeTint); a picture
-     that has no usable hue passes null and gets the neutral this has always
-     been. Either way it is the same shape, only the ink changes.
-
-     FADE_MAX_ALPHA is the 85% on the picker, and it is the reason any of the
+  /* FADE_MAX_ALPHA is the 85% on the picker, and it is the reason any of the
      photograph survives at the foot. The curve below still runs its full 0..1
      — that is what keeps the copy line at the right relative depth — and this
      scales the whole thing at the end, so the darkest point on the card is 85%
-     of a very dark colour rather than an opaque one. */
+     of black rather than opaque.
+
+     Black, plainly. This briefly took its colour from the photograph's own
+     dominant hue; it was measured, tested and correct, and it is gone because
+     the cards are wanted neutral. The smoked glass above still drains colour
+     out of the picture behind the copy, which is a different thing and stays. */
   const FADE_MAX_ALPHA = 0.85;
-
-  /* The colour is not one value down the whole gradient. It rides from a
-     visible mid-brightness version of the photograph's hue at the top down to
-     the picker point at the foot — see FADE_TINT_TOP_BRIGHTNESS for why a
-     single value cannot work. `position` doubles as the ramp parameter, which
-     it can because the gradient is defined over exactly the painted span.
-
-     An image with no usable hue passes null and gets the neutral this has
-     always been: black at every stop, no ramp, nothing to see. */
-  const hue = tint && typeof tint.hue === "number" ? tint.hue : null;
-  const inkAt = (position) => {
-    if (hue === null) return tint || { r: 0, g: 0, b: 0 };
-    const t = Math.min(1, Math.max(0, position));
-    return hsbToRgb(
-      hue,
-      FADE_TINT_TOP_SATURATION + (FADE_TINT_SATURATION - FADE_TINT_TOP_SATURATION) * t,
-      FADE_TINT_TOP_BRIGHTNESS + (FADE_TINT_BRIGHTNESS - FADE_TINT_TOP_BRIGHTNESS) * t,
+  const stopAt = (position, alpha) =>
+    grad.addColorStop(
+      Math.min(1, Math.max(0, position)),
+      `rgba(0,0,0,${(alpha * FADE_MAX_ALPHA * opacity).toFixed(3)})`,
     );
-  };
-  const stopAt = (position, alpha) => {
-    const at = Math.min(1, Math.max(0, position));
-    const ink = inkAt(at);
-    grad.addColorStop(at, `rgba(${ink.r},${ink.g},${ink.b},${(alpha * FADE_MAX_ALPHA * opacity).toFixed(3)})`);
-  };
+
   // Two ramps meeting at the first line of copy: a slow one over the
   // photograph, a short steep one under the words.
   // How dark it is directly behind the first line of copy. Everything above
@@ -5029,7 +5009,6 @@ function drawHero() {
     height: canvas.height,
     copyTop: headlineTop,
     fadeHeight: L.gradient.fadeHeight,
-    tint: imageFadeTint(image),
   });
 
   // Draw both logos at fixed positions
@@ -5682,175 +5661,6 @@ async function ensureImageFocalPoint(image) {
 
   image.__focalPoint = focalPoint;
   return focalPoint;
-}
-
-/* ── The fade takes its colour from the picture ──────────────────────────────
-
-   The gradient used to be pure black on every card. Black is never wrong and
-   never right either: a warm stadium photograph and a cold studio portrait
-   both faded into the same neutral, which reads as a panel laid on top rather
-   than as the picture getting darker.
-
-   So the fade is tinted with the photograph's own dominant hue, taken to the
-   point on the colour picker: saturation 78, brightness 8. That is a very dark
-   colour — it has to be, it is doing the same job black was — but it is dark
-   RED under a red photograph and dark BLUE under a blue one, so the bottom of
-   the card belongs to the image above it.
-
-   Only the hue is taken from the picture. Its own saturation and brightness
-   are deliberately discarded: a washed-out photo would otherwise fade to a
-   washed-out grey and a neon one to something luminous, and the fade would
-   stop being a fade. Fixing S and B is what makes every card behave the same
-   while still being its own colour. */
-/* The picker point: where the fade ENDS, at the foot of the card. */
-const FADE_TINT_SATURATION = 0.78;
-const FADE_TINT_BRIGHTNESS = 0.08;
-
-/* Where it starts, and the reason there is a second pair at all.
-
-   The picker point is #140404 — arithmetically red, visually black. Blended
-   over a mid-tone photograph at the alphas this fade actually uses, the
-   separation between its channels is 3 to 13 levels out of 255, which the eye
-   reads as grey. So the first version tinted correctly and looked exactly
-   like no tint at all: the colour was there and nobody could see it.
-
-   A gradient has a whole length to work with, though, and only its END has to
-   be that dark. Carrying the hue at a visible brightness through the middle
-   and easing down to the picker point gives 12 to 16 levels of separation
-   where the fade is most of what you are looking at — a colour gradient
-   rather than a grey one — while still arriving exactly where it was
-   specified to arrive. */
-const FADE_TINT_TOP_SATURATION = 0.85;
-const FADE_TINT_TOP_BRIGHTNESS = 0.58;
-
-/* What FRACTION OF THE PIXELS carry a usable colour. Below this the hue is not
-   a fact about the image, it is noise — a black-and-white press photo, a snow
-   scene, a document scan — and tinting on it puts a colour cast on the card
-   that nobody asked for.
-
-   A fraction of pixels, deliberately, not a weighted sum. The first version of
-   this divided the chroma-weighted total by the raw pixel count, which is two
-   different units either side of the division: a photograph can be obviously
-   coloured and still score 0.07 that way, because the weights are chroma
-   values well under 1 while the divisor counts every grey pixel in the frame.
-   The effect was that ordinary news photographs — a pale marquee, white
-   shirts, one blue waistcoat — quietly failed the test and faded to neutral,
-   which looked exactly like the tint not working at all. Counting how many
-   pixels are coloured is the question actually being asked. */
-const FADE_TINT_MIN_CHROMA_SHARE = 0.08;
-
-function hsbToRgb(h, s, b) {
-  const c = b * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = b - c;
-  const [r, g, bl] =
-    h <  60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] :
-    h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
-  return {
-    r: Math.round((r + m) * 255),
-    g: Math.round((g + m) * 255),
-    b: Math.round((bl + m) * 255),
-  };
-}
-
-/* The dominant hue, as {r,g,b} at the fixed saturation and brightness above,
-   or null when the picture has no hue worth speaking of.
-
-   Cached on the image the way __focalPoint is: this runs a getImageData and
-   renderPoster() is called on every slider drag, so computing it per frame
-   would be the most expensive thing in the render loop for a value that
-   cannot change.
-
-   Hues are histogrammed in 15-degree buckets and weighted by chroma, so a
-   large flat wash of pale sky counts for less than a smaller area of strong
-   colour — which matches what a person would call the picture's colour. The
-   winning bucket is then refined to the chroma-weighted mean hue of the
-   pixels inside it, so the answer is not quantised to the bucket edge.
-
-   Circular mean, not arithmetic: hue wraps, and averaging 359 and 1 the naive
-   way gives 180 — cyan, the exact opposite of the red they actually are. */
-function imageFadeTint(image) {
-  if (image.__fadeTint !== undefined) return image.__fadeTint;
-
-  let tint = null;
-  try {
-    const w = image.naturalWidth || image.width;
-    const h = image.naturalHeight || image.height;
-    if (w && h) {
-      // A 64px thumbnail is plenty to find a dominant hue and keeps this at
-      // about a millisecond regardless of what was pasted in.
-      const scale = Math.min(1, 64 / Math.max(w, h));
-      const sw = Math.max(1, Math.round(w * scale));
-      const sh = Math.max(1, Math.round(h * scale));
-      const off = document.createElement("canvas");
-      off.width = sw;
-      off.height = sh;
-      const octx = off.getContext("2d", { willReadFrequently: true });
-      octx.drawImage(image, 0, 0, sw, sh);
-      const data = octx.getImageData(0, 0, sw, sh).data;
-
-      const BUCKETS = 24;                       // 15 degrees each
-      const weight = new Float64Array(BUCKETS);
-      const sinSum = new Float64Array(BUCKETS);
-      const cosSum = new Float64Array(BUCKETS);
-      let colouredPixels = 0;
-      let counted = 0;
-
-      for (let i = 0; i < data.length; i += 4) {
-        if (data[i + 3] < 128) continue;        // transparent pixels say nothing
-        counted++;
-        const r = data[i] / 255, g = data[i + 1] / 255, b = data[i + 2] / 255;
-        const max = Math.max(r, g, b);
-        const min = Math.min(r, g, b);
-        const chroma = max - min;
-        /* Near-grey and near-black pixels have a hue, arithmetically, but it
-           is meaningless and unstable — one bit of sensor noise swings it
-           right across the wheel. They are skipped rather than down-weighted
-           so they cannot accumulate into a majority by sheer count. */
-        if (chroma < 0.09 || max < 0.12) continue;
-
-        let hue;
-        if (max === r)      hue = 60 * (((g - b) / chroma) % 6);
-        else if (max === g) hue = 60 * (((b - r) / chroma) + 2);
-        else                hue = 60 * (((r - g) / chroma) + 4);
-        if (hue < 0) hue += 360;
-
-        // Weighted by chroma AND by how bright the pixel is: a strong colour
-        // in shadow is less of the picture's character than one in the light.
-        const wgt = chroma * (0.4 + 0.6 * max);
-        const bucket = Math.min(BUCKETS - 1, Math.floor(hue / (360 / BUCKETS)));
-        const rad = (hue * Math.PI) / 180;
-        weight[bucket] += wgt;
-        sinSum[bucket] += Math.sin(rad) * wgt;
-        cosSum[bucket] += Math.cos(rad) * wgt;
-        // Chroma still WEIGHTS which hue wins; it no longer decides whether
-        // there is one. Those are separate questions and conflating them is
-        // what made the gate unreachable for real photographs.
-        colouredPixels++;
-      }
-
-      if (counted && colouredPixels / counted >= FADE_TINT_MIN_CHROMA_SHARE) {
-        let best = 0;
-        for (let i = 1; i < BUCKETS; i++) if (weight[i] > weight[best]) best = i;
-        if (weight[best] > 0) {
-          let hue = (Math.atan2(sinSum[best], cosSum[best]) * 180) / Math.PI;
-          if (hue < 0) hue += 360;
-          /* The hue travels with the colour: paintBottomFade needs it to build
-             the intermediate stops, and r/g/b stay the endpoint so anything
-             wanting just "the fade colour" still gets the picker point. */
-          tint = { hue, ...hsbToRgb(hue, FADE_TINT_SATURATION, FADE_TINT_BRIGHTNESS) };
-        }
-      }
-    }
-  } catch (err) {
-    /* A cross-origin image taints the canvas and getImageData throws. That is
-       a normal thing for a scraped photo to be, not an error — the fade just
-       stays neutral, which is what it has always been. */
-    tint = null;
-  }
-
-  image.__fadeTint = tint;
-  return tint;
 }
 
 function waitForImage(image) {

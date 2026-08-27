@@ -4168,21 +4168,6 @@ function drawStoryScreen() {
   // makes the copy readable, not a blur across the whole frame.
   drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s, "none");
 
-  // Clear at the top so the picture is the picture; solid at the bottom so
-  // the copy sits on ink rather than on whatever the photo happens to be.
-  const overlayOpacity = clamp(numberOr(state.storyOverlayOpacity, 100) / 100, 0, 1);
-  const shade = (alpha) => `rgba(0, 0, 0, ${(alpha * overlayOpacity).toFixed(3)})`;
-  const dim = ctx.createLinearGradient(0, 0, 0, H);
-  dim.addColorStop(0, shade(0.12));
-  dim.addColorStop(0.42, shade(0.30));
-  dim.addColorStop(0.58, shade(0.86));
-  dim.addColorStop(0.72, shade(0.96));
-  dim.addColorStop(1, shade(0.99));
-  ctx.fillStyle = dim;
-  ctx.fillRect(0, 0, W, H);
-
-  drawFixedLogos();
-
   const left = L.headline.x;
   const maxWidth = L.headline.maxWidth;
   const body = storyBodyText();
@@ -4203,6 +4188,22 @@ function drawStoryScreen() {
   const stampHeight = state.showTimestamp ? bodyLine * 0.9 : 0;
   const blockHeight = headingHeight + bodyHeight + stampHeight;
   const top = H - STORY.bottomPadding * (H / 1700) - blockHeight;
+
+  /* Measured BEFORE the fade is painted, because the fade is anchored to the
+     top of this block — the same way the headline page anchors to its first
+     line. The fade used to be painted first, which is exactly why it could
+     only ever be a fixed wash over the whole frame: at that point nothing
+     here knew where the copy was going to land. */
+  paintBottomFade(ctx, {
+    width: W,
+    height: H,
+    copyTop: top,
+    fadeHeight: L.gradient.fadeHeight,
+    // The story page's own overlay control still rides on top of the shape.
+    opacity: clamp(numberOr(state.storyOverlayOpacity, 100) / 100, 0, 1),
+  });
+
+  drawFixedLogos();
 
   let y = top;
   if (storyHeadingText()) {
@@ -4604,37 +4605,80 @@ function drawBackground() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
+/* ── The bottom fade, drawn the same way on every page that carries copy ──
+
+   One continuous rise: transparent above the words, dark enough at the first
+   line to keep them readable while some photograph still shows through, then
+   progressively darker to solid black at the foot of the frame.
+
+   It is anchored to `copyTop` rather than to the frame, which is what makes a
+   set of slides look like a set: the fade follows the copy up when there are
+   more lines and down when there are fewer, so the picture gives way to ink at
+   the same distance above the text every time.
+
+   Shared because the two pages had drifted apart. The headline page had this
+   curve; the story page had a flat wash over the WHOLE frame — a 12% veil
+   across the top, so its photograph never showed clean, and a jump from 0.30
+   to 0.86 across sixteen percent of the height that read as a band rather
+   than a fade. Same picture, two different treatments, depending only on
+   which slide you were looking at.
+
+   `opacity` scales the whole curve, for the story page's overlay control. It
+   multiplies rather than replaces, so the shape survives at every setting. */
+function paintBottomFade(target, { width, height, copyTop, fadeHeight, opacity = 1 }) {
+  const start = Math.max(0, copyTop - fadeHeight);
+  const span = height - start;
+  // Copy sitting at or below the foot leaves nothing to fade.
+  if (span <= 0) return start;
+
+  /* Clamped because the two ramps below divide the span at this point, and a
+     copyTop outside the frame would put it outside 0..1 — every stop then
+     collapses onto the same offset and the fade renders as a hard black band
+     instead. Neither caller can currently do that (both anchor the block
+     inside the frame), which is exactly why it is worth pinning: a later
+     layout change should not be able to turn a fade into an edge. */
+  const copyFrac = Math.min(1, Math.max(0, (copyTop - start) / span));
+  const grad = target.createLinearGradient(0, start, 0, height);
+  const stopAt = (position, alpha) =>
+    grad.addColorStop(
+      Math.min(1, Math.max(0, position)),
+      `rgba(0,0,0,${(alpha * opacity).toFixed(3)})`,
+    );
+  // Two ramps meeting at the first line of copy: a slow one over the
+  // photograph, a short steep one under the words.
+  const above = (progress, alpha) => stopAt(progress * copyFrac, alpha);
+  const below = (progress, alpha) => stopAt(copyFrac + progress * (1 - copyFrac), alpha);
+
+  stopAt(0, 0);
+  above(0.22, 0.03);
+  above(0.48, 0.13);
+  above(0.72, 0.34);
+  above(1.00, 0.78);
+  below(0.38, 0.84);
+  below(0.72, 0.94);
+  below(1.00, 1.00);
+
+  target.fillStyle = grad;
+  target.fillRect(0, start, width, span);
+  return start;
+}
+
 function drawHero() {
   const image = state.mainImage || defaultMain;
   const zoom = (state.imageZoom || 100) / 100;
   drawCoverImage(image, 0, 0, canvas.width, canvas.height, state.imageOffset, zoom);
 
-  // One continuous fade: transparent above the copy, dark enough at the
-  // first line to keep it readable while preserving some photograph, then
-  // progressively darker until the bottom is fully black. headlineTop moves
-  // with line count, so the fade continues to follow short and long titles.
+  // headlineTop moves with line count, so the fade follows short and long
+  // titles alike. See paintBottomFade for the curve — the story page draws
+  // the same one, anchored to its own copy.
   const L = getLayout();
   const headlineTop = state._render?.top ?? (canvas.height - L.headline.bottomPadding - 200);
-  const gradientStart = Math.max(0, headlineTop - L.gradient.fadeHeight);
-  const gradientHeight = canvas.height - gradientStart;
-  const headlineFrac = (headlineTop - gradientStart) / gradientHeight;
-  const grad = ctx.createLinearGradient(0, gradientStart, 0, canvas.height);
-  const stopAt = (position, alpha) =>
-    grad.addColorStop(Math.min(1, position), `rgba(0,0,0,${alpha.toFixed(2)})`);
-  const beforeHeadline = (progress, alpha) => stopAt(progress * headlineFrac, alpha);
-  const belowHeadline = (progress, alpha) =>
-    stopAt(headlineFrac + progress * (1 - headlineFrac), alpha);
-
-  grad.addColorStop(0, "rgba(0,0,0,0)");
-  beforeHeadline(0.22, 0.03);
-  beforeHeadline(0.48, 0.13);
-  beforeHeadline(0.72, 0.34);
-  beforeHeadline(1.00, 0.78);
-  belowHeadline(0.38, 0.84);
-  belowHeadline(0.72, 0.94);
-  belowHeadline(1.00, 1.00);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, gradientStart, canvas.width, gradientHeight);
+  paintBottomFade(ctx, {
+    width: canvas.width,
+    height: canvas.height,
+    copyTop: headlineTop,
+    fadeHeight: L.gradient.fadeHeight,
+  });
 
   // Draw both logos at fixed positions
   drawFixedLogos();

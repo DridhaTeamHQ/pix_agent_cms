@@ -5530,11 +5530,21 @@ async function ensureImageFocalPoint(image) {
 const FADE_TINT_SATURATION = 0.78;
 const FADE_TINT_BRIGHTNESS = 0.08;
 
-/* Below this share of coloured pixels the hue is not a fact about the image,
-   it is noise — a black-and-white press photo, a snow scene, a document scan.
-   Tinting on a hue that weak produces a colour cast nobody asked for, so those
-   fall back to the neutral the fade has always used. */
-const FADE_TINT_MIN_CHROMA_SHARE = 0.12;
+/* What FRACTION OF THE PIXELS carry a usable colour. Below this the hue is not
+   a fact about the image, it is noise — a black-and-white press photo, a snow
+   scene, a document scan — and tinting on it puts a colour cast on the card
+   that nobody asked for.
+
+   A fraction of pixels, deliberately, not a weighted sum. The first version of
+   this divided the chroma-weighted total by the raw pixel count, which is two
+   different units either side of the division: a photograph can be obviously
+   coloured and still score 0.07 that way, because the weights are chroma
+   values well under 1 while the divisor counts every grey pixel in the frame.
+   The effect was that ordinary news photographs — a pale marquee, white
+   shirts, one blue waistcoat — quietly failed the test and faded to neutral,
+   which looked exactly like the tint not working at all. Counting how many
+   pixels are coloured is the question actually being asked. */
+const FADE_TINT_MIN_CHROMA_SHARE = 0.08;
 
 function hsbToRgb(h, s, b) {
   const c = b * s;
@@ -5590,7 +5600,7 @@ function imageFadeTint(image) {
       const weight = new Float64Array(BUCKETS);
       const sinSum = new Float64Array(BUCKETS);
       const cosSum = new Float64Array(BUCKETS);
-      let chromaWeight = 0;
+      let colouredPixels = 0;
       let counted = 0;
 
       for (let i = 0; i < data.length; i += 4) {
@@ -5620,10 +5630,13 @@ function imageFadeTint(image) {
         weight[bucket] += wgt;
         sinSum[bucket] += Math.sin(rad) * wgt;
         cosSum[bucket] += Math.cos(rad) * wgt;
-        chromaWeight += wgt;
+        // Chroma still WEIGHTS which hue wins; it no longer decides whether
+        // there is one. Those are separate questions and conflating them is
+        // what made the gate unreachable for real photographs.
+        colouredPixels++;
       }
 
-      if (counted && chromaWeight / counted >= FADE_TINT_MIN_CHROMA_SHARE) {
+      if (counted && colouredPixels / counted >= FADE_TINT_MIN_CHROMA_SHARE) {
         let best = 0;
         for (let i = 1; i < BUCKETS; i++) if (weight[i] > weight[best]) best = i;
         if (weight[best] > 0) {

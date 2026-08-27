@@ -4260,12 +4260,12 @@ function drawStoryScreen() {
      line. The fade used to be painted first, which is exactly why it could
      only ever be a fixed wash over the whole frame: at that point nothing
      here knew where the copy was going to land. */
-  blurBehindCopy(ctx, {
+  paintMistGlass(ctx, {
     width: W,
     height: H,
     copyTop: top,
     fadeHeight: blurReach(L.gradient.fadeHeight),
-    radius: FADE_BLUR_RADIUS * (H / 1700),
+    opacity: clamp(numberOr(state.storyOverlayOpacity, 100) / 100, 0, 1),
   });
   paintBottomFade(ctx, {
     width: W,
@@ -4744,7 +4744,6 @@ function drawBackground() {
    preview is rather than a fifth less. */
 /* Against the 1700px reference frame, so a 1080-wide export is treated the
    same amount a 920 preview is rather than a fifth less. */
-const FADE_BLUR_RADIUS = 7;
 
 /* Smoked glass, which is not the same thing as more blur.
 
@@ -4757,8 +4756,6 @@ const FADE_BLUR_RADIUS = 7;
    So the blur drops and these do the work instead. Saturation first, because
    that is what separates smoke from fog: fog is white and hides things,
    smoke is grey and drains them. */
-const FADE_GLASS_SATURATE = 0.55;
-const FADE_GLASS_CONTRAST = 0.86;
 
 /* How far above the first line any of this reaches, as a multiple of the
    layout's fadeHeight.
@@ -4793,89 +4790,282 @@ function blurReach(layoutFade) {
   return layoutFade * FADE_BLUR_STRETCH;
 }
 
-function blurBehindCopy(target, { width, height, copyTop, fadeHeight, radius }) {
-  const start = Math.max(0, copyTop - fadeHeight);
-  if (height - start <= 0 || radius <= 0) return;
 
-  const source = target.canvas;
-  if (!source) return;
+/* The panel colour: #17130F — HSB(33, 35, 9) — laid at 85%.
+
+   Fixed, not read from the photograph. Reading it per picture was tried and
+   half worked: a warm pitch gave hue 33, a blue valley 215. What killed it was
+   a press photograph of a man in a navy suit in front of a US flag coming back
+   RED, hue 359 — the hue is picked by chroma weight and a saturated flag
+   outvotes a large area of dark navy, so the panel took its colour from the
+   backdrop while the subject was a different colour entirely. A newsroom has a
+   lot of those.
+
+   Fixing it costs almost nothing, because at saturation 35 and brightness 9
+   under an 85% fill every hue is nearly the same near-black: the difference
+   between 33 and 196 is a lean you have to look for. The per-image hue was
+   buying very little and risking a card tinted by a flag. */
+/* Kept for the panel alone. The per-image hue machinery this used to serve
+   was removed with the fade's tint; the panel still wants to be expressed as
+   a hue with a fixed saturation and brightness rather than as a magic hex,
+   because that is the rule the design is written to. */
+function hsbToRgb(h, s, b) {
+  const c = b * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = b - c;
+  const [r, g, bl] =
+    h <  60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] :
+    h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return {
+    r: Math.round((r + m) * 255),
+    g: Math.round((g + m) * 255),
+    b: Math.round((bl + m) * 255),
+  };
+}
+
+function glassPanelColour() {
+  return hsbToRgb(GLASS.hue, GLASS.saturation, GLASS.brightness);
+}
+
+const GLASS = (window.GLASS = Object.assign({
+  on: true,
+
+  /* The panel, to spec: fill #0F1517 at 85% over a 16px background blur.
+     #0F1517 is HSB(195, 35, 9), and 35/9/85% are FIXED — only H moves, per
+     photograph. That is the whole rule: a warm pitch gives H 33, a blue
+     stadium H 215, and every card is otherwise identical, so a set of slides
+     reads as one design rather than as a colour effect applied per picture. */
+  hue: 33,          // #17130F, with the saturation and brightness below.
+  saturation: 0.35, // FIXED. From the picker.
+  brightness: 0.09, // FIXED. From the picker.
+
+  /* One colour on every card, rather than the hue read from each photograph.
+
+     Reading it per picture was the original idea and it half worked: a warm
+     pitch gave hue 33, a blue valley 215, and the card belonged to its own
+     image. What killed it was watching a press photograph of a man in a navy
+     suit standing in front of a US flag come back RED — hue 359. The hue is
+     picked by chroma weight, and a saturated flag outvotes a large area of
+     dark navy, so the panel took its colour from the backdrop while the
+     subject of the photograph was a different colour entirely. That is not a
+     tuning problem; on any picture where the loudest colour is not the
+     subject's, the answer is wrong, and a newsroom has a lot of those.
+
+     What made fixing it cheap is the spec itself. At saturation 35 and
+     brightness 9 under an 85% fill, every hue is nearly the same near-black —
+     the difference between 33 and 196 is a lean you have to look for. So the
+     per-image hue was buying very little and risking a card tinted by a flag.
+
+     The per-image path is gone rather than flagged off: the hue measurement
+     it needed went with the fade's own tint, and a flag pointing at deleted
+     machinery is worse than no flag. */
+  fillAlpha: 0.85,  // FIXED. The 85% beside the hex.
+
+  /* Blur is quoted in the design's own units — 16 on a 382-wide card — and
+     scaled to whatever the poster canvas actually is, so the frost is the
+     same thickness relative to the card at any export size. */
+  blurAt: 16,
+  blurCardWidth: 382,
+  downscale: 4,     // the blur is reached by downsampling; see paintMistGlass
+
+  refract: 0.022,   // how far the glass bends the picture, as a share of width
+  refractStrips: 56,// depth resolution of the bend
+  sheen: 0.04,      // a breath of white along the leading edge
+
+  /* The fill is 85% of a near-black, so it does the darkening the gradient
+     used to. Left at 0.85 the two would stack to near-opaque and the
+     photograph would be gone entirely. */
+  fadeMax: 0.20,
+}, window.GLASS));
+
+function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 1 }) {
+  const start = Math.max(0, copyTop - fadeHeight);
+  const span = height - start;
+  if (span <= 0) return;
+  const copyFrac = Math.min(1, Math.max(0, (copyTop - start) / span));
+  const glassTint = glassPanelColour();
+
+  const canvas = target.canvas;
+  if (!GLASS.on || !canvas || span <= 2 || width <= 2) return;
+
+  /* ── Design space vs device pixels ────────────────────────────────────
+     Everything handed to this function — width, start, span — is in DESIGN
+     space, the 920x1700 the layout is written against. The canvas underneath
+     is not necessarily that size: renderToHighResCanvas exports at up to 4x
+     by scaling the context, and the video overlay does the same.
+
+     Every other draw call here is unaffected, because a scaled context maps
+     design coordinates to device pixels on its own. This one is different: it
+     READS the canvas, and drawImage's SOURCE rectangle is not transformed. A
+     source rect of (0, start, 920, span) against a 3680-wide export canvas
+     reads the top-left corner instead of the copy band — the preview would
+     look right and the published card would carry a frosted crop of the wrong
+     part of the photograph.
+
+     So the source rect is converted through the live transform, and the glass
+     is built at device resolution so a 4x export is not fed a 1x layer. */
+  const m = typeof target.getTransform === "function" ? target.getTransform() : null;
+  const sx = m && m.a ? m.a : 1;
+  const sy = m && m.d ? m.d : 1;
+  const ox = m ? m.e : 0;
+  const oy = m ? m.f : 0;
+
+  const devW = Math.max(2, Math.round(width * sx));
+  const devSpan = Math.max(2, Math.round(span * sy));
+
+  /* The band, at a fraction of its size. Reading back from the canvas being
+     drawn on is safe here: the photograph and its backdrop are already down,
+     and nothing after this point has been painted yet. */
+  const sw = Math.max(2, Math.round(devW / GLASS.downscale));
+  const sh = Math.max(2, Math.round(devSpan / GLASS.downscale));
+  const small = document.createElement("canvas");
+  small.width = sw;
+  small.height = sh;
+  const sctx = small.getContext("2d", { willReadFrequently: false });
+  if (!sctx) return;
 
   try {
-    /* ── Why the frame is padded before it is blurred ──
+    sctx.drawImage(canvas, ox, start * sy + oy, devW, devSpan, 0, 0, sw, sh);
+  } catch (err) {
+    /* A tainted canvas does not throw on drawImage, but a detached or
+       zero-sized one can. The fade alone is a complete treatment, so losing
+       the glass costs legibility nothing. */
+    return;
+  }
 
-       A blur samples outward, and past the edge of a canvas there is nothing
-       to sample: those samples come back transparent, so the outer band of the
-       blurred layer is partly see-through and the SHARP original shows through
-       it. At the bottom of the card that is a strip the width of the radius
-       that is visibly not frosted while everything above it is — and it lands
-       exactly where the mask is fully opaque and the blur is meant to be doing
-       all of the work.
+  // Build the finished glass at full size, then lay it down in one pass — so
+  // the ramp masks the whole stack and not each layer separately.
+  const glass = document.createElement("canvas");
+  glass.width = devW;
+  glass.height = devSpan;
+  const g = glass.getContext("2d");
+  if (!g) return;
 
-       So the picture is copied onto a canvas `pad` larger on every side, with
-       its edge rows and columns stretched out to fill that margin, and the
-       blur runs on THAT. Every sample inside the real frame now lands on real
-       pixels. The margin is cropped away when the result is composited back,
-       so nothing of the padding is ever seen — it exists only to give the blur
-       something to read. */
-    const pad = Math.ceil(radius) + 2;
-    const extW = width + pad * 2;
-    const extH = height + pad * 2;
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = "high";
 
-    const ext = document.createElement("canvas");
-    ext.width = extW;
-    ext.height = extH;
-    const ectx = ext.getContext("2d");
-    ectx.drawImage(source, 0, 0, width, height, pad, pad, width, height);
-    // Edge extension: one row/column each way, stretched across the margin.
-    ectx.drawImage(source, 0, 0, width, 1, pad, 0, width, pad);                     // top
-    ectx.drawImage(source, 0, height - 1, width, 1, pad, height + pad, width, pad); // bottom
-    ectx.drawImage(source, 0, 0, 1, height, 0, pad, pad, height);                   // left
-    ectx.drawImage(source, width - 1, 0, 1, height, width + pad, pad, pad, height); // right
+  /* ── Refraction ───────────────────────────────────────────────────────
+     Blur alone is fog, not glass. What separates the two is that glass BENDS
+     what is behind it: a straight roofline behind real frosted glass arrives
+     wavy, and it is that displacement, not the softness, that tells the eye
+     it is looking through a solid.
 
-    const off = document.createElement("canvas");
-    off.width = extW;
-    off.height = extH;
-    const octx = off.getContext("2d");
+     Done by re-drawing the blurred band as horizontal strips, each pulled
+     sideways by a smooth function of its own depth. Two sine waves of
+     unrelated frequency are summed so the bend never repeats visibly — one
+     wave alone reads as a ripple effect, which is a filter, not a surface.
 
-    octx.filter = `blur(${radius}px) saturate(${FADE_GLASS_SATURATE}) contrast(${FADE_GLASS_CONTRAST})`;
-    octx.drawImage(ext, 0, 0);
-    octx.filter = "none";
+     The bend is strongest at the leading edge and settles as it descends.
+     Real glass refracts hardest where it is thickest and where the eye meets
+     it at an angle, and it also puts the distortion where the photograph is
+     still legible — by the time the copy starts, the picture is far enough
+     gone that bending it further would only cost contrast. */
+  /* The 16px blur is specified against a 382-wide card, so it scales with the
+     canvas. Most of it is delivered by the downsample itself — drawing the
+     band at 1/4 size and scaling back up IS a blur of roughly that factor —
+     and the ctx.filter below only has to supply the remainder. Asking
+     ctx.filter for the whole 38px directly is the single most expensive call
+     in a loop that runs on every drag; this way it costs a fraction. */
+  const blurTarget = (GLASS.blurAt * devW) / GLASS.blurCardWidth;
+  const smallBlur = `blur(${Math.max(1, Math.round(blurTarget / GLASS.downscale))}px)`;
 
-    /* Keep only what the mask says to keep. `destination-in` intersects what
-       is already on this canvas with the alpha being painted, which is how the
-       blur arrives gradually instead of as a panel. Offset by `pad`, since
-       this canvas is in padded coordinates.
-
-       Eased, not linear, and that is the whole difference between a blur that
-       fades in and one with a findable edge. A linear mask goes from no change
-       at all to a constant rate of change in a single step: there is an
-       instant where the softening switches on, and the eye finds it, which is
-       the line appearing just above the first line of copy. Smoothstep leaves
-       at zero rate and arrives at zero rate, so there is no such instant at
-       either end — it is already slightly soft before anyone could say it had
-       started, and fully soft before it stops changing.
-
-       It also buys back the reach: linear crosses the threshold where
-       softening shows around a tenth of the way in, smoothstep not until a
-       fifth, so the ramp can be nearly twice as long and still not appear to
-       begin any higher up the picture. */
-    const mask = octx.createLinearGradient(0, start + pad, 0, copyTop + pad);
-    const MASK_SAMPLES = 24;
-    for (let i = 0; i <= MASK_SAMPLES; i++) {
-      const t = i / MASK_SAMPLES;
-      mask.addColorStop(t, `rgba(0,0,0,${(t * t * (3 - 2 * t)).toFixed(4)})`);
+  const bendMax = devW * GLASS.refract;
+  if (bendMax >= 0.5) {
+    const strips = Math.max(8, Math.round(GLASS.refractStrips));
+    const stripH = glass.height / strips;
+    // Sampled a strip taller than it is drawn, so a bent strip never exposes
+    // an unpainted sliver where it has been pulled away from its neighbour.
+    const bleed = Math.max(1, stripH * 0.6);
+    for (let i = 0; i < strips; i++) {
+      const t = i / (strips - 1);
+      const wave = Math.sin(t * 7.6) * 0.62 + Math.sin(t * 17.3 + 1.7) * 0.38;
+      // Falls from full bend at the leading edge to a third of it at the foot.
+      const depth = 1 - 0.66 * t;
+      const dx = wave * bendMax * depth;
+      // A little vertical give as well, or the bend reads as a shear.
+      const dy = Math.cos(t * 11.1) * bendMax * 0.35 * depth;
+      const sy = (i * stripH - bleed) / GLASS.downscale;
+      const shh = (stripH + bleed * 2) / GLASS.downscale;
+      g.filter = smallBlur;
+      g.drawImage(
+        small,
+        0, Math.max(0, sy), sw, Math.min(sh, shh),
+        dx, i * stripH - bleed + dy, glass.width, stripH + bleed * 2,
+      );
     }
-    octx.globalCompositeOperation = "destination-in";
-    octx.fillStyle = mask;
-    octx.fillRect(0, start + pad, extW, extH - (start + pad));
-    octx.globalCompositeOperation = "source-over";
+    g.filter = "none";
+  } else {
+    g.filter = smallBlur;
+    g.drawImage(small, 0, 0, sw, sh, 0, 0, glass.width, glass.height);
+    g.filter = "none";
+  }
 
-    // Crop the padding back off on the way home.
-    target.drawImage(off, pad, pad, width, height, 0, 0, width, height);
-  } catch {
-    /* A tainted canvas cannot be read back. The fade still runs and the card
-       is still legible — it just is not frosted, which is the right way for
-       this to degrade. */
+  /* The bend pulls strips inward from the sides, so the outermost few pixels
+     can end up unpainted. Stretch the edge columns outward to cover it —
+     cheaper than drawing oversized and clipping, and invisible under this
+     much blur. */
+  if (bendMax >= 0.5) {
+    const edge = Math.ceil(bendMax) + 2;
+    g.drawImage(glass, edge, 0, 2, glass.height, 0, 0, edge, glass.height);
+    g.drawImage(glass, glass.width - edge - 2, 0, 2, glass.height, glass.width - edge, 0, edge, glass.height);
+  }
+
+
+  /* The colour, blended rather than painted. "soft-light" keeps the glass's
+     own luminance — its highlights stay highlights — and moves only its hue
+     and saturation toward the photograph's dominant colour, which is what
+     makes this read as tinted frost instead of a sheet of colour. A picture
+     with no usable hue (imageFadeTint returns null on greyscale and on any
+     cross-origin image) simply skips this and keeps the neutral glass. */
+  /* One flat fill, source-over — which is what a fill in the design tool is.
+
+     The two-pass soft-light + "color" blend this replaces was solving a
+     problem that does not exist under this spec. That approach varied how
+     MUCH colour landed, which meant saturation drifted per photograph; here
+     saturation and brightness are pinned at 35 and 9 and only the hue moves,
+     so a flat fill is not a simplification, it is the requirement. */
+  if (glassTint) {
+    g.globalAlpha = GLASS.fillAlpha;
+    g.fillStyle = `rgb(${glassTint.r},${glassTint.g},${glassTint.b})`;
+    g.fillRect(0, 0, glass.width, glass.height);
+    g.globalAlpha = 1;
+  }
+
+  /* The ramp, applied to the finished stack. It reaches full strength at the
+     copy line and holds, so every line of type sits on the same glass — a
+     ramp that kept climbing under the words would leave the last line on a
+     different surface from the first. */
+  g.globalCompositeOperation = "destination-in";
+  const mask = g.createLinearGradient(0, 0, 0, glass.height);
+  const at = (p, a) => mask.addColorStop(Math.min(1, Math.max(0, p)), `rgba(0,0,0,${a})`);
+  for (let i = 0; i <= 12; i++) {
+    const t = i / 12;
+    // Smoothstep: no corner at either end, so the glass has no findable top.
+    at(t * copyFrac, t * t * (3 - 2 * t));
+  }
+  at(copyFrac, 1);
+  at(1, 1);
+  g.fillStyle = mask;
+  g.fillRect(0, 0, glass.width, glass.height);
+  g.globalCompositeOperation = "source-over";
+
+  const prevAlpha = target.globalAlpha;
+  target.globalAlpha = opacity;
+  target.drawImage(glass, 0, 0, glass.width, glass.height, 0, start, width, span);
+  target.globalAlpha = prevAlpha;
+
+  /* A breath of white along the leading edge. Real glass catches light where
+     it begins; without it the frost has no thickness and reads as a blur
+     someone applied rather than as a surface. Kept under a twentieth so it is
+     felt and not seen. */
+  if (GLASS.sheen > 0) {
+    const edge = Math.max(1, Math.round(span * 0.06));
+    const sheen = target.createLinearGradient(0, start + copyFrac * span - edge, 0, start + copyFrac * span + edge);
+    sheen.addColorStop(0, "rgba(255,255,255,0)");
+    sheen.addColorStop(0.5, `rgba(255,255,255,${(GLASS.sheen * opacity).toFixed(3)})`);
+    sheen.addColorStop(1, "rgba(255,255,255,0)");
+    target.fillStyle = sheen;
+    target.fillRect(0, start + copyFrac * span - edge, width, edge * 2);
   }
 }
 
@@ -4912,7 +5102,11 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
      dominant hue; it was measured, tested and correct, and it is gone because
      the cards are wanted neutral. The smoked glass above still drains colour
      out of the picture behind the copy, which is a different thing and stays. */
-  const FADE_MAX_ALPHA = 0.85;
+  /* Pulled back from 0.85 now that the glass runs first. The two stack
+     multiplicatively — an 85% fill of #17130F under this — so leaving it
+     would put the foot of every card at 0.97 and lose the photograph
+     entirely. */
+  const FADE_MAX_ALPHA = 0.20;
   const stopAt = (position, alpha) =>
     grad.addColorStop(
       Math.min(1, Math.max(0, position)),
@@ -5014,12 +5208,11 @@ function drawHero() {
   // the same one, anchored to its own copy.
   const L = getLayout();
   const headlineTop = state._render?.top ?? (canvas.height - L.headline.bottomPadding - 200);
-  blurBehindCopy(ctx, {
+  paintMistGlass(ctx, {
     width: canvas.width,
     height: canvas.height,
     copyTop: headlineTop,
     fadeHeight: blurReach(L.gradient.fadeHeight),
-    radius: FADE_BLUR_RADIUS * (canvas.height / 1700),
   });
   paintBottomFade(ctx, {
     width: canvas.width,

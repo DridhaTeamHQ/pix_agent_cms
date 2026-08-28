@@ -1198,7 +1198,7 @@ writeHeadline.addEventListener("input", () => {
   state.headlineTouched = true;
   headlineEdit.value = writeHeadline.value;
   setWriteStatus("");
-  renderPoster();
+  scheduleRender();
 });
 
 writeDetail.addEventListener("input", (event) => {
@@ -1207,7 +1207,7 @@ writeDetail.addEventListener("input", (event) => {
   state.detailTouched = true;
   if (detailEdit) detailEdit.value = state.detailText;
   setWriteStatus("");
-  renderPoster();
+  scheduleRender();
 });
 writeDetail.addEventListener("keydown", handleDetailBulletEnter);
 
@@ -1576,7 +1576,7 @@ headlineEdit.addEventListener("input", () => {
   // Editing the headline used to overwrite the paragraph whenever a
   // heuristic guessed the paragraph "was" the headline. The guess misfired,
   // silently replacing real bullet copy. The two fields are independent now.
-  renderPoster();
+  scheduleRender();
 });
 
 if (detailEdit) {
@@ -1585,7 +1585,7 @@ if (detailEdit) {
     state.detailText = limitDetailTextClient(text);
     state.detailTouched = true;
     writeDetail.value = state.detailText;
-    renderPoster();
+    scheduleRender();
   });
   detailEdit.addEventListener("keydown", handleDetailBulletEnter);
 }
@@ -1595,28 +1595,28 @@ if (detailEdit) {
    takes. */
 document.getElementById("story-heading-edit")?.addEventListener("input", (e) => {
   state.storyHeading = e.target.value;
-  renderPoster();
+  scheduleRender();
 });
 document.getElementById("story-body-edit")?.addEventListener("input", (e) => {
   state.storyBody = e.target.value;
-  renderPoster();
+  scheduleRender();
 });
 
 storyOverlayOpacityInput?.addEventListener("input", (event) => {
   if (activePage()?.type !== "story") return;
   state.storyOverlayOpacity = clamp(Number(event.target.value), 0, 100);
-  renderPoster();
+  scheduleRender();
 });
 
 // Image offset sliders
 imgOffsetX.addEventListener("input", () => {
   state.imageOffset.x = Number(imgOffsetX.value);
-  renderPoster();
+  scheduleRender();
 });
 
 imgOffsetY.addEventListener("input", () => {
   state.imageOffset.y = Number(imgOffsetY.value);
-  renderPoster();
+  scheduleRender();
 });
 
 imgResetBtn.addEventListener("click", () => {
@@ -1689,7 +1689,7 @@ function applyFilterPreset(name) {
     }
     const meta = document.getElementById("acc-meta-filter");
     if (meta) meta.textContent = "Custom";
-    renderPoster();
+    scheduleRender();
   });
 });
 
@@ -1749,7 +1749,7 @@ function applyZoom(next) {
   state.imageZoom = clamped;
   imgZoom.value = String(clamped);
   syncZoomReadout();
-  renderPoster();
+  scheduleRender();
 }
 
 imgZoom.addEventListener("input", () => applyZoom(imgZoom.value));
@@ -1777,7 +1777,7 @@ imgZoomValue?.addEventListener("click", () => applyZoom(100));
 // Font size slider (0 = auto)
 fontSizeInput.addEventListener("input", () => {
   state.fontSize = Number(fontSizeInput.value);
-  renderPoster();
+  scheduleRender();
 });
 
 // Accent color picker
@@ -1785,7 +1785,7 @@ accentColorInput.addEventListener("input", () => {
   state.accent = accentColorInput.value;
   accentHexLabel.textContent = accentColorInput.value.toUpperCase();
   document.querySelector('.color-circle').style.borderColor = state.accent;
-  renderPoster();
+  scheduleRender();
 });
 
 // Tag presets
@@ -2965,6 +2965,35 @@ function syncSliceLabels() {
     label.hidden = true;
     label.textContent = "";
   }
+}
+
+/* ── One repaint per frame, however fast the typing ──────────────────────────
+
+   renderPoster() repaints every page and the X preview, which is 5-20ms of
+   work. Called straight out of an input handler that is what every keystroke
+   costs, and a fast typist or a dragged slider outruns it: the events queue,
+   each one paints a frame nobody will ever see, and the editor feels like it
+   is catching up rather than responding.
+
+   The screen only refreshes sixty times a second, so more than one paint per
+   frame is work thrown away by definition. This collapses a burst into the
+   single paint that actually reaches the glass.
+
+   Deliberately NOT applied to renderPoster() itself. Some callers paint and
+   then immediately read the canvas back — the export path, the X preview, the
+   screen-preview modal — and deferring those would hand them a stale or empty
+   canvas. Those keep calling renderPoster() directly and paint synchronously,
+   exactly as before. Only the continuous-input handlers schedule, because they
+   are the only ones that fire faster than the display. */
+let renderScheduled = false;
+
+function scheduleRender() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+    renderPoster();
+  });
 }
 
 function renderPoster() {

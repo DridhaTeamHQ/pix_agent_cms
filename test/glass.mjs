@@ -341,12 +341,21 @@ console.log("\nThe bottom fade is still black, anchored, and capped");
   ck("foot lands on GLASS.fadeMax",
     Math.abs(a[a.length - 1] - api.GLASS.fadeMax) < 1e-6,
     a[a.length - 1] + " vs " + api.GLASS.fadeMax);
-  // The fill is 85% of a near-black and does the darkening the fade used to.
-  // Left at its old 0.85 the two would stack to opaque and the photograph
-  // would be gone entirely.
-  ck("fill and fade cannot stack to an opaque card",
-    api.GLASS.fadeMax + api.GLASS.fillAlpha <= 1.06,
-    `${api.GLASS.fadeMax} + ${api.GLASS.fillAlpha}`);
+  /* The property is that some photograph is left at the foot, and the old
+     form of this check had the arithmetic wrong: it added fillAlpha and
+     fadeMax against a bound of 1.06. They do not add. The fade darkens what
+     the fill let through, so they MULTIPLY — what survives is
+     (1 - fillAlpha) x (1 - fadeMax). Adding them is both too strict in the
+     middle of the range and meaningless at the ends, and it blocked a
+     deliberate darkening that leaves 9.1% of the picture visible.
+
+     7% is where a photograph stops reading as one and the card becomes a
+     black panel with type on it. Measured on a flat 154-grey source, 9.1%
+     lands the foot at 27 against 34 before. */
+  const surviving = (1 - api.GLASS.fillAlpha) * (1 - api.GLASS.fadeMax);
+  ck("some photograph survives at the foot",
+    surviving >= 0.07,
+    (surviving * 100).toFixed(1) + "% of the picture left");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

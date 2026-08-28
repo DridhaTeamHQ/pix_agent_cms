@@ -250,10 +250,10 @@ with it. Tunable live via `window.GLASS`.
 | `on` | `true` | Master switch |
 | `hue` | 33 | Only meaningful when `saturation > 0` |
 | `saturation` | **0** | 0 = neutral black. 0.35 was the brown wash |
-| `brightness` | 0.09 | From the picker. Fixed |
-| `fillAlpha` | 0.85 | The 85% beside the hex. Fixed |
-| `fadeMax` | 0.20 | Cap on the gradient. The fill does the darkening now; both at full strength leave no photograph |
-| `blurAt` / `blurCardWidth` | 14 / 382 | Blur in the design's units, scaled to the canvas — 34px on a 920 card. Was 26 (63px) when the ramp was 123px long, which is half a pixel of radius per pixel descended; sharpness is the one property of a photograph the eye can check without a reference, so a radius gradient that steep is findable however smooth the alpha under it |
+| `brightness` | 0.07 | The picker's was 0.09; darkened on request |
+| `fillAlpha` | 0.88 | The 85% beside the hex, taken up on request |
+| `fadeMax` | 0.24 | Cap on the gradient. The fill does most of the darkening; what must stay bounded is the *product* — see below |
+| `blurAt` / `blurCardWidth` | 20 / 382 | Blur in the design's units, scaled to the canvas — 48px on a 920 card. Was 26 (63px) when the ramp was 123px long, which is half a pixel of radius per pixel descended; sharpness is the one property of a photograph the eye can check without a reference, so a radius gradient that steep is findable however smooth the alpha under it |
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
 | `refract` | 0.022 | How far the glass bends the picture, as a share of width |
 | `refractStrips` | 56 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
@@ -265,8 +265,20 @@ linearly, which is what the design tool does. `rampAlpha` is that profile with
 its onset eased, and it is what the glass mask, the blur radius and the bottom
 fade all sample.
 
-The fade is then scaled by `GLASS.fadeMax` (0.20), because the glass fill does
-the darkening: it contributes the *shape* at a fifth of full strength.
+The fade is then scaled by `GLASS.fadeMax` (0.24), because the glass fill does
+most of the darkening: it contributes the *shape* at a quarter of full strength.
+
+**The fill and the fade multiply, they do not add.** The fade darkens what the
+fill let through, so what has to stay bounded is `(1 - fillAlpha) x (1 - fadeMax)`
+— the fraction of the photograph still visible at the foot. At 0.88 and 0.24
+that is 9.1%; below about 7% the picture stops reading as one and the card is a
+black panel with type on it. `test/glass.mjs` used to check `fillAlpha + fadeMax
+<= 1.06`, which is the wrong arithmetic in both directions.
+
+Darkening also bought back legibility that had quietly gone thin. White headline
+type on a bright photograph measured **3.28:1** at the first line before this —
+passing AA for large text by a hair, failing AA body. It is **3.70:1** now, and
+lines two and below clear 4.5:1.
 
 ### Why the transition used to be findable, and what fixed it
 

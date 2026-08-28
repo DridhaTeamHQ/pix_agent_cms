@@ -5055,7 +5055,7 @@ const GLASS = (window.GLASS = Object.assign({
      panel later. Brightness stays at the 9 from the picker. */
   hue: 33,
   saturation: 0,    // 0 = neutral black. 0.35 was the brown.
-  brightness: 0.09, // FIXED. From the picker.
+  brightness: 0.07, // 0.09 was the picker's; darkened on request.
 
   /* One colour on every card, rather than the hue read from each photograph.
 
@@ -5077,7 +5077,7 @@ const GLASS = (window.GLASS = Object.assign({
      The per-image path is gone rather than flagged off: the hue measurement
      it needed went with the fade's own tint, and a flag pointing at deleted
      machinery is worse than no flag. */
-  fillAlpha: 0.85,  // FIXED. The 85% beside the hex.
+  fillAlpha: 0.88,  // the 85% beside the hex, taken up on request.
 
   /* Blur is quoted in the design's own units — 16 on a 382-wide card — and
      scaled to whatever the poster canvas actually is, so the frost is the
@@ -5096,7 +5096,7 @@ const GLASS = (window.GLASS = Object.assign({
      carried entirely by the darkening. Halving it keeps the surface reading
      as glass while handing the actual transition back to the gradient, which
      is the part the eye cannot catch. */
-  blurAt: 14,
+  blurAt: 20,
   blurCardWidth: 382,
   downscale: 4,     // the blur is reached by downsampling; see paintMistGlass
 
@@ -5119,10 +5119,15 @@ const GLASS = (window.GLASS = Object.assign({
      still; lower walks back toward the edge this was. */
   runUpAboveCopy: 272,
 
-  /* The fill is 85% of a near-black, so it does the darkening the gradient
-     used to. Left at 0.85 the two would stack to near-opaque and the
-     photograph would be gone entirely. */
-  fadeMax: 0.20,
+  /* The fill does most of the darkening; this is the gradient's share on top.
+
+     The two compose MULTIPLICATIVELY - the fade darkens what the fill left,
+     it does not add to it - so what has to stay bounded is the product of
+     what each one passes through: (1 - fillAlpha) x (1 - fadeMax), the
+     fraction of the photograph still visible at the foot. At 0.88 and 0.24
+     that is 9.1%, against 12% before. Below about 7% the picture stops being
+     a picture and the card is a black panel with type on it. */
+  fadeMax: 0.24,
 }, window.GLASS));
 
 /* ── Scratch canvases, kept rather than remade ───────────────────────────────
@@ -5301,8 +5306,14 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
          inside the one loop that also does coordinate maths is how the
          design-space/device-pixel bug this function exists to avoid gets
          reintroduced by someone reading quickly. */
-      const stripSrcY = (i * stripH - bleed) / GLASS.downscale;
-      const stripSrcH = (stripH + bleed * 2) / GLASS.downscale;
+      /* Clamped as an INTERVAL, not as two independent numbers. Taking
+         min(sh, stripSrcH) bounds the height but not srcY + srcH, so the last
+         strips ask for pixels past the bottom of the small canvas; the read is
+         short and the strip is drawn stretched. Harmless at fifty-six strips
+         where the overhang is a fraction of one, live at refractStrips <= 8. */
+      const stripSrcY0 = Math.max(0, (i * stripH - bleed) / GLASS.downscale);
+      const stripSrcY1 = Math.min(sh, (i * stripH + stripH + bleed) / GLASS.downscale);
+      const stripSrcH = Math.max(1, stripSrcY1 - stripSrcY0);
 
       /* ── The blur RAMPS, rather than being faded in at full strength ──────
 
@@ -5319,9 +5330,17 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
          is no sharp copy left to notice.
 
          It costs nothing here because the refraction already redraws the band
-         as strips: the radius simply varies per strip. Fifty-six of them
-         across the band is about a pixel of blur between neighbours, well
-         under anything the eye resolves as a step. */
+         as strips: the radius simply varies per strip.
+
+         The step between neighbours is blurTarget / strips, so it is the RAMP
+         that has to cover the strips, not the band. This comment used to claim
+         all fifty-six carried it, and that was wrong when it was written: the
+         ramp then ended at copyFrac = 0.26, so fourteen strips carried the
+         whole thing at 1.75px apart. It is true now only because the ramp runs
+         the full band - about a fifth of a pixel between neighbours, which a
+         diff against a constant-radius render puts at under 0.01 of 255 levels
+         on the finished card. If copyFrac is ever shortened again, this
+         divides by fourteen, not fifty-six. */
       const ease = rampAlpha(Math.min(1, Math.max(0, t / copyFrac)));
       /* Quantised to a quarter pixel, and only assigned when it changes.
          Setting ctx.filter builds a filter chain every time, so giving all
@@ -5335,10 +5354,15 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
         g.filter = wanted;
         lastStripFilter = wanted;
       }
+      /* Destination follows the clamped source, so the mapping stays uniform.
+         Drawing a fixed-height destination from a clamped source is what
+         stretched the first and last strips: strip 0 asked for pixels above
+         the canvas, got the read clipped to the top, and then scaled that
+         short read over the full destination height. */
       g.drawImage(
         small,
-        0, Math.max(0, stripSrcY), sw, Math.min(sh, stripSrcH),
-        dx, i * stripH - bleed + dy, glass.width, stripH + bleed * 2,
+        0, stripSrcY0, sw, stripSrcH,
+        dx, stripSrcY0 * GLASS.downscale + dy, glass.width, stripSrcH * GLASS.downscale,
       );
     }
     g.filter = "none";

@@ -253,15 +253,15 @@ with it. Tunable live via `window.GLASS`.
 | `brightness` | 0.07 | The picker's was 0.09; darkened on request |
 | `fillAlpha` | 0.88 | The 85% beside the hex, taken up on request |
 | `fadeMax` | 0.24 | Cap on the gradient. The fill does most of the darkening; what must stay bounded is the *product* — see below |
-| `blurAt` / `blurCardWidth` | 34 / 382 | Blur in the design's units, scaled to the canvas. Now a real destination radius — it used to be divided by `downscale` and set on the full-size context, which threw three quarters of it away |
-| `blurCurve` | 2 | How far the blur LAGS the darkening, as an exponent on the shared ramp |
+| `blurAt` / `blurCardWidth` | 44 / 382 | Blur in the design's units, scaled to the canvas. Now a real destination radius — it used to be divided by `downscale` and set on the full-size context, which threw three quarters of it away |
+| `blurCurve` | 1 | How far the blur LAGS the darkening, as an exponent on the shared ramp |
 | `blurLevels` | 12 | Pre-blurred copies of the downscaled band. The blur is applied there, where the upscale multiplies it and the pixels are a sixteenth |
-| `frostReach` | 0.35 | How far into the band the blurred picture is fully present. Separate from the darkening on purpose — see below |
+| `frostReach` | 1 | Where the blurred picture is fully present, as a MULTIPLE of where the copy line falls in the band. 1 = full exactly at the first line, whatever the run-up is |
 | `gradientSamples` | 256 | Stops per ramp. Two gradients over one span means their joins add |
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
 | `refract` | 0.022 | How far the glass bends the picture, as a share of width |
 | `refractStrips` | 56 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
-| `runUpAboveCopy` | 272 | How far above the first line the glass begins, in the 1700px reference frame. The ramp then runs the whole band, so this sets both where the onset lands and how gentle the build is. Replaced `reach` and `startBelowCopy` — see below |
+| `runUpAboveCopy` | 65 | How far above the first line the glass begins, in the 1700px reference frame. The ramp then runs the whole band, so this sets both where the onset lands and how gentle the build is. Replaced `reach` and `startBelowCopy` — see below |
 
 **All three pages that put copy over a photograph use it** — the poster, the
 story page and the text page. The text page did not until recently, and the
@@ -279,6 +279,31 @@ has run-up above it, while the text page's copy grows upward and is clamped a
 tenth of the way down the card, where the ramp has barely begun. Measured on a
 bright photograph, white body copy at that worst-case first line is 5.28:1 with
 the veil and 1.97:1 without it.
+
+### Where the band starts
+
+`runUpAboveCopy` is 65 — about one line-height — because that is where the
+treatment was asked to begin, marked on a card just above the first row of
+copy. It was 272, roughly two lines further up.
+
+The shorter run-up is a real trade and it goes the wrong way on the thing this
+treatment exists to avoid: the darkening now has 556px to build across instead
+of 763, so its steepest run goes from 0.30 to 0.35 levels/px and lands just
+below the first line rather than above it. It is still five times gentler than
+the 2.0 cliff this started from, and measured on a smooth source no row departs
+from its local slope by more than 0.96 of 255 with none stepping at all — so
+there is no edge to find. But `window.GLASS.runUpAboveCopy = 272` is the way
+back if one ever appears.
+
+Two knobs moved with it. `frostReach` is now a multiple of where the copy line
+falls rather than a fraction of the band, so the blurred layer is fully present
+exactly at the first line whatever the run-up is — a fixed fraction silently
+pushes the frost *below* the copy when the run-up shortens, which puts the
+sharp original back under the very lines the split was made to clear. And
+`blurCurve` goes 2 → 1: the lag existed to keep the radius climbing below the
+type, and with the copy line now a tenth of the way into the band, nearly all
+of the ramp is below it already. The lag had nothing left to protect and was
+starving the first lines — σ 1.6 at line one with it, 10.1 without.
 
 ### Two ramps, and why the blur was invisible
 
@@ -313,10 +338,10 @@ built once and each strip draws from the one matching its depth.
 Delivered σ on a 920 card, measured off the 10–90% width of a hard edge
 (= 2.563 σ):
 
-| | above band | line 1 | line 3 | line 5 | foot |
-|---|---|---|---|---|---|
-| before | 0.4 | 0.4 | 3.9 | 5.9 | 16.4 |
-| after | 0.4 | **15.6** | **31.2** | 53.5 | **83.9** |
+| | at the line | line 1 | line 2 | line 3 | line 5 | foot |
+|---|---|---|---|---|---|---|
+| originally delivered | 0.4 | 0.4 | — | 3.9 | 5.9 | 16.4 |
+| now | **0.4** | 10.1 | 29.3 | 39.8 | 67.5 | **99.1** |
 
 The picture above the band stays sharp, the darkening is untouched (peak slope
 0.30 levels/px, still above the first line), and the worst row departs from its

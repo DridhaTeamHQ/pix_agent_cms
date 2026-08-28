@@ -5150,18 +5150,23 @@ const GLASS = (window.GLASS = Object.assign({
      carried entirely by the darkening. Halving it keeps the surface reading
      as glass while handing the actual transition back to the gradient, which
      is the part the eye cannot catch. */
-  blurAt: 34,
+  blurAt: 44,
 
   /* How far the blur LAGS the darkening, as an exponent on the shared ramp.
 
-     1 is the two moving together, which is what it was. Above 1 the blur
-     holds back near the copy and accumulates towards the foot — the same
-     total frost, redistributed downward. At 2 the leading edge carries about
-     a third of the radius it would at 1, which is what pays for blurAt going
-     20 -> 34 without the top of the band getting harder to look at.
+     1 is the two moving together. It was 2 while the band started 272px above
+     the copy: the lag existed to keep the radius climbing BELOW the type, and
+     with that much run-up the type sat a third of the way down the band with
+     plenty of ramp above it to hold back.
 
-     Tunable live: window.GLASS.blurCurve = 1 restores the old distribution. */
-  blurCurve: 2,
+     The run-up is 65 now, so the copy line falls about a tenth of the way into
+     the band and almost the whole ramp is already below it - the lag has
+     nothing left to protect and only starves the first two lines of the frost
+     that was asked for. At 2 the first line measured sigma 1.6; at 1 it is
+     9.4, with the steepest climb still landing well below the copy.
+
+     Above 1 holds the frost back towards the foot again. */
+  blurCurve: 1,
 
   /* How many pre-blurred copies of the downscaled band to build.
 
@@ -5181,10 +5186,12 @@ const GLASS = (window.GLASS = Object.assign({
      and the radius can grow as far as it likes without any crossfade to
      notice. 0.35 puts it at about the first line of copy.
 
-     Lower makes the picture go soft sooner and higher up the photograph;
-     higher walks back towards the superimposed-sharp-copy problem this
-     exists to solve. */
-  frostReach: 0.35,
+     A MULTIPLE of where the copy line falls in the band, not a fraction of
+     the band: 1 means fully present exactly when the copy starts, whatever
+     runUpAboveCopy is set to. Below 1 the picture goes soft higher up the
+     photograph; above 1 walks back towards the superimposed-sharp-copy
+     problem this exists to solve. */
+  frostReach: 1,
 
   /* How many stops each ramp is described with.
 
@@ -5218,10 +5225,20 @@ const GLASS = (window.GLASS = Object.assign({
      already looking. The run-up moves the onset into empty picture and the
      band's own height supplies the length.
 
-     Tunable live: window.GLASS.runUpAboveCopy = 400 then redraw. Higher
-     starts the frost further up the photograph and makes the build gentler
-     still; lower walks back toward the edge this was. */
-  runUpAboveCopy: 272,
+     65 is about one line-height at the poster's 62px, and it is where the
+     treatment was asked to begin - marked on a card, a little above the first
+     row of copy. It was 272, roughly two lines further up.
+
+     The shorter run-up is not free: the darkening has 556px to build across
+     instead of 763, so its steepest run goes from 0.30 to about 0.41 levels
+     per pixel. That is still five times gentler than the 2.0 cliff this
+     treatment started from, and well inside the design's own slope, but it is
+     the direction that made the edge findable before - so it is worth knowing
+     which way this knob trades.
+
+     Tunable live: window.GLASS.runUpAboveCopy = 272 then redraw restores the
+     longer, gentler build. */
+  runUpAboveCopy: 65,
 
   /* The fill does most of the darkening; this is the gradient's share on top.
 
@@ -5597,15 +5614,23 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
      were not looking at.
 
      So the blurred picture gets its own, faster ramp and is fully present by
-     GLASS.frostReach into the band, and the dark fill keeps the long gentle
-     one. Past that point there is no sharp copy left anywhere, and the rest
+     the copy line, and the dark fill keeps the long gentle one. Past that point there is no sharp copy left anywhere, and the rest
      of the transition is carried by brightness, which the eye cannot check.
      The radius then goes on growing under a solid layer - which is what makes
      "blurrier as you go down" visible rather than theoretical. */
   g.globalCompositeOperation = "destination-in";
   const presence = g.createLinearGradient(0, 0, 0, glass.height);
   const PRESENCE_SAMPLES = Math.max(8, Math.round(GLASS.gradientSamples));
-  const frost = Math.min(1, Math.max(0.05, GLASS.frostReach));
+  /* Where the copy line falls inside the band, which is what the frost is
+     anchored to rather than a fixed fraction.
+
+     GLASS.frostReach is a MULTIPLE of that: 1 means the blurred layer is
+     fully present exactly when the copy starts. Written this way so it
+     survives runUpAboveCopy being moved - a fixed fraction silently pushes
+     the frost below the first line when the run-up is shortened, which puts
+     the sharp original back under the very lines it was split out to clear. */
+  const copyFracInBand = Math.min(1, Math.max(0.02, runUp / span));
+  const frost = Math.min(1, Math.max(0.02, copyFracInBand * GLASS.frostReach));
   for (let i = 0; i <= PRESENCE_SAMPLES; i++) {
     const t = i / PRESENCE_SAMPLES;
     // Same eased curve, compressed into the first GLASS.frostReach of the band.

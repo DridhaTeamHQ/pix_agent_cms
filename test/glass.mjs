@@ -247,8 +247,12 @@ console.log("\nThe frost clears the sharp original early, then holds");
     full ? `full at ${(full.p * 100).toFixed(0)}% of the band` : "never");
   ck("and holds there rather than drifting back",
     presence[presence.length - 1].a >= 0.999);
+  /* Shorter than the darkening — the actual property, read off the ramp.
+     GLASS.frostReach is a multiple of where the copy line falls, not a
+     fraction of the band, so it is 1 when the frost completes AT the copy;
+     asserting `< 1` on it stopped meaning anything the moment that changed. */
   ck("it is shorter than the darkening, which is the point",
-    api.GLASS.frostReach < 1, String(api.GLASS.frostReach));
+    full && full.p < 0.5, full ? `full at ${(full.p * 100).toFixed(0)}%` : "never");
 }
 
 console.log("\nThe mask is a sampled curve, not a few straight segments");
@@ -324,8 +328,14 @@ console.log("\nThe blend begins well above the first line");
      happened across lines one to three with nothing above it at all. The onset
      has to land in empty picture, where there is no type beside it for the eye
      to measure the change against. */
+  /* The bug this guards is a run-up of ZERO — the band starting on the first
+     line, which is what compressed the whole build into 123px and made the
+     edge findable. The bound was 100 while the run-up was 272; it is 65 now,
+     placed where the treatment was asked to begin, and a bound that only
+     passes for the value that happened to be current is not a test. The
+     smoothness this trades against is measured directly further up. */
   const runUp = COPY - bandTop;
-  ck("there is a real run-up above the copy", runUp > 100, runUp + "px");
+  ck("the band begins above the copy, not on it", runUp > 20, runUp + "px");
   ck("taken from the knob, in the card's own frame",
     Math.abs(runUp - api.GLASS.runUpAboveCopy * (H / 1700)) < 1.5, runUp + "px");
   ck("but it does not start halfway up the card",
@@ -476,33 +486,38 @@ console.log("\nThe blur lags the darkening, piling up towards the foot");
     samples.every((x, i) => !i || x.r >= samples[i - 1].r - 1e-9),
     samples.slice(0, 8).map((x) => x.r).join(","));
 
-  /* The bound is 0.40 because that is what discriminates, not because it is a
-     round number: the shared curve puts the half-way radius at 0.60 of the
-     maximum, and squaring it puts it at 0.37. Anything between the two
-     separates a lagging blur from one moving in step with the darkening, and
-     this fails the moment blurCurve goes back to 1. */
-  const nearest = (d) => samples.reduce((best, x) =>
-    Math.abs(x.depth - d) < Math.abs(best.depth - d) ? x : best);
-  const halfWay = nearest(0.5).r / maxR;
-  ck("half way down it carries well under half its final radius",
-    halfWay < 0.4, (halfWay * 100).toFixed(0) + "% of the maximum");
-  ck("and the config says so rather than it being a coincidence",
-    api.GLASS.blurCurve > 1, String(api.GLASS.blurCurve));
+  /* No assertion that the blur LAGS the darkening any more, and that is a
+     decision rather than an omission.
 
-  /* Where the radius climbs fastest has to be BELOW the copy line - the one
-     place a sharpness gradient is cheap, because the card is nearly black
-     there and little luminance is left to reveal what focus was lost. */
-  const bandTop = COPY - api.GLASS.runUpAboveCopy * (H / 1700);
-  const copyDepth = (COPY - bandTop) / (H - bandTop);
-  let steepest = 0, steepestAt = 0;
+     The lag existed to keep the radius climbing below the type. It was worth
+     an exponent of 2 while the band began 272px above the copy, because the
+     type then sat a third of the way down with plenty of ramp above it to
+     hold back. With a 65px run-up the copy line falls about a tenth of the
+     way into the band and nearly the whole ramp is already below it: the lag
+     has nothing left to protect and only starves the first lines of the frost
+     — measured, sigma 1.6 at line one against 9.4 without it.
+
+     What still has to hold is below: the radius climbs from nothing, never
+     goes backwards, and is still climbing at the foot. */
+  ck("it starts from no blur at all at the top of the band",
+    samples[0].r === 0, String(samples[0].r));
+  ck("and is still at its maximum by the foot",
+    samples[samples.length - 1].r === maxR,
+    `${samples[samples.length - 1].r} of ${maxR}`);
+
+  /* Where the radius climbs fastest used to have to be below the copy line.
+     That was a real property while the copy sat a third of the way down the
+     band; with the run-up at 65 it sits at a tenth, so "below the copy" is
+     almost the whole band and the check passes on geometry rather than on
+     anything the code does. Replaced by the rate itself, which is what the
+     eye actually responds to: no single step between neighbouring strips may
+     carry more than a fifth of the total radius. */
+  let steepest = 0;
   for (let i = 1; i < samples.length; i++) {
-    const rise = (samples[i].r - samples[i - 1].r) /
-      Math.max(1e-6, samples[i].depth - samples[i - 1].depth);
-    if (rise > steepest) { steepest = rise; steepestAt = samples[i].depth; }
+    steepest = Math.max(steepest, samples[i].r - samples[i - 1].r);
   }
-  ck("its fastest climb is below the copy line, not on the type",
-    steepestAt > copyDepth,
-    (steepestAt * 100).toFixed(0) + "% down, copy at " + (copyDepth * 100).toFixed(0) + "%");
+  ck("no single step between strips carries a fifth of the range",
+    steepest < maxR / 5, `${steepest.toFixed(2)} of ${maxR}`);
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

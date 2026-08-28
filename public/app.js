@@ -4951,6 +4951,38 @@ const GLASS = (window.GLASS = Object.assign({
   fadeMax: 0.20,
 }, window.GLASS));
 
+/* ── Scratch canvases, kept rather than remade ───────────────────────────────
+
+   This function allocated two canvases every time it ran, and it runs once per
+   page: with a poster, a story and a text card open that is six canvases and
+   about 10 MB per render. renderPoster() is called straight out of every
+   keystroke handler, so ordinary typing was churning ~100 MB/s of canvas — GC
+   pressure that shows up as the editor locking up under a fast typist rather
+   than as anything so clear as an error.
+
+   The sizes only change when the card size or the export scale changes, so the
+   same two canvases are reused and resized when they no longer fit. Cleared
+   rather than trusted: a reused canvas still holds the last frame, and the
+   glass is built by compositing, so a stale layer underneath would show.
+
+   Keyed by role because the two have different lifetimes and sizes, and
+   sharing one would resize it twice per call, which is the expensive part of
+   an allocation in the first place. */
+const glassScratchPool = new Map();
+
+function glassScratch(role, width, height) {
+  let cv = glassScratchPool.get(role);
+  if (!cv) {
+    cv = document.createElement("canvas");
+    glassScratchPool.set(role, cv);
+  }
+  if (cv.width !== width || cv.height !== height) {
+    cv.width = width;
+    cv.height = height;
+  }
+  return cv;
+}
+
 function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 1 }) {
   /* The glass gets a longer run-up than the caller's fadeHeight gives it.
      blurReach() hands over 149px on a 1700px card, and 149px is enough to
@@ -4997,11 +5029,10 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
      and nothing after this point has been painted yet. */
   const sw = Math.max(2, Math.round(devW / GLASS.downscale));
   const sh = Math.max(2, Math.round(devSpan / GLASS.downscale));
-  const small = document.createElement("canvas");
-  small.width = sw;
-  small.height = sh;
-  const sctx = small.getContext("2d", { willReadFrequently: false });
+  const small = glassScratch("small", sw, sh);
+  const sctx = small && small.getContext("2d", { willReadFrequently: false });
   if (!sctx) return;
+  sctx.clearRect(0, 0, sw, sh);
 
   try {
     sctx.drawImage(canvas, ox, start * sy + oy, devW, devSpan, 0, 0, sw, sh);
@@ -5014,11 +5045,14 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
 
   // Build the finished glass at full size, then lay it down in one pass — so
   // the ramp masks the whole stack and not each layer separately.
-  const glass = document.createElement("canvas");
-  glass.width = devW;
-  glass.height = devSpan;
-  const g = glass.getContext("2d");
+  const glass = glassScratch("glass", devW, devSpan);
+  const g = glass && glass.getContext("2d");
   if (!g) return;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalAlpha = 1;
+  g.globalCompositeOperation = "source-over";
+  g.filter = "none";
+  g.clearRect(0, 0, devW, devSpan);
 
   g.imageSmoothingEnabled = true;
   g.imageSmoothingQuality = "high";

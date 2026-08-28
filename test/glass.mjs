@@ -76,6 +76,10 @@ function makeCtx(log, label) {
     getTransform: () => log.transform,
     drawImage(...a) { log.draws.push({ ctx: label, args: a }); },
     fillRect(...a) { log.fills.push({ ctx: label, args: a }); },
+    // Reused scratch canvases must be wiped before reuse, so the stub has to
+    // accept the calls that do it.
+    clearRect(...a) { log.clears.push({ ctx: label, args: a }); },
+    setTransform() {},
     createLinearGradient(x0, y0, x1, y1) {
       log.gradients.push({ ctx: label, line: [y0, y1] });
       return { addColorStop: (p, c) => stops.push({ p, a: Number(c.match(/,([\d.]+)\)$/)[1]) }) };
@@ -84,17 +88,23 @@ function makeCtx(log, label) {
 }
 
 function build({ transform = { a: 1, d: 1, e: 0, f: 0 }, overrides = {} } = {}) {
-  const log = { draws: [], fills: [], gradients: [], contexts: [], transform };
+  const log = { draws: [], fills: [], gradients: [], clears: [], contexts: [], created: [], transform };
   let n = 0;
   const doc = {
     createElement: () => {
       const c = { width: 0, height: 0, __i: n++ };
-      c.getContext = () => { const cx = makeCtx(log, "off" + c.__i); log.contexts.push(cx); return cx; };
+      log.created.push(c);
+      // One context object per canvas, as a real canvas gives, so reuse of the
+      // canvas is visible as reuse of the context.
+      const cx = makeCtx(log, "off" + c.__i);
+      c.getContext = () => { log.contexts.push(cx); return cx; };
       return c;
     },
   };
   const api = new Function("document", "window", `
     ${fadeConsts}
+    const glassScratchPool = new Map();
+    ${fnSrc("glassScratch")}
     ${fnSrc("hsbToRgb")}
     ${fnSrc("glassPanelColour")}
     ${glassSrc}
@@ -181,6 +191,23 @@ for (const scale of [1, 2, 4]) {
     read && Math.abs(read.args[3] - W * scale) < 2,
     read ? `sw=${read.args[3]}, expected ${W * scale}` : "");
 }
+console.log("\nIt reuses its scratch canvases instead of allocating per render");
+{
+  // renderPoster() runs straight out of every keystroke handler and repaints
+  // every page, so this ran three times per keypress. Two fresh canvases each
+  // time was ~10MB per render and ~100MB/s of churn under ordinary typing.
+  const { api, log, target } = build();
+  const arg = { width: W, height: H, copyTop: COPY, fadeHeight: api.blurReach(LAYOUT_FADE) };
+  api.paintMistGlass(target, arg);
+  const afterFirst = log.created.length;
+  for (let i = 0; i < 20; i++) api.paintMistGlass(target, arg);
+  ck("further renders allocate no new canvases",
+    log.created.length === afterFirst, `${afterFirst} then ${log.created.length} after 21 renders`);
+  ck("and it wipes what it reuses, so no stale frame shows through",
+    log.clears.length >= 2, log.clears.length + " clears");
+}
+
+
 
 console.log("\nIt declines rather than misbehaving");
 {

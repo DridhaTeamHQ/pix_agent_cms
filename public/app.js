@@ -5024,19 +5024,27 @@ const GLASS = (window.GLASS = Object.assign({
   /* Multiplies the caller's fadeHeight — the length of the dissolve, and so
      how far above the first line the frost begins.
 
-     2.2 put it at 52% of the card, which is halfway up a 9:16 poster: the
-     picture was going soft well before anything needed it to. 1.5 starts it
-     at 58% and, because the mask eases in and only becomes visible about a
-     fifth of the way down its own ramp, softening does not actually show
-     until 60% — roughly 185px above the copy instead of 271.
+     Start height and transition length are the SAME number: the ramp runs from
+     where it starts down to the first line, so lowering the start necessarily
+     shortens the dissolve. That is the trade every value here is making.
 
-     It was raised to 2.2 when the mask was thirteen samples of a curve, which
-     canvas draws as thirteen straight segments with a slope change at every
-     join: a findable edge that a longer run-up could only spread out, not
-     remove. At sixty-four samples there is no join to hide, so the length can
-     go back to being about where the glass belongs rather than about
-     concealing a defect underneath it. */
-  reach: 1.5,
+     2.2 began it halfway up a 9:16 poster, which is softening the picture long
+     before anything needs it. 0.8 gives a 119px ramp, and since the mask eases
+     in and only shows about a fifth of the way down it, softening appears
+     around 99px above the copy — a line and a half, close enough to read as
+     starting at the text while leaving a real dissolve rather than a step.
+
+     It was 2.2 when the mask was thirteen samples of a curve, which canvas
+     draws as thirteen straight segments with a slope change at every join: a
+     findable edge that a longer run-up could only spread out, never remove. At
+     sixty-four samples of a smoothstep, and 7px of blur rather than 55, there
+     is no join to hide — so the length can be about where the glass belongs
+     instead of about concealing a defect underneath it.
+
+     Tunable live: window.GLASS.reach = 0.6 then redraw. Lower starts nearer
+     the text and shortens the dissolve; if an edge ever appears at the top of
+     the frost, this is the number that caused it. */
+  reach: 0.8,
 
   /* The fill is 85% of a near-black, so it does the darkening the gradient
      used to. Left at 0.85 the two would stack to near-opaque and the

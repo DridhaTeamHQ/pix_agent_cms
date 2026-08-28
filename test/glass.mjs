@@ -143,9 +143,12 @@ console.log("\nThe glass dissolves in rather than arriving at an edge");
   const { api } = build();
   const callerReach = api.blurReach(LAYOUT_FADE);
   const glassReach = callerReach * api.GLASS.reach;
-  ck("it lengthens the caller's reach", api.GLASS.reach > 1, String(api.GLASS.reach));
+  /* No assertion that reach > 1. That only restated whichever value happened
+     to be current, and it failed the moment the dissolve was deliberately
+     shortened — a test that has to be edited every time the thing it watches
+     is tuned is not watching anything. The two bounds below are the property.
 
-  /* Raw length is not the property. The mask eases in, so softening only
+     Raw length is not the property either. The mask eases in, so softening only
      becomes visible about a fifth of the way down its own ramp — which is why
      the reach could be shortened once the curve was sampled densely enough to
      have no join to hide.

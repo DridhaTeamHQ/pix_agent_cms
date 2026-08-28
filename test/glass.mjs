@@ -59,12 +59,33 @@ const glassSrc = (() => {
   return app.slice(a, app.indexOf(tail, a) + tail.length);
 })();
 
-// fadeReach/blurReach still use loose FADE_* constants alongside GLASS.
+// fadeReach still uses the loose FADE_ constants alongside GLASS.
 // Injected from the source rather than restated, same rule as the rest.
 const fadeConsts = app
   .split(/\r?\n/)
   .filter((l) => l.startsWith("const FADE_"))
   .join("\n");
+
+/* SPEC_STOPS is the profile both ramps follow, and it is a const array
+   spanning several lines rather than a function. Injected from the source for
+   the same reason as everything else here: a test that restates the shape it
+   is checking passes whatever the shape becomes. */
+const specSrc = (() => {
+  const a = app.indexOf("const SPEC_STOPS = [");
+  const tail = "];";
+  return app.slice(a, app.indexOf(tail, a) + tail.length);
+})();
+
+/* RAMP_ONSET, the lookup width, and the integral built from them. Injected
+   out of the source rather than restated, same rule as everything else here. */
+const onsetSrc = [
+  app.match(/^const RAMP_ONSET = [\d.]+;/m)[0],
+  app.match(/^const RAMP_SAMPLES_LUT = \d+;/m)[0],
+  (() => {
+    const a = app.indexOf("const RAMP_TABLE = (");
+    return app.slice(a, app.indexOf("})();", a) + 5);
+  })(),
+].join("\n");
 
 function makeCtx(log, label) {
   const stops = [];
@@ -72,14 +93,27 @@ function makeCtx(log, label) {
     canvas: { __label: label }, stops, label,
     globalAlpha: 1, globalCompositeOperation: "source-over",
     imageSmoothingEnabled: false, imageSmoothingQuality: "",
-    fillStyle: null, filter: "none",
+    fillStyle: null,
+    /* filter is a real property on a context, and the strip loop assigns it
+       per strip. Recording the assignments is the only way to see the blur
+       RADIUS the code actually asks for, which is the thing being checked. */
+    _filter: "none",
+    get filter() { return this._filter; },
+    set filter(v) { this._filter = v; log.filters.push({ ctx: label, value: v, seq: log.seq++ }); },
     getTransform: () => log.transform,
-    drawImage(...a) { log.draws.push({ ctx: label, args: a }); },
-    fillRect(...a) { log.fills.push({ ctx: label, args: a }); },
+    drawImage(...a) { log.draws.push({ ctx: label, args: a, alpha: this.globalAlpha, seq: log.seq++ }); },
+    fillRect(...a) { log.fills.push({ ctx: label, args: a, op: this.globalCompositeOperation, style: this.fillStyle, alpha: this.globalAlpha }); },
     // Reused scratch canvases must be wiped before reuse, so the stub has to
     // accept the calls that do it.
     clearRect(...a) { log.clears.push({ ctx: label, args: a }); },
     setTransform() {},
+    // The dither builds its tile pixel by pixel before it can be a pattern.
+    createImageData(w, h) { return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; },
+    putImageData(id) { log.putImage.push({ ctx: label, w: id.width, h: id.height }); },
+    createPattern(image, repeat) {
+      log.patterns.push({ ctx: label, repeat });
+      return { __pattern: true };
+    },
     createLinearGradient(x0, y0, x1, y1) {
       log.gradients.push({ ctx: label, line: [y0, y1] });
       return { addColorStop: (p, c) => stops.push({ p, a: Number(c.match(/,([\d.]+)\)$/)[1]) }) };
@@ -88,7 +122,7 @@ function makeCtx(log, label) {
 }
 
 function build({ transform = { a: 1, d: 1, e: 0, f: 0 }, overrides = {} } = {}) {
-  const log = { draws: [], fills: [], gradients: [], clears: [], contexts: [], created: [], transform };
+  const log = { draws: [], fills: [], gradients: [], clears: [], contexts: [], created: [], filters: [], patterns: [], putImage: [], seq: 0, transform };
   let n = 0;
   const doc = {
     createElement: () => {
@@ -102,6 +136,8 @@ function build({ transform = { a: 1, d: 1, e: 0, f: 0 }, overrides = {} } = {}) 
     },
   };
   const api = new Function("document", "window", `
+    let glassNoiseTile = null;
+    ${fnSrc("glassNoise")}
     ${fadeConsts}
     const glassScratchPool = new Map();
     ${fnSrc("glassScratch")}
@@ -109,13 +145,32 @@ function build({ transform = { a: 1, d: 1, e: 0, f: 0 }, overrides = {} } = {}) 
     ${fnSrc("glassPanelColour")}
     ${glassSrc}
     ${fnSrc("fadeReach")}
-    ${fnSrc("blurReach")}
+    ${specSrc}
+    ${fnSrc("specAlpha")}
+    ${onsetSrc}
+    ${fnSrc("rampAlpha")}
     ${fnSrc("paintMistGlass")}
     ${fnSrc("paintBottomFade")}
-    return { GLASS, glassPanelColour, fadeReach, blurReach, paintMistGlass, paintBottomFade };
+    return { GLASS, glassPanelColour, fadeReach, paintMistGlass, paintBottomFade };
   `)(doc, { GLASS: overrides });
   return { api, log, target: makeCtx(log, "target") };
 }
+
+/* The treatment paints two ramps and they are not interchangeable.
+
+   `ink` is the darkening - a gradient laid straight onto the TARGET, spanning
+   the whole band, and the one whose steepness decides whether there is an edge
+   to find. `presence` is how much of the blurred picture is present, built on
+   the offscreen glass canvas and deliberately compressed into the first
+   GLASS.frostReach of the band.
+
+   They used to be one mask, and a test that grabs "the gradient with the most
+   stops" silently reads whichever happens to be longer. */
+const ramps = (log, target) => ({
+  ink: target.stops.slice(),
+  presence: (log.contexts.filter((c) => c.stops.length)
+    .sort((a, b) => b.stops.length - a.stops.length)[0] || { stops: [] }).stops.slice(),
+});
 
 let pass = 0, fail = 0;
 const ck = (n, c, d = "") => {
@@ -138,38 +193,87 @@ console.log("\nThe panel is neutral, not a colour wash");
     brown.r !== brown.b, JSON.stringify(brown));
 }
 
-console.log("\nThe glass dissolves in rather than arriving at an edge");
+console.log("\nThe transition is gentle enough that there is no edge to find");
 {
-  const { api } = build();
-  const callerReach = api.blurReach(LAYOUT_FADE);
-  const glassReach = callerReach * api.GLASS.reach;
-  /* No assertion that reach > 1. That only restated whichever value happened
-     to be current, and it failed the moment the dissolve was deliberately
-     shortened — a test that has to be edited every time the thing it watches
-     is tuned is not watching anything. The two bounds below are the property.
+  /* Measured on the DARKENING, which is what carries the transition. The
+     frost's own ramp is deliberately steeper and shorter - it has to be, or
+     the blurred layer never gets clear of the sharp original underneath it -
+     and reading that one instead reports an edge that is not there. */
+  const { api, log, target } = build();
+  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
+  const read = log.draws.find((d) => d.args.length === 9);
+  const bandPx = H - read.args[2];
+  const { ink } = ramps(log, target);
+  ck("the darkening is a gradient of its own", ink.length > 60, ink.length + " stops");
 
-     Raw length is not the property either. The mask eases in, so softening only
-     becomes visible about a fifth of the way down its own ramp — which is why
-     the reach could be shortened once the curve was sampled densely enough to
-     have no join to hide.
+  let peak = 0;
+  for (let i = 1; i < ink.length; i++) {
+    const dp = ink[i].p - ink[i - 1].p;
+    const da = ink[i].a - ink[i - 1].a;
+    if (dp > 0) peak = Math.max(peak, Math.abs(da) / (dp * bandPx));
+  }
+  // Normalised out of fillAlpha, since ink tops out there rather than at 1.
+  const peakOfTotal = peak / api.GLASS.fillAlpha;
+  const REFERENCE = 0.8 / (0.63 * bandPx);
+  ck("its steepest run is no worse than twice the design's",
+    peakOfTotal <= REFERENCE * 2,
+    (peakOfTotal * 100).toFixed(3) + "% per px vs the design's " + (REFERENCE * 100).toFixed(3) + "%");
 
-     What matters is where it SHOWS, and it is wrong in both directions. Too
-     far above the copy and the picture goes soft halfway up the card for no
-     reason; too close and the frost arrives as an edge instead of a dissolve.
-     Both have been reported here. */
-  const visibleAt = glassReach * 0.83;   // smoothstep crosses ~8% alpha here
-  ck("softening does not begin halfway up the card",
-    visibleAt / H <= 0.20, (visibleAt / H * 100).toFixed(0) + "% of the card above the copy");
-  ck("nor so close that it arrives as an edge",
-    visibleAt / H >= 0.05, (visibleAt / H * 100).toFixed(0) + "% of the card above the copy");
+  const shortRamp = 1.5 / (LAYOUT_FADE * 0.45 * 0.83);
+  ck("and far gentler than the 123px ramp it replaced",
+    peakOfTotal < shortRamp / 3,
+    (peakOfTotal * 100).toFixed(3) + "% per px vs the old " + (shortRamp * 100).toFixed(3) + "%");
+
+  const first = ink[1].a - ink[0].a;
+  const biggest = Math.max(...ink.map((st, i) => (i ? st.a - ink[i - 1].a : 0)));
+  ck("it leaves from a standstill rather than a corner",
+    first < biggest / 8, first.toFixed(5) + " vs " + biggest.toFixed(5));
+  ck("and is still climbing at the foot, not flat from a third of the way down",
+    ink[ink.length - 1].a > ink[Math.floor(ink.length * 0.6)].a + 0.05,
+    "foot " + ink[ink.length - 1].a.toFixed(3));
+}
+
+console.log("\nThe frost clears the sharp original early, then holds");
+{
+  /* Why this is separate from the darkening at all.
+
+     At half presence you are not looking at a half-blurred picture; you are
+     looking at a blurred one at half strength over the SHARP original at half
+     strength, and the eye takes its reading of focus from the sharp half. So
+     the blurred layer has to reach full presence while there is still band
+     left, leaving everything below it a single blurred image whose RADIUS
+     grows - with no crossfade left to give it away. Measured on the rendered
+     card before the split: sigma 52 was being asked for at line three and the
+     composite showed a 1px edge, because presence there was 60%. */
+  const { api, log, target } = build();
+  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
+  const { presence } = ramps(log, target);
+  ck("the frost has a ramp of its own", presence.length > 60, presence.length + " stops");
+  const full = presence.find((st) => st.a >= 0.999);
+  ck("it reaches full presence inside the band", !!full);
+  /* Against the rule, not against the knob. frostReach is a MULTIPLE of where
+     the copy line falls, so comparing full.p to it directly passes for any
+     value at all once it is above 1 — which is what it now is. */
+  const copyFrac = (api.GLASS.runUpAboveCopy * (H / 1700)) /
+    (H - (COPY - api.GLASS.runUpAboveCopy * (H / 1700)));
+  ck("it completes where the knob says, measured from the band",
+    full && Math.abs(full.p - copyFrac * api.GLASS.frostReach) < 0.02,
+    full ? `full at ${(full.p * 100).toFixed(1)}%, expected ${(copyFrac * api.GLASS.frostReach * 100).toFixed(1)}%` : "never");
+  ck("and holds there rather than drifting back",
+    presence[presence.length - 1].a >= 0.999);
+  /* Shorter than the darkening — the actual property, read off the ramp.
+     GLASS.frostReach is a multiple of where the copy line falls, not a
+     fraction of the band, so it is 1 when the frost completes AT the copy;
+     asserting `< 1` on it stopped meaning anything the moment that changed. */
+  ck("it is shorter than the darkening, which is the point",
+    full && full.p < 0.5, full ? `full at ${(full.p * 100).toFixed(0)}%` : "never");
 }
 
 console.log("\nThe mask is a sampled curve, not a few straight segments");
 {
   const { api, log, target } = build();
   api.paintMistGlass(target, {
-    width: W, height: H, copyTop: COPY, fadeHeight: api.blurReach(LAYOUT_FADE),
-  });
+    width: W, height: H, copyTop: COPY,   });
   const masked = log.contexts.filter((c) => c.stops.length)
     .sort((a, b) => b.stops.length - a.stops.length)[0];
   ck("a mask was built", !!masked && masked.stops.length > 0);
@@ -196,10 +300,12 @@ console.log("\nIt reads the right part of the photograph when the context is sca
 // the copy band — preview right, published card wrong.
 for (const scale of [1, 2, 4]) {
   const { api, log, target } = build({ transform: { a: scale, d: scale, e: 0, f: 0 } });
-  const reach = api.blurReach(LAYOUT_FADE);
-  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY, fadeHeight: reach });
+    api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
   const read = log.draws.find((d) => d.args.length === 9);
-  const expectedTop = Math.max(0, COPY - reach * api.GLASS.reach) * scale;
+  /* The band begins GLASS.runUpAboveCopy above the first line. Computed from
+     the rule rather than restated, so tuning the knob does not edit this. */
+  const expectedTop =
+    (COPY - Math.min(COPY, api.GLASS.runUpAboveCopy * (H / 1700))) * scale;
   ck(`${scale}x: source rect starts at the copy band, not the canvas top`,
     read && Math.abs(read.args[2] - expectedTop) < 1.5,
     read ? `sy=${read.args[2]}, expected ${expectedTop.toFixed(0)}` : "no read-back");
@@ -213,7 +319,7 @@ console.log("\nIt reuses its scratch canvases instead of allocating per render")
   // every page, so this ran three times per keypress. Two fresh canvases each
   // time was ~10MB per render and ~100MB/s of churn under ordinary typing.
   const { api, log, target } = build();
-  const arg = { width: W, height: H, copyTop: COPY, fadeHeight: api.blurReach(LAYOUT_FADE) };
+  const arg = { width: W, height: H, copyTop: COPY, };
   api.paintMistGlass(target, arg);
   const afterFirst = log.created.length;
   for (let i = 0; i < 20; i++) api.paintMistGlass(target, arg);
@@ -224,20 +330,59 @@ console.log("\nIt reuses its scratch canvases instead of allocating per render")
 }
 
 
+console.log("\nThe blend begins well above the first line");
+{
+  const { api, log, target } = build();
+  api.paintMistGlass(target, {
+    width: W, height: H, copyTop: COPY,   });
+  const read = log.draws.find((d) => d.args.length === 9);
+  const bandTop = read.args[2];
 
-console.log("\nIt declines rather than misbehaving");
+  /* It used to start AT the copy and finish 123px later, so the entire build
+     happened across lines one to three with nothing above it at all. The onset
+     has to land in empty picture, where there is no type beside it for the eye
+     to measure the change against. */
+  /* The bug this guards is a run-up of ZERO — the band starting on the first
+     line, which is what compressed the whole build into 123px and made the
+     edge findable. The bound was 100 while the run-up was 272; it is 65 now,
+     placed where the treatment was asked to begin, and a bound that only
+     passes for the value that happened to be current is not a test. The
+     smoothness this trades against is measured directly further up. */
+  const runUp = COPY - bandTop;
+  ck("the band begins above the copy, not on it", runUp > 20, runUp + "px");
+  ck("taken from the knob, in the card's own frame",
+    Math.abs(runUp - api.GLASS.runUpAboveCopy * (H / 1700)) < 1.5, runUp + "px");
+  ck("but it does not start halfway up the card",
+    bandTop / H >= 0.4, (bandTop / H * 100).toFixed(0) + "% down the card");
+
+  /* The DARKENING runs the full band instead of finishing early onto a flat
+     panel - that panel was the other half of what forced the ramp to be steep,
+     since every level it did not use had to be spent in the 123px above it.
+
+     Read off the ink gradient. The frost's presence ramp deliberately DOES
+     finish early, at GLASS.frostReach, and picking "the gradient with the most
+     stops" is how this ended up measuring that one instead. */
+  const { ink } = ramps(log, target);
+  const rising = ink.filter((st, i) => i > 0 && st.a > ink[i - 1].a);
+  ck("the darkening is still climbing at the foot",
+    rising[rising.length - 1].p > 0.9,
+    "stops rising at " + (rising[rising.length - 1].p * 100).toFixed(0) + "% of the band");
+}
+
+
+console.log("It declines rather than misbehaving");
 {
   let r = build({ overrides: { on: false } });
-  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: COPY, fadeHeight: 100 });
+  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: COPY });
   ck("GLASS.on = false paints nothing", r.log.draws.length === 0);
 
   r = build();
-  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: H + 500, fadeHeight: 10 });
+  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: H + 500 });
   ck("copy far past the foot paints nothing", r.log.draws.length === 0);
 
   r = build();
   r.target.canvas = null;
-  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: COPY, fadeHeight: 100 });
+  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: COPY });
   ck("no canvas to read paints nothing", r.log.draws.length === 0);
 }
 
@@ -255,12 +400,251 @@ console.log("\nThe bottom fade is still black, anchored, and capped");
   ck("foot lands on GLASS.fadeMax",
     Math.abs(a[a.length - 1] - api.GLASS.fadeMax) < 1e-6,
     a[a.length - 1] + " vs " + api.GLASS.fadeMax);
-  // The fill is 85% of a near-black and does the darkening the fade used to.
-  // Left at its old 0.85 the two would stack to opaque and the photograph
-  // would be gone entirely.
-  ck("fill and fade cannot stack to an opaque card",
-    api.GLASS.fadeMax + api.GLASS.fillAlpha <= 1.06,
-    `${api.GLASS.fadeMax} + ${api.GLASS.fillAlpha}`);
+  /* The property is that some photograph is left at the foot, and the old
+     form of this check had the arithmetic wrong: it added fillAlpha and
+     fadeMax against a bound of 1.06. They do not add. The fade darkens what
+     the fill let through, so they MULTIPLY — what survives is
+     (1 - fillAlpha) x (1 - fadeMax). Adding them is both too strict in the
+     middle of the range and meaningless at the ends, and it blocked a
+     deliberate darkening that leaves 9.1% of the picture visible.
+
+     7% is where a photograph stops reading as one and the card becomes a
+     black panel with type on it. Measured on a flat 154-grey source, 9.1%
+     lands the foot at 27 against 34 before. */
+  const surviving = (1 - api.GLASS.fillAlpha) * (1 - api.GLASS.fadeMax);
+  ck("some photograph survives at the foot",
+    surviving >= 0.07,
+    (surviving * 100).toFixed(1) + "% of the picture left");
+}
+
+console.log("\nEvery page that shows copy over a photograph gets the treatment");
+{
+  /* The text page did not, and nobody noticed for a long time: it painted a
+     four-stop wash over the whole frame instead, and drew its photograph
+     through blur(18px) brightness(62%) on top of that. Both of those make the
+     glass invisible — one buries it, the other removes the sharp input it
+     needs to be a transition at all — so this checks the source directly.
+
+     Reading the file rather than executing it, because these are three
+     separate screen functions with their own DOM and state; what matters is
+     that none of them quietly goes back to washing the frame. */
+  const screens = ["drawPixTextScreen", "drawStoryScreen", "drawHero"];
+  for (const name of screens) {
+    const body = (() => {
+      const i = app.indexOf("function " + name);
+      if (i < 0) return null;
+      let k = app.indexOf(") {", i) + 2, d = 0;
+      for (let j = k; j < app.length; j++) {
+        if (app[j] === "{") d++;
+        else if (app[j] === "}") { d--; if (!d) return app.slice(i, j + 1); }
+      }
+    })();
+    if (!body) { console.log("  SKIP " + name + " not found"); continue; }
+    ck(name + " paints the glass", /paintMistGlass\(/.test(body));
+    ck(name + " paints the fade", /paintBottomFade\(/.test(body));
+    ck(name + " anchors both to the copy, not to the frame",
+      !/copyTop:\s*0/.test(body));
+  }
+
+  // The text page specifically: sharp input, and no full-frame wash left.
+  const text = (() => {
+    const i = app.indexOf("function drawPixTextScreen");
+    let k = app.indexOf(") {", i) + 2, d = 0;
+    for (let j = k; j < app.length; j++) {
+      if (app[j] === "{") d++;
+      else if (app[j] === "}") { d--; if (!d) return app.slice(i, j + 1); }
+    }
+  })();
+  ck("the text page draws its photograph sharp",
+    /drawTextPreviewBackgroundImage\([\s\S]*?"none"\)/.test(text),
+    "a pre-blurred input has no sharp-to-frosted transition to show");
+  ck("and the four-stop full-frame wash is gone",
+    !/addColorStop\(0\.34/.test(text) && !/rgba\(0, 0, 0, 0\.98\)/.test(text));
+}
+
+console.log("\nThe blur lags the darkening, piling up towards the foot");
+{
+  const { api, log, target } = build();
+  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
+
+  /* Radius against DEPTH.
+
+     The strips no longer set ctx.filter at all - that was unaffordable at
+     these radii, 140ms a paint against 3ms. The blur is applied once per
+     LEVEL on the downscaled band, where the upscale multiplies it and the
+     pixel count is a sixteenth, and each strip draws from whichever level
+     matches its depth. So the radius a strip carries is the sigma baked into
+     the canvas it drew FROM, not a filter set just before it. */
+  const sigmaOf = new Map();
+  for (const f of log.filters) {
+    const m = /^blur\(([\d.]+)px\)$/.exec(f.value);
+    if (m && !sigmaOf.has(f.ctx)) sigmaOf.set(f.ctx, parseFloat(m[1]));
+  }
+  ck("it built a range of pre-blurred levels",
+    new Set(sigmaOf.values()).size >= 4, sigmaOf.size + " levels carry a blur");
+
+  /* Strip draws only: the read-back into the downscale buffer and the
+     edge-extension pass are nine-argument draws too, and the latter covers
+     the full band height. */
+  /* Strip draws only, and the context matters as much as the shape.
+
+     Three other things in here are nine-argument draws from a canvas: the
+     read-back into the downscale buffer, the edge-extension pass after the
+     loop, and - the one that bit - the two rows stretched into the padding
+     while each blur level is built. Those last two sit at dx 0 on the padded
+     canvas, so with the strips they make the first real strip look like a
+     4.16px sideways jump from nothing, which is precisely the tearing this
+     section exists to detect. A false positive that reports the true defect
+     is still a false positive.
+
+     The strips are the draws on whichever context receives most of them. */
+  const stripCtx = (() => {
+    const n = {};
+    for (const d of log.draws) if (d.args.length === 9) n[d.ctx] = (n[d.ctx] || 0) + 1;
+    return Object.keys(n).sort((a, b) => n[b] - n[a])[0];
+  })();
+  const strips = log.draws.filter(
+    (d) => d.ctx === stripCtx && d.args.length === 9 &&
+           d.args[0] && d.args[0].__i !== undefined && d.args[8] < H * 0.1);
+  /* Two draws per strip, not one: the radius is BLENDED between neighbouring
+     levels rather than snapped to the nearest, so each strip lays down its
+     lower level opaque and then the upper one at the fractional weight.
+     Reading the draws individually gives an alternating 0, 1.75, 0, 1.75 and
+     reports the radius as going backwards every other row. The effective
+     radius is the blend, which is what the card actually receives. */
+  const groups = [];
+  for (const d of strips) {
+    const r = sigmaOf.get("off" + d.args[0].__i) || 0;
+    const last = groups[groups.length - 1];
+    if (last && last.y === d.args[6]) last.r = last.r * (1 - d.alpha) + r * d.alpha;
+    else groups.push({ y: d.args[6], dx: d.args[5], r });
+  }
+  /* Depth is the strip's ORDER, not its destination y. The bend gives each
+     strip a little vertical offset, and sorting by y therefore interleaves
+     neighbours whenever that offset approaches the strip height — which
+     reports the radius as jumping about and going backwards when it is doing
+     neither. The loop draws them top to bottom, so order is the depth. */
+  const samples = groups.map((gp, i) => ({ depth: i / (groups.length - 1), r: gp.r }));
+  ck("every strip drew from a level", samples.length > 8, samples.length + " strips");
+  ck("and blends between two of them rather than snapping to one",
+    strips.length > samples.length, `${strips.length} draws over ${samples.length} strips`);
+
+  const maxR = Math.max(...samples.map((x) => x.r));
+  ck("radius never goes backwards as it descends",
+    samples.every((x, i) => !i || x.r >= samples[i - 1].r - 1e-9),
+    samples.slice(0, 8).map((x) => x.r).join(","));
+
+  /* No assertion that the blur LAGS the darkening any more, and that is a
+     decision rather than an omission.
+
+     The lag existed to keep the radius climbing below the type. It was worth
+     an exponent of 2 while the band began 272px above the copy, because the
+     type then sat a third of the way down with plenty of ramp above it to
+     hold back. With a 65px run-up the copy line falls about a tenth of the
+     way into the band and nearly the whole ramp is already below it: the lag
+     has nothing left to protect and only starves the first lines of the frost
+     — measured, sigma 1.6 at line one against 9.4 without it.
+
+     What still has to hold is below: the radius climbs from nothing, never
+     goes backwards, and is still climbing at the foot. */
+  ck("it starts from no blur at all at the top of the band",
+    samples[0].r === 0, String(samples[0].r));
+  ck("and is still at its maximum by the foot",
+    samples[samples.length - 1].r === maxR,
+    `${samples[samples.length - 1].r} of ${maxR}`);
+
+  /* Where the radius climbs fastest used to have to be below the copy line.
+     That was a real property while the copy sat a third of the way down the
+     band; with the run-up at 65 it sits at a tenth, so "below the copy" is
+     almost the whole band and the check passes on geometry rather than on
+     anything the code does. Replaced by the rate itself, which is what the
+     eye actually responds to: no single step between neighbouring strips may
+     carry more than a fifth of the total radius. */
+  let steepest = 0;
+  for (let i = 1; i < samples.length; i++) {
+    steepest = Math.max(steepest, samples[i].r - samples[i - 1].r);
+  }
+  ck("no single step between strips carries a fifth of the range",
+    steepest < maxR / 5, `${steepest.toFixed(2)} of ${maxR}`);
+
+  /* The bend has to move SMOOTHLY down the band, and this is the assertion
+     that was missing while the defect it describes was on screen.
+
+     The refraction pulls each strip sideways by a function of its depth. The
+     step between neighbours is bendMax * |dwave/dt| / strips, and at the
+     original frequencies of 7.6 and 17.3 that derivative peaks near 11 — four
+     pixels of sideways slide between strips ten pixels tall. That is not a
+     bend, it is tearing, and it was reported as "layered lines".
+
+     A pixel is the bound because that is where neighbouring slabs stop being
+     resolvable as separate: below it the bend reads as a bend. Nothing else
+     here catches this — the darkening is unaffected by a sideways shift, and
+     the radius ramp is measured per strip rather than between them, so both
+     stay green while the picture visibly tears. */
+  let worstSlide = 0;
+  for (let i = 1; i < groups.length; i++) {
+    worstSlide = Math.max(worstSlide, Math.abs(groups[i].dx - groups[i - 1].dx));
+  }
+  ck("neighbouring strips slide by less than a pixel, so the bend is a bend",
+    worstSlide < 1, worstSlide.toFixed(2) + "px between neighbours");
+
+  /* And they stay in the order they were drawn. The bend gives each strip a
+     vertical offset as well, and a large enough one relative to the strip
+     height would put a later strip above an earlier one, with the overlap
+     between them resolving the wrong way round. It has never done that -
+     measured 0.54px against a 7px strip even at the old fast frequency - but
+     it is one amplitude change away and nothing else here would notice. */
+  ck("and are drawn top to bottom, so the overlaps resolve in order",
+    groups.every((gp, i) => !i || gp.y >= groups[i - 1].y),
+    "a strip was drawn above its predecessor");
+}
+
+console.log("\nThe blur is dithered, or it bands");
+{
+  /* The one that nothing else here can see.
+
+     A photograph carries sensor noise, and that noise is what stops a smooth
+     sky banding: it dithers the 8-bit quantisation so the step between
+     adjacent values lands in a different place on each row. The blur averages
+     it away, and what is left is a mathematically smooth gradient — which in 8
+     bits is a staircase, flat for as many rows as the true value needs to
+     cross the next 1/255, then a step.
+
+     Measured on a photo-like ramp: with the glass on and no dither, 32 runs
+     where the row mean held the SAME value for four rows or more, the longest
+     for thirty. With the glass off entirely, zero. At 0.12 dither, zero again,
+     for 1.47 levels of per-pixel noise — about one, which is what a dither is
+     supposed to be.
+
+     Every other measurement in this file reports the treatment as clean while
+     that is happening, because they all look at the row MEAN of 920 pixels or
+     at a source with no smooth ramp in it. */
+  const { api, log, target } = build();
+  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
+  ck("it is on", api.GLASS.dither > 0, String(api.GLASS.dither));
+  ck("a noise tile was built", log.putImage.length > 0);
+  ck("and laid over the glass as a repeating pattern",
+    log.patterns.some((p) => p.repeat === "repeat"), JSON.stringify(log.patterns));
+
+  /* Overlay, specifically. A tile centred on mid-grey is a no-op under
+     "overlay", so the deviations lighten and darken symmetrically and the
+     average brightness of the band is untouched. source-over would lay a grey
+     veil over the picture instead. */
+  /* Overlay, specifically, and checked rather than asserted in prose. A tile
+     centred on mid-grey is a no-op under "overlay", so its deviations lighten
+     and darken symmetrically and the band's average brightness is untouched.
+     Under source-over the same tile is a flat grey veil over the picture. */
+  const noiseFill = log.fills.find((f) => f.style && f.style.__pattern);
+  ck("in overlay, so it dithers without tinting",
+    noiseFill && noiseFill.op === "overlay",
+    noiseFill ? `painted with ${noiseFill.op}` : "no pattern fill");
+  ck("at the configured strength, not full",
+    noiseFill && Math.abs(noiseFill.alpha - api.GLASS.dither) < 1e-9,
+    noiseFill ? String(noiseFill.alpha) : "");
+  const off = build({ overrides: { dither: 0 } });
+  off.api.paintMistGlass(off.target, { width: W, height: H, copyTop: COPY });
+  ck("and 0 turns it off cleanly, so it is a knob and not a fixed cost",
+    off.log.patterns.length === 0, off.log.patterns.length + " patterns");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

@@ -253,11 +253,11 @@ with it. Tunable live via `window.GLASS`.
 | `brightness` | 0.09 | From the picker. Fixed |
 | `fillAlpha` | 0.85 | The 85% beside the hex. Fixed |
 | `fadeMax` | 0.20 | Cap on the gradient. The fill does the darkening now; both at full strength leave no photograph |
-| `blurAt` / `blurCardWidth` | 16 / 382 | Blur quoted in the design's units and scaled to the canvas |
+| `blurAt` / `blurCardWidth` | 26 / 382 | Blur in the design's units, scaled to the canvas — 63px on a 920 card |
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
 | `refract` | 0.022 | How far the glass bends the picture, as a share of width |
 | `refractStrips` | 56 | Depth resolution of the bend |
-| `reach` | 0.8 | Multiplies the caller's fadeHeight. Start height and dissolve length are the same number, so lowering it starts the frost nearer the copy *and* shortens the transition. 0.8 ≈ 119px ramp, showing ~99px above the first line |
+| `reach` | 1.2 | Multiplies the caller's fadeHeight. Start height and dissolve length are the same number, so lowering it starts the frost nearer the copy *and* makes the transition steeper — peak slope is the curve's peak divided by this length. 1.2 ≈ 178px ramp, 0.0084 alpha/px |
 
 **Two rules worth knowing before touching either:**
 

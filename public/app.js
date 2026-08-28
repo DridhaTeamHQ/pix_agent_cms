@@ -5015,7 +5015,10 @@ const GLASS = (window.GLASS = Object.assign({
   /* Blur is quoted in the design's own units — 16 on a 382-wide card — and
      scaled to whatever the poster canvas actually is, so the frost is the
      same thickness relative to the card at any export size. */
-  blurAt: 16,
+  /* 26 on a 382-wide card, up from 16. At 16 the picture behind the copy was
+     softened without ever reading as a surface: enough to lose detail, not
+     enough to look like anything is there. Glass is the point. */
+  blurAt: 26,
   blurCardWidth: 382,
   downscale: 4,     // the blur is reached by downsampling; see paintMistGlass
 
@@ -5029,22 +5032,26 @@ const GLASS = (window.GLASS = Object.assign({
      shortens the dissolve. That is the trade every value here is making.
 
      2.2 began it halfway up a 9:16 poster, which is softening the picture long
-     before anything needs it. 0.8 gives a 119px ramp, and since the mask eases
-     in and only shows about a fifth of the way down it, softening appears
-     around 99px above the copy — a line and a half, close enough to read as
-     starting at the text while leaving a real dissolve rather than a step.
+     before anything needs it. 0.8 was the other end: near the text, but 119px
+     is a short distance to go from sharp to frosted in, and it read as abrupt.
+
+     1.2 gives 178px. The number that decides whether a transition looks abrupt
+     is its steepest part, and that is the curve's peak slope divided by the
+     length it has to run in — so half again the length is a third off the
+     steepest step, from 0.0126 alpha per pixel to 0.0084. Softening appears
+     around 147px above the copy, about two and a half line-heights.
 
      It was 2.2 when the mask was thirteen samples of a curve, which canvas
      draws as thirteen straight segments with a slope change at every join: a
      findable edge that a longer run-up could only spread out, never remove. At
-     sixty-four samples of a smoothstep, and 7px of blur rather than 55, there
-     is no join to hide — so the length can be about where the glass belongs
-     instead of about concealing a defect underneath it.
+     sixty-four samples there is no join to hide, so the length can be about how
+     gentle the transition is instead of about concealing a defect underneath
+     it.
 
      Tunable live: window.GLASS.reach = 0.6 then redraw. Lower starts nearer
      the text and shortens the dissolve; if an edge ever appears at the top of
      the frost, this is the number that caused it. */
-  reach: 0.8,
+  reach: 1.2,
 
   /* The fill is 85% of a near-black, so it does the darkening the gradient
      used to. Left at 0.85 the two would stack to near-opaque and the
@@ -5269,7 +5276,18 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
   const MASK_SAMPLES = 64;
   for (let i = 0; i <= MASK_SAMPLES; i++) {
     const t = i / MASK_SAMPLES;
-    // Smoothstep: zero slope at both ends, so it has no top and no shoulder.
+    /* Smoothstep, and smootherstep was tried and measured and is worse here.
+
+       Smootherstep holds nearer zero for longer, so it hides the ONSET better
+       — it does not reach the ~8% where softening shows until a fifth of the
+       way down its ramp against a sixth. But it pays for that with a steeper
+       middle: peak slope 1.875 against 1.5. Swapped in alongside a ramp half
+       again as long, the two cancelled almost exactly — the sharpest step in
+       the transition went from 13.2% of the total change to 13.1%, which is
+       nothing.
+
+       What makes a transition read as abrupt is its steepest part, not where
+       it begins, so the gentler curve wins and the length does the rest. */
     at(t * copyFrac, t * t * (3 - 2 * t));
   }
   at(copyFrac, 1);

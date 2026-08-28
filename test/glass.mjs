@@ -59,12 +59,33 @@ const glassSrc = (() => {
   return app.slice(a, app.indexOf(tail, a) + tail.length);
 })();
 
-// fadeReach/blurReach still use loose FADE_* constants alongside GLASS.
+// fadeReach still uses the loose FADE_ constants alongside GLASS.
 // Injected from the source rather than restated, same rule as the rest.
 const fadeConsts = app
   .split(/\r?\n/)
   .filter((l) => l.startsWith("const FADE_"))
   .join("\n");
+
+/* SPEC_STOPS is the profile both ramps follow, and it is a const array
+   spanning several lines rather than a function. Injected from the source for
+   the same reason as everything else here: a test that restates the shape it
+   is checking passes whatever the shape becomes. */
+const specSrc = (() => {
+  const a = app.indexOf("const SPEC_STOPS = [");
+  const tail = "];";
+  return app.slice(a, app.indexOf(tail, a) + tail.length);
+})();
+
+/* RAMP_ONSET, the lookup width, and the integral built from them. Injected
+   out of the source rather than restated, same rule as everything else here. */
+const onsetSrc = [
+  app.match(/^const RAMP_ONSET = [\d.]+;/m)[0],
+  app.match(/^const RAMP_SAMPLES_LUT = \d+;/m)[0],
+  (() => {
+    const a = app.indexOf("const RAMP_TABLE = (");
+    return app.slice(a, app.indexOf("})();", a) + 5);
+  })(),
+].join("\n");
 
 function makeCtx(log, label) {
   const stops = [];
@@ -109,10 +130,13 @@ function build({ transform = { a: 1, d: 1, e: 0, f: 0 }, overrides = {} } = {}) 
     ${fnSrc("glassPanelColour")}
     ${glassSrc}
     ${fnSrc("fadeReach")}
-    ${fnSrc("blurReach")}
+    ${specSrc}
+    ${fnSrc("specAlpha")}
+    ${onsetSrc}
+    ${fnSrc("rampAlpha")}
     ${fnSrc("paintMistGlass")}
     ${fnSrc("paintBottomFade")}
-    return { GLASS, glassPanelColour, fadeReach, blurReach, paintMistGlass, paintBottomFade };
+    return { GLASS, glassPanelColour, fadeReach, paintMistGlass, paintBottomFade };
   `)(doc, { GLASS: overrides });
   return { api, log, target: makeCtx(log, "target") };
 }
@@ -138,38 +162,68 @@ console.log("\nThe panel is neutral, not a colour wash");
     brown.r !== brown.b, JSON.stringify(brown));
 }
 
-console.log("\nThe glass dissolves in rather than arriving at an edge");
+console.log("\nThe transition is gentle enough that there is no edge to find");
 {
-  const { api } = build();
-  const callerReach = api.blurReach(LAYOUT_FADE);
-  const glassReach = callerReach * api.GLASS.reach;
-  /* No assertion that reach > 1. That only restated whichever value happened
-     to be current, and it failed the moment the dissolve was deliberately
-     shortened — a test that has to be edited every time the thing it watches
-     is tuned is not watching anything. The two bounds below are the property.
+  /* The property, and the one nothing here used to measure.
 
-     Raw length is not the property either. The mask eases in, so softening only
-     becomes visible about a fifth of the way down its own ramp — which is why
-     the reach could be shortened once the curve was sampled densely enough to
-     have no join to hide.
+     What the eye finds is the STEEPEST part of the ramp, expressed against
+     the card - not the curve's name, not where it starts, not how many stops
+     describe it. Every previous round of tuning argued about those three and
+     left this untouched at six times the design's value, which is why each
+     round changed the look without answering the complaint.
 
-     What matters is where it SHOWS, and it is wrong in both directions. Too
-     far above the copy and the picture goes soft halfway up the card for no
-     reason; too close and the frost arrives as an edge instead of a dissolve.
-     Both have been reported here. */
-  const visibleAt = glassReach * 0.83;   // smoothstep crosses ~8% alpha here
-  ck("softening does not begin halfway up the card",
-    visibleAt / H <= 0.20, (visibleAt / H * 100).toFixed(0) + "% of the card above the copy");
-  ck("nor so close that it arrives as an edge",
-    visibleAt / H >= 0.05, (visibleAt / H * 100).toFixed(0) + "% of the card above the copy");
+     Measured off the mask the code actually builds: the largest jump in alpha
+     between adjacent stops, over the distance between them in pixels of card.
+     The design tool's own gradient is 0.80 across 63% of its region; the bound
+     is twice that, so the curve can be retuned but not re-steepened. */
+  const { api, log, target } = build();
+  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
+  const read = log.draws.find((d) => d.args.length === 9);
+  const bandPx = H - read.args[2];
+
+  const masked = log.contexts.filter((c) => c.stops.length)
+    .sort((a, b) => b.stops.length - a.stops.length)[0];
+  let peak = 0;
+  for (let i = 1; i < masked.stops.length; i++) {
+    const dp = masked.stops[i].p - masked.stops[i - 1].p;
+    const da = masked.stops[i].a - masked.stops[i - 1].a;
+    if (dp > 0) peak = Math.max(peak, Math.abs(da) / (dp * bandPx));
+  }
+  /* It has to leave from a standstill. A ramp that starts climbing at its
+     full rate has a corner at the top of the band, and a corner in the SLOPE
+     is what shows as a line even when every value along it is continuous.
+
+     The bound is the other half: easing the onset by multiplying the curve by
+     a smoothstep does start it from zero, and pays for it with a patch 1.69x
+     steeper than the design a fifth of the way down. Ramping the slope and
+     renormalising instead keeps the start at zero AND the peak near the
+     design's own. Both properties or neither - checking only the first is how
+     the multiply version passed. */
+  const first = masked.stops[1].a - masked.stops[0].a;
+  const biggest = Math.max(...masked.stops.map((st, i) =>
+    i ? st.a - masked.stops[i - 1].a : 0));
+  ck("it leaves from a standstill rather than a corner",
+    first < biggest / 8, first.toFixed(5) + " vs " + biggest.toFixed(5));
+
+  const REFERENCE = 0.8 / (0.63 * bandPx);   // the design tool's steepest run
+  ck("its steepest run is no worse than twice the design's",
+    peak <= REFERENCE * 2,
+    (peak * 100).toFixed(3) + "% per px vs the design's " + (REFERENCE * 100).toFixed(3) + "%");
+
+  /* The old geometry, kept as the thing that must not come back: a 123px ramp
+     starting on the copy line, smoothstepped. It reads as an edge because it
+     cannot not - the same alpha change compressed into a fifth of the run. */
+  const shortRamp = 1.5 / (LAYOUT_FADE * 0.45 * 0.83);
+  ck("and far gentler than the 123px ramp it replaced",
+    peak < shortRamp / 3,
+    (peak * 100).toFixed(3) + "% per px vs the old " + (shortRamp * 100).toFixed(3) + "%");
 }
 
-console.log("\nThe mask is a sampled curve, not a few straight segments");
+console.log("The mask is a sampled curve, not a few straight segments");
 {
   const { api, log, target } = build();
   api.paintMistGlass(target, {
-    width: W, height: H, copyTop: COPY, fadeHeight: api.blurReach(LAYOUT_FADE),
-  });
+    width: W, height: H, copyTop: COPY,   });
   const masked = log.contexts.filter((c) => c.stops.length)
     .sort((a, b) => b.stops.length - a.stops.length)[0];
   ck("a mask was built", !!masked && masked.stops.length > 0);
@@ -196,13 +250,12 @@ console.log("\nIt reads the right part of the photograph when the context is sca
 // the copy band — preview right, published card wrong.
 for (const scale of [1, 2, 4]) {
   const { api, log, target } = build({ transform: { a: scale, d: scale, e: 0, f: 0 } });
-  const reach = api.blurReach(LAYOUT_FADE);
-  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY, fadeHeight: reach });
+    api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
   const read = log.draws.find((d) => d.args.length === 9);
-  /* The band now begins INSIDE the first line — see GLASS.startBelowCopy — so
-     the expected top is below the copy, not above it. Computed from the rule
-     rather than restated, so tuning the knob does not need this edited. */
-  const expectedTop = (COPY + api.GLASS.startBelowCopy * (H / 1700)) * scale;
+  /* The band begins GLASS.runUpAboveCopy above the first line. Computed from
+     the rule rather than restated, so tuning the knob does not edit this. */
+  const expectedTop =
+    (COPY - Math.min(COPY, api.GLASS.runUpAboveCopy * (H / 1700))) * scale;
   ck(`${scale}x: source rect starts at the copy band, not the canvas top`,
     read && Math.abs(read.args[2] - expectedTop) < 1.5,
     read ? `sy=${read.args[2]}, expected ${expectedTop.toFixed(0)}` : "no read-back");
@@ -216,7 +269,7 @@ console.log("\nIt reuses its scratch canvases instead of allocating per render")
   // every page, so this ran three times per keypress. Two fresh canvases each
   // time was ~10MB per render and ~100MB/s of churn under ordinary typing.
   const { api, log, target } = build();
-  const arg = { width: W, height: H, copyTop: COPY, fadeHeight: api.blurReach(LAYOUT_FADE) };
+  const arg = { width: W, height: H, copyTop: COPY, };
   api.paintMistGlass(target, arg);
   const afterFirst = log.created.length;
   for (let i = 0; i < 20; i++) api.paintMistGlass(target, arg);
@@ -227,48 +280,50 @@ console.log("\nIt reuses its scratch canvases instead of allocating per render")
 }
 
 
-console.log("\nThe blend begins inside the first line, not above it");
+console.log("\nThe blend begins well above the first line");
 {
   const { api, log, target } = build();
   api.paintMistGlass(target, {
-    width: W, height: H, copyTop: COPY, fadeHeight: api.blurReach(LAYOUT_FADE),
-  });
+    width: W, height: H, copyTop: COPY,   });
   const read = log.draws.find((d) => d.args.length === 9);
   const bandTop = read.args[2];
-  ck("nothing is frosted above the copy",
-    bandTop >= COPY, `band starts at ${bandTop}, copy at ${COPY}`);
-  ck("it starts about half a line into it",
-    bandTop - COPY === api.GLASS.startBelowCopy, `${bandTop - COPY}px below the copy`);
 
-  /* The reason this is a knob and not a constant: pinning the mask to full
-     strength AT the copy line is what used to guarantee every line sat on the
-     same glass. Starting inside the first line gives that up for its top half,
-     deliberately. 0 must restore the old behaviour exactly, or there is no way
-     back. */
-  const off = build({ overrides: { startBelowCopy: 0 } });
-  off.api.paintMistGlass(off.target, {
-    width: W, height: H, copyTop: COPY, fadeHeight: off.api.blurReach(LAYOUT_FADE),
-  });
-  const oldRead = off.log.draws.find((d) => d.args.length === 9);
-  ck("startBelowCopy = 0 puts it back at the copy line",
-    oldRead.args[2] === COPY, String(oldRead.args[2]));
+  /* It used to start AT the copy and finish 123px later, so the entire build
+     happened across lines one to three with nothing above it at all. The onset
+     has to land in empty picture, where there is no type beside it for the eye
+     to measure the change against. */
+  const runUp = COPY - bandTop;
+  ck("there is a real run-up above the copy", runUp > 100, runUp + "px");
+  ck("taken from the knob, in the card's own frame",
+    Math.abs(runUp - api.GLASS.runUpAboveCopy * (H / 1700)) < 1.5, runUp + "px");
+  ck("but it does not start halfway up the card",
+    bandTop / H >= 0.4, (bandTop / H * 100).toFixed(0) + "% down the card");
+
+  /* The ramp runs the full band instead of finishing early onto a flat panel.
+     That panel was the other half of what forced the ramp to be steep: every
+     level it did not use had to be spent in the 123px above it. */
+  const masked = log.contexts.filter((c) => c.stops.length)
+    .sort((a, b) => b.stops.length - a.stops.length)[0];
+  const rising = masked.stops.filter((st, i) => i > 0 && st.a > masked.stops[i - 1].a);
+  ck("it is still climbing at the foot, not flat from a third of the way down",
+    rising[rising.length - 1].p > 0.9,
+    "stops rising at " + (rising[rising.length - 1].p * 100).toFixed(0) + "% of the band");
 }
 
 
-
-console.log("\nIt declines rather than misbehaving");
+console.log("It declines rather than misbehaving");
 {
   let r = build({ overrides: { on: false } });
-  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: COPY, fadeHeight: 100 });
+  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: COPY });
   ck("GLASS.on = false paints nothing", r.log.draws.length === 0);
 
   r = build();
-  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: H + 500, fadeHeight: 10 });
+  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: H + 500 });
   ck("copy far past the foot paints nothing", r.log.draws.length === 0);
 
   r = build();
   r.target.canvas = null;
-  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: COPY, fadeHeight: 100 });
+  r.api.paintMistGlass(r.target, { width: W, height: H, copyTop: COPY });
   ck("no canvas to read paints nothing", r.log.draws.length === 0);
 }
 

@@ -253,22 +253,63 @@ with it. Tunable live via `window.GLASS`.
 | `brightness` | 0.09 | From the picker. Fixed |
 | `fillAlpha` | 0.85 | The 85% beside the hex. Fixed |
 | `fadeMax` | 0.20 | Cap on the gradient. The fill does the darkening now; both at full strength leave no photograph |
-| `blurAt` / `blurCardWidth` | 26 / 382 | Blur in the design's units, scaled to the canvas — 63px on a 920 card |
+| `blurAt` / `blurCardWidth` | 14 / 382 | Blur in the design's units, scaled to the canvas — 34px on a 920 card. Was 26 (63px) when the ramp was 123px long, which is half a pixel of radius per pixel descended; sharpness is the one property of a photograph the eye can check without a reference, so a radius gradient that steep is findable however smooth the alpha under it |
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
 | `refract` | 0.022 | How far the glass bends the picture, as a share of width |
 | `refractStrips` | 56 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
-| `reach` | 0.83 | Length of the dissolve, as a multiple of the caller's fadeHeight. Peak steepness is the curve's peak slope divided by this — 1.2 ≈ 178px ramp, 0.0084 alpha/px |
-| `startBelowCopy` | 0 | Where the ramp BEGINS, measured down from the top of the first line. The band runs downward from there, so nothing above the copy is frosted. 0 puts the visible onset at the line's midpoint, since smoothstep needs about a sixth of its ramp before softening shows |
+| `runUpAboveCopy` | 272 | How far above the first line the glass begins, in the 1700px reference frame. The ramp then runs the whole band, so this sets both where the onset lands and how gentle the build is. Replaced `reach` and `startBelowCopy` — see below |
 
-**The fade's shape comes from the design's gradient**, not from a formula:
-three stops — transparent, 80% at 63% of the way down, full at the first line
-— interpolated linearly, which is what the design tool does. It runs over
-2.0 × the layout's fadeHeight (about 660px on a 9:16 card, matching the mock's
-40% of the frame) and is anchored so it completes at the copy.
+**Both ramps follow one profile.** `specAlpha` is the design's gradient — three
+stops, transparent, 80% at 63% of the way down, full at the foot — interpolated
+linearly, which is what the design tool does. `rampAlpha` is that profile with
+its onset eased, and it is what the glass mask, the blur radius and the bottom
+fade all sample.
 
-It is then scaled by `GLASS.fadeMax` (0.20), because the glass fill does the
-darkening. So the fade contributes the *shape* at a fifth of full strength;
-measured, every stop lands within 0.005 of 0.20 × the spec.
+The fade is then scaled by `GLASS.fadeMax` (0.20), because the glass fill does
+the darkening: it contributes the *shape* at a fifth of full strength.
+
+### Why the transition used to be findable, and what fixed it
+
+Reported repeatedly as a visible edge above the first line, and survived about
+ten rounds of tuning the *curve* — smoothstep vs smootherstep, 13 stops vs 64,
+per-strip radii. None of it helped, because the curve was never the problem.
+
+Measured off the rendered card, the old geometry put **92 of the 95 available
+levels of darkening inside 120px**, from line one to line three, against three
+levels across the whole run-up above it. The glass band started *at* `copyTop`
+and reached full strength 123px later, a quarter of the way into a 491px band,
+then sat flat. Peak slope **1.22% of the total per pixel against the design's
+0.21%** — six times steeper, and landing exactly where the type is.
+
+Three changes, in order of how much each was worth:
+
+1. **A run-up.** The band starts `runUpAboveCopy` (272px) above the first line
+   instead of on it, so the onset lands in open picture with no type beside it
+   to measure the change against. 48% of the build now happens above line one;
+   it was 3%.
+2. **The ramp runs the whole band** rather than finishing in its first quarter
+   onto a flat panel. Every level not spent over the full height had to be
+   spent in that 123px.
+3. **Half the blur.** The transition is carried by the darkening, which the eye
+   cannot check, rather than by sharpness, which it can.
+
+Measured after: peak slope **0.25 levels/px against 2.0**, eight times gentler,
+and it now falls 160px *above* the first line. Against a source with no
+horizontal structure, no row anywhere departs from its local slope by more than
+1.04 of 255 levels — the 8-bit quantisation floor. Render cost went *down*,
+3.7ms from 9.2ms, because the smaller radius lets more strips share a filter.
+
+**Easing the onset is not free, and the obvious way is wrong.** The design's
+profile is piecewise linear: it goes from not climbing to climbing at full rate
+over no distance, and a step in *slope* is what the eye is good at — it is why a
+gradient built from a few stops shows a line at every join though its values are
+continuous. Multiplying the curve by a smoothstep does start it from zero and
+pays for it with a patch **1.69× steeper** a fifth of the way down (measured:
+0.28 levels/px against an average of 0.13). So `rampAlpha` applies the window to
+the *slope* and renormalises — it accelerates from a standstill, never climbs
+faster than it must, and still lands at 1. Peak comes down to 1.43× average.
+`test/glass.mjs` asserts both halves, because checking only the onset is how the
+multiply version passed.
 
 **Two rules worth knowing before touching either:**
 
@@ -281,7 +322,7 @@ measured, every stop lands within 0.005 of 0.20 × the spec.
   layer in leaves a sharp copy of the picture superimposed mid-transition,
   which the eye finds however smooth the alpha curve is. Each refraction strip
   carries its own radius instead, so every depth is a single genuinely blurred
-  image. Costs ~6ms a render in extra filter chains.
+  image.
 - **Blur needs padding.** A blur samples outward, and past the canvas edge there
   is nothing; those samples return transparent and the sharp original shows
   through as an unblurred strip at the foot. The frame is padded and edge-

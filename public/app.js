@@ -4407,7 +4407,6 @@ function drawStoryScreen() {
     width: W,
     height: H,
     copyTop: top,
-    fadeHeight: blurReach(L.gradient.fadeHeight),
     opacity: clamp(numberOr(state.storyOverlayOpacity, 100) / 100, 0, 1),
   });
   paintBottomFade(ctx, {
@@ -4918,26 +4917,90 @@ function drawBackground() {
    reads as that shape if it is given that distance. */
 const FADE_STRETCH = 2.0;
 
-/* The blur gets its own, shorter reach.
-
-   Sharing one number with the colour was wrong in a way the numbers hid: the
-   mask ramps 0 to 1 across the reach, so at 0.6 the picture is already
-   half-blurred a third of the way up the frame from the copy. Softening starts
-   being visible long before it is complete, which is why it read as blurring
-   from halfway up the image when the colour was correctly placed.
-
-   At 0.25 the mist begins just above the first line and is done by it. The
-   colour still wants the longer run — it has to arrive gradually or it bands —
-   but the blur does not: going from sharp to frosted quickly is what makes it
-   look like a pane of glass sitting there rather than a lens going soft. */
-const FADE_BLUR_STRETCH = 0.45;
 
 function fadeReach(layoutFade) {
   return layoutFade * FADE_STRETCH;
 }
 
-function blurReach(layoutFade) {
-  return layoutFade * FADE_BLUR_STRETCH;
+
+/* ── The one darkening profile ───────────────────────────────────────────────
+
+   The shape from the design tool, as three stops: transparent at the top,
+   80% at 63% of the way down, solid at the foot.
+
+   It lives out here because BOTH ramps have to follow it. They did not, and
+   that is the whole of what "not at all smooth" was: the fade ran this curve
+   over 660px while the glass ran a smoothstep over 123px inside it, so the
+   card darkened gently, then fell off a 123px cliff, then sat flat. Two
+   profiles disagreeing in the same band cannot be tuned into one — the
+   steeper one is what the eye finds, whatever the other is doing.
+
+   Linear between stops, which is what a gradient tool does; the callers
+   sample it densely enough that the joins do not read as slope changes. */
+const SPEC_STOPS = [
+  [0, 0],
+  [0.63, 0.8],
+  [1, 1],
+];
+
+function specAlpha(t) {
+  for (let k = 1; k < SPEC_STOPS.length; k++) {
+    const [p0, a0] = SPEC_STOPS[k - 1];
+    const [p1, a1] = SPEC_STOPS[k];
+    if (t <= p1) return a0 + ((a1 - a0) * (t - p0)) / (p1 - p0);
+  }
+  return 1;
+}
+
+/* ── The onset, eased ────────────────────────────────────────────────────────
+
+   specAlpha is the design's profile exactly, and the design's profile is
+   piecewise linear: it goes from not climbing at all to climbing at its full
+   rate over no distance whatsoever. A step in SLOPE is what the eye is
+   actually good at - it is why a gradient built from a handful of stops shows
+   a line at every join though its values are continuous - and this one would
+   sit at the top of the band, which is exactly where a line was reported in
+   this treatment before.
+
+   The obvious fix is to multiply the curve by a smoothstep over its first
+   stretch. That was tried and measured on the rendered card and it is worse
+   than it looks: multiplying a ramp by a curve that reaches 1 means the
+   product's slope reaches 1.69x the ramp's own, so easing the onset bought a
+   68% steeper patch a fifth of the way down. Measured 0.28 levels per pixel
+   against an average of 0.13.
+
+   So the window is applied to the SLOPE and the result renormalised. The
+   curve accelerates from a standstill, never climbs faster than it has to,
+   and still lands at 1 - the design's shape with its first corner rounded off
+   rather than its middle steepened. Peak comes down to about 1.43x average.
+
+   Built once into a table because it is an integral, and read from a loop
+   that runs per strip per render. */
+const RAMP_ONSET = 0.18;
+const RAMP_SAMPLES_LUT = 512;
+
+const RAMP_TABLE = (() => {
+  const n = RAMP_SAMPLES_LUT;
+  const out = new Float64Array(n + 1);
+  const step = 1 / n;
+  let acc = 0;
+  for (let i = 1; i <= n; i++) {
+    const t = i * step;
+    // The design's own rate of climb at this depth, differenced off its stops.
+    const slope = (specAlpha(t) - specAlpha(t - step)) / step;
+    // ...ramped in from zero over the first RAMP_ONSET of the band.
+    acc += slope * Math.min(1, t / RAMP_ONSET);
+    out[i] = acc;
+  }
+  if (acc > 0) for (let i = 0; i <= n; i++) out[i] /= acc;
+  return out;
+})();
+
+function rampAlpha(t) {
+  const n = RAMP_SAMPLES_LUT;
+  const x = Math.min(1, Math.max(0, t)) * n;
+  const i = Math.min(n - 1, Math.floor(x));
+  return RAMP_TABLE[i] + (RAMP_TABLE[i + 1] - RAMP_TABLE[i]) * (x - i);
 }
 
 
@@ -5019,70 +5082,42 @@ const GLASS = (window.GLASS = Object.assign({
   /* Blur is quoted in the design's own units — 16 on a 382-wide card — and
      scaled to whatever the poster canvas actually is, so the frost is the
      same thickness relative to the card at any export size. */
-  /* 26 on a 382-wide card, up from 16. At 16 the picture behind the copy was
-     softened without ever reading as a surface: enough to lose detail, not
-     enough to look like anything is there. Glass is the point. */
-  blurAt: 26,
+  /* 14 on a 382-wide card — 34px on the 920 poster.
+
+     It was 26 (63px) while the ramp was 123px long, which is half a pixel of
+     radius gained per pixel descended. Sharpness is the one property of a
+     photograph the eye can check without a reference — it knows what a
+     building in focus looks like — so a gradient that steep in RADIUS is
+     findable even when the alpha under it is perfectly smooth. That is what
+     survived every previous round of tuning.
+
+     Over the full-height ramp the same 26 would still work, but the design
+     this is matching has no blur in it at all: the transition there is
+     carried entirely by the darkening. Halving it keeps the surface reading
+     as glass while handing the actual transition back to the gradient, which
+     is the part the eye cannot catch. */
+  blurAt: 14,
   blurCardWidth: 382,
   downscale: 4,     // the blur is reached by downsampling; see paintMistGlass
 
   refract: 0.022,   // how far the glass bends the picture, as a share of width
   refractStrips: 56,// depth resolution of the bend
-  /* Multiplies the caller's fadeHeight — the length of the dissolve, and so
-     how far above the first line the frost begins.
+  /* ── How far above the first line the glass begins ────────────────────
 
-     Start height and transition length are the SAME number: the ramp runs from
-     where it starts down to the first line, so lowering the start necessarily
-     shortens the dissolve. That is the trade every value here is making.
+     In the 1700px reference frame, scaled to whatever the card actually is.
+     272 is about four and a half lines at the poster's 62px line height.
 
-     2.2 began it halfway up a 9:16 poster, which is softening the picture long
-     before anything needs it. 0.8 was the other end: near the text, but 119px
-     is a short distance to go from sharp to frosted in, and it read as abrupt.
+     This replaces `reach` and `startBelowCopy`, which between them decided
+     that the band started AT the copy and ran 123px. Both were tuned
+     repeatedly and neither could work: a ramp that short has to be steep, and
+     one that starts on the type puts its steepest part where the eye is
+     already looking. The run-up moves the onset into empty picture and the
+     band's own height supplies the length.
 
-     1.2 ran 178px, which is 2.9 line-heights: starting at the first line, it
-     was still arriving at the THIRD. 0.83 gives 124px — two line-heights — so
-     the blur is fully present by the second line, which is where it should be.
-
-     Shortening a ramp normally makes it more visible, since the steepest part
-     is the curve's peak slope over its length. What pays for it is the blur
-     now ramping its RADIUS rather than being faded in at full strength: there
-     is no longer a sharp copy of the picture superimposed mid-transition for
-     the eye to catch. See the strip loop in paintMistGlass.
-
-     It was 2.2 when the mask was thirteen samples of a curve, which canvas
-     draws as thirteen straight segments with a slope change at every join: a
-     findable edge that a longer run-up could only spread out, never remove. At
-     sixty-four samples there is no join to hide, so the length can be about how
-     gentle the transition is instead of about concealing a defect underneath
-     it.
-
-     Tunable live: window.GLASS.reach = 0.6 then redraw. Lower starts nearer
-     the text and shortens the dissolve; if an edge ever appears at the top of
-     the frost, this is the number that caused it. */
-  reach: 0.83,
-
-  /* Where the ramp BEGINS, measured down from the top of the first line and
-     in the 1700px reference frame. 31 is half a line at the poster's 62px
-     line height, so the blend starts at the middle of the first line rather
-     than somewhere above it.
-
-     This changes the shape of the thing, not just its size. The mask used to
-     be pinned to full strength AT the copy line, which put the whole ramp in
-     the clear space above the text and meant every line sat on identical
-     glass. Starting it inside the first line necessarily means that line is
-     read against a surface that is still arriving. The bottom fade is at 0.78
-     alpha there and carries the contrast, so it stays legible, but it is a
-     real trade and this is the number that makes it.
-
-     0 is not "off": the band still begins at the copy line and climbs BELOW
-     it, where it used to finish there having climbed above. And 0 is what puts
-     the visible onset where it was asked for. Smoothstep needs about a sixth
-     of its ramp before softening shows, which on a 178px ramp is 30px — half
-     a line — so a band starting exactly at the copy line first shows at the
-     MIDDLE of the first line. Setting this to 31 as well pushed the onset to
-     74px, past the line entirely. Measured, not reasoned: contrast holds at
-     54 through the first line and does not break 80% of clear until 30px in. */
-  startBelowCopy: 0,
+     Tunable live: window.GLASS.runUpAboveCopy = 400 then redraw. Higher
+     starts the frost further up the photograph and makes the build gentler
+     still; lower walks back toward the edge this was. */
+  runUpAboveCopy: 272,
 
   /* The fill is 85% of a near-black, so it does the darkening the gradient
      used to. Left at 0.85 the two would stack to near-opaque and the
@@ -5122,26 +5157,41 @@ function glassScratch(role, width, height) {
   return cv;
 }
 
-function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 1 }) {
-  /* The glass gets a longer run-up than the caller's fadeHeight gives it.
-     blurReach() hands over 149px on a 1700px card, and 149px is enough to
-     ARRIVE in but not enough to DISSOLVE in: the picture goes from sharp to
-     frosted inside a ninth of the card and the boundary is findable even
-     when the alpha curve under it is perfectly smooth. */
-  /* The ramp begins below the top of the copy, not above it — see
-     GLASS.startBelowCopy. Scaled off the frame so it stays half a line at any
-     card size, and clamped so a tall setting cannot push the whole band off
-     the bottom of the card. */
-  const rampStart = copyTop + Math.min(
-    Math.max(0, height - copyTop - 8),
-    GLASS.startBelowCopy * (height / 1700),
-  );
-  const reach = fadeHeight * GLASS.reach;
-  const start = Math.max(0, rampStart);
+function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
+  /* The glass takes its geometry from GLASS.runUpAboveCopy and the height of
+     its own band, not from the caller's fadeHeight - which it used to be
+     handed through blurReach() and which could only ever be a fraction of a
+     ramp that was too short to begin with. It handed over 149px on a 1700px
+     card, and 149px is enough to ARRIVE in but not enough to DISSOLVE in. */
+  /* ── Where the glass begins, and how long it has to get there ─────────
+
+     Both of these were wrong, and no amount of curve-shaping could cover it.
+
+     It began AT the first line (startBelowCopy = 0) and reached full strength
+     123px later, a quarter of the way into a 491px band. Measured off the
+     rendered card that is 92 of the 95 available levels of darkening inside
+     120px — from line one to line three — against three levels across the
+     whole run-up above it. A ramp that does nothing and then does everything
+     is an edge with a soft top, and the eye finds it exactly where the type
+     is, because that is where it lands.
+
+     Peak slope tells the story: 1.22% per px against the design tool's 0.21%.
+     Six times steeper. The curve was never the problem — smoothstep,
+     smootherstep, 64 samples, per-strip radii all argued over the shape of a
+     ramp too short to matter.
+
+     So: start it a good way ABOVE the copy, where there is nothing for the
+     onset to be measured against, and let it run the full height of the band.
+     GLASS.runUpAboveCopy is in 1700-space and scales with the frame; the
+     clamp keeps a tall setting from starting above the top of the card. */
+  const runUp = Math.min(copyTop, GLASS.runUpAboveCopy * (height / 1700));
+  const start = Math.max(0, copyTop - runUp);
   const span = height - start;
   if (span <= 0) return;
-  // Where the ramp finishes, as a fraction of the painted band.
-  const copyFrac = Math.min(1, Math.max(0, reach / span));
+  /* The ramp IS the band now. It follows specAlpha across all of it, the same
+     profile the bottom fade runs, so the two darkenings are one build rather
+     than a cliff hidden inside a slope. */
+  const copyFrac = 1;
   const glassTint = glassPanelColour();
 
   const canvas = target.canvas;
@@ -5272,8 +5322,7 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
          as strips: the radius simply varies per strip. Fifty-six of them
          across the band is about a pixel of blur between neighbours, well
          under anything the eye resolves as a step. */
-      const rampT = copyFrac > 0 ? Math.min(1, t / copyFrac) : 1;
-      const ease = rampT * rampT * (3 - 2 * rampT);
+      const ease = rampAlpha(Math.min(1, Math.max(0, t / copyFrac)));
       /* Quantised to a quarter pixel, and only assigned when it changes.
          Setting ctx.filter builds a filter chain every time, so giving all
          fifty-six strips their own string tripled the render — 3.3ms to
@@ -5330,9 +5379,10 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
     g.globalAlpha = 1;
   }
 
-  /* The ramp, applied to the finished stack. It begins at GLASS.startBelowCopy
-     into the first line and climbs from there, holding at full strength for
-     the rest of the card so the lines below it all sit on the same surface. */
+  /* The ramp, applied to the finished stack. It begins GLASS.runUpAboveCopy
+     above the first line and climbs across the whole band, reaching full
+     strength at the foot — the design's own profile, not a short ramp with
+     a flat panel under it. */
   g.globalCompositeOperation = "destination-in";
   const mask = g.createLinearGradient(0, 0, 0, glass.height);
   const at = (p, a) => mask.addColorStop(Math.min(1, Math.max(0, p)), `rgba(0,0,0,${a})`);
@@ -5348,21 +5398,19 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
   const MASK_SAMPLES = 64;
   for (let i = 0; i <= MASK_SAMPLES; i++) {
     const t = i / MASK_SAMPLES;
-    /* Smoothstep, and smootherstep was tried and measured and is worse here.
+    /* specAlpha, not smoothstep.
 
-       Smootherstep holds nearer zero for longer, so it hides the ONSET better
-       — it does not reach the ~8% where softening shows until a fifth of the
-       way down its ramp against a sixth. But it pays for that with a steeper
-       middle: peak slope 1.875 against 1.5. Swapped in alongside a ramp half
-       again as long, the two cancelled almost exactly — the sharpest step in
-       the transition went from 13.2% of the total change to 13.1%, which is
-       nothing.
+       Smoothstep and smootherstep were both tried here and the argument
+       between them was beside the point: a smoothstep peaks at 1.5x the
+       average slope of its ramp, so over 123px it was always going to arrive
+       at roughly 1.2% per px however it was eased. The design tool's own
+       three stops peak at 1.27x, and over the whole band that is 0.17% — a
+       seventh as steep, from using the length rather than the curve.
 
-       What makes a transition read as abrupt is its steepest part, not where
-       it begins, so the gentler curve wins and the length does the rest. */
-    at(t * copyFrac, t * t * (3 - 2 * t));
+       It is also now literally the same function the bottom fade samples, so
+       the glass can no longer drift out of step with the ink over it. */
+    at(t, rampAlpha(t));
   }
-  at(copyFrac, 1);
   at(1, 1);
   g.fillStyle = mask;
   g.fillRect(0, 0, glass.width, glass.height);
@@ -5492,21 +5540,11 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
      a few straight lines with a visible corner at every join. These two
      segments are straight by intent; the sampling is what keeps the ends and
      the join from acquiring any others. */
-  const SPEC_STOPS = [[0, 0], [0.63, 0.80], [1, 1]];
-  const specAlpha = (t) => {
-    for (let k = 1; k < SPEC_STOPS.length; k++) {
-      const [p0, a0] = SPEC_STOPS[k - 1];
-      const [p1, a1] = SPEC_STOPS[k];
-      if (t <= p1) return a0 + ((t - p0) / (p1 - p0)) * (a1 - a0);
-    }
-    return 1;
-  };
-
   const RAMP_SAMPLES = 48;
   stopAt(0, 0);
   for (let i = 1; i <= RAMP_SAMPLES; i++) {
     const t = i / RAMP_SAMPLES;
-    above(t, COPY_LINE_ALPHA * specAlpha(t));
+    above(t, COPY_LINE_ALPHA * rampAlpha(t));
   }
 
   /* ── Below the copy: keep some photograph ──
@@ -5556,7 +5594,6 @@ function drawHero() {
     width: canvas.width,
     height: canvas.height,
     copyTop: headlineTop,
-    fadeHeight: blurReach(L.gradient.fadeHeight),
   });
   paintBottomFade(ctx, {
     width: canvas.width,

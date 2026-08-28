@@ -257,7 +257,8 @@ with it. Tunable live via `window.GLASS`.
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
 | `refract` | 0.022 | How far the glass bends the picture, as a share of width |
 | `refractStrips` | 56 | Depth resolution of the bend |
-| `reach` | 1.2 | Multiplies the caller's fadeHeight. Start height and dissolve length are the same number, so lowering it starts the frost nearer the copy *and* makes the transition steeper — peak slope is the curve's peak divided by this length. 1.2 ≈ 178px ramp, 0.0084 alpha/px |
+| `reach` | 1.2 | Length of the dissolve, as a multiple of the caller's fadeHeight. Peak steepness is the curve's peak slope divided by this — 1.2 ≈ 178px ramp, 0.0084 alpha/px |
+| `startBelowCopy` | 0 | Where the ramp BEGINS, measured down from the top of the first line. The band runs downward from there, so nothing above the copy is frosted. 0 puts the visible onset at the line's midpoint, since smoothstep needs about a sixth of its ramp before softening shows |
 
 **Two rules worth knowing before touching either:**
 

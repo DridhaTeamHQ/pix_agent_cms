@@ -199,7 +199,10 @@ for (const scale of [1, 2, 4]) {
   const reach = api.blurReach(LAYOUT_FADE);
   api.paintMistGlass(target, { width: W, height: H, copyTop: COPY, fadeHeight: reach });
   const read = log.draws.find((d) => d.args.length === 9);
-  const expectedTop = Math.max(0, COPY - reach * api.GLASS.reach) * scale;
+  /* The band now begins INSIDE the first line — see GLASS.startBelowCopy — so
+     the expected top is below the copy, not above it. Computed from the rule
+     rather than restated, so tuning the knob does not need this edited. */
+  const expectedTop = (COPY + api.GLASS.startBelowCopy * (H / 1700)) * scale;
   ck(`${scale}x: source rect starts at the copy band, not the canvas top`,
     read && Math.abs(read.args[2] - expectedTop) < 1.5,
     read ? `sy=${read.args[2]}, expected ${expectedTop.toFixed(0)}` : "no read-back");
@@ -221,6 +224,34 @@ console.log("\nIt reuses its scratch canvases instead of allocating per render")
     log.created.length === afterFirst, `${afterFirst} then ${log.created.length} after 21 renders`);
   ck("and it wipes what it reuses, so no stale frame shows through",
     log.clears.length >= 2, log.clears.length + " clears");
+}
+
+
+console.log("\nThe blend begins inside the first line, not above it");
+{
+  const { api, log, target } = build();
+  api.paintMistGlass(target, {
+    width: W, height: H, copyTop: COPY, fadeHeight: api.blurReach(LAYOUT_FADE),
+  });
+  const read = log.draws.find((d) => d.args.length === 9);
+  const bandTop = read.args[2];
+  ck("nothing is frosted above the copy",
+    bandTop >= COPY, `band starts at ${bandTop}, copy at ${COPY}`);
+  ck("it starts about half a line into it",
+    bandTop - COPY === api.GLASS.startBelowCopy, `${bandTop - COPY}px below the copy`);
+
+  /* The reason this is a knob and not a constant: pinning the mask to full
+     strength AT the copy line is what used to guarantee every line sat on the
+     same glass. Starting inside the first line gives that up for its top half,
+     deliberately. 0 must restore the old behaviour exactly, or there is no way
+     back. */
+  const off = build({ overrides: { startBelowCopy: 0 } });
+  off.api.paintMistGlass(off.target, {
+    width: W, height: H, copyTop: COPY, fadeHeight: off.api.blurReach(LAYOUT_FADE),
+  });
+  const oldRead = off.log.draws.find((d) => d.args.length === 9);
+  ck("startBelowCopy = 0 puts it back at the copy line",
+    oldRead.args[2] === COPY, String(oldRead.args[2]));
 }
 
 

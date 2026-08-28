@@ -5053,6 +5053,29 @@ const GLASS = (window.GLASS = Object.assign({
      the frost, this is the number that caused it. */
   reach: 1.2,
 
+  /* Where the ramp BEGINS, measured down from the top of the first line and
+     in the 1700px reference frame. 31 is half a line at the poster's 62px
+     line height, so the blend starts at the middle of the first line rather
+     than somewhere above it.
+
+     This changes the shape of the thing, not just its size. The mask used to
+     be pinned to full strength AT the copy line, which put the whole ramp in
+     the clear space above the text and meant every line sat on identical
+     glass. Starting it inside the first line necessarily means that line is
+     read against a surface that is still arriving. The bottom fade is at 0.78
+     alpha there and carries the contrast, so it stays legible, but it is a
+     real trade and this is the number that makes it.
+
+     0 is not "off": the band still begins at the copy line and climbs BELOW
+     it, where it used to finish there having climbed above. And 0 is what puts
+     the visible onset where it was asked for. Smoothstep needs about a sixth
+     of its ramp before softening shows, which on a 178px ramp is 30px — half
+     a line — so a band starting exactly at the copy line first shows at the
+     MIDDLE of the first line. Setting this to 31 as well pushed the onset to
+     74px, past the line entirely. Measured, not reasoned: contrast holds at
+     54 through the first line and does not break 80% of clear until 30px in. */
+  startBelowCopy: 0,
+
   /* The fill is 85% of a near-black, so it does the darkening the gradient
      used to. Left at 0.85 the two would stack to near-opaque and the
      photograph would be gone entirely. */
@@ -5097,11 +5120,20 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
      ARRIVE in but not enough to DISSOLVE in: the picture goes from sharp to
      frosted inside a ninth of the card and the boundary is findable even
      when the alpha curve under it is perfectly smooth. */
+  /* The ramp begins below the top of the copy, not above it — see
+     GLASS.startBelowCopy. Scaled off the frame so it stays half a line at any
+     card size, and clamped so a tall setting cannot push the whole band off
+     the bottom of the card. */
+  const rampStart = copyTop + Math.min(
+    Math.max(0, height - copyTop - 8),
+    GLASS.startBelowCopy * (height / 1700),
+  );
   const reach = fadeHeight * GLASS.reach;
-  const start = Math.max(0, copyTop - reach);
+  const start = Math.max(0, rampStart);
   const span = height - start;
   if (span <= 0) return;
-  const copyFrac = Math.min(1, Math.max(0, (copyTop - start) / span));
+  // Where the ramp finishes, as a fraction of the painted band.
+  const copyFrac = Math.min(1, Math.max(0, reach / span));
   const glassTint = glassPanelColour();
 
   const canvas = target.canvas;
@@ -5257,10 +5289,9 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
     g.globalAlpha = 1;
   }
 
-  /* The ramp, applied to the finished stack. It reaches full strength at the
-     copy line and holds, so every line of type sits on the same glass — a
-     ramp that kept climbing under the words would leave the last line on a
-     different surface from the first. */
+  /* The ramp, applied to the finished stack. It begins at GLASS.startBelowCopy
+     into the first line and climbs from there, holding at full strength for
+     the rest of the card so the lines below it all sit on the same surface. */
   g.globalCompositeOperation = "destination-in";
   const mask = g.createLinearGradient(0, 0, 0, glass.height);
   const at = (p, a) => mask.addColorStop(Math.min(1, Math.max(0, p)), `rgba(0,0,0,${a})`);

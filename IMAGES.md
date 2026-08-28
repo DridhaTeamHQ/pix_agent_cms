@@ -253,8 +253,11 @@ with it. Tunable live via `window.GLASS`.
 | `brightness` | 0.07 | The picker's was 0.09; darkened on request |
 | `fillAlpha` | 0.88 | The 85% beside the hex, taken up on request |
 | `fadeMax` | 0.24 | Cap on the gradient. The fill does most of the darkening; what must stay bounded is the *product* — see below |
-| `blurAt` / `blurCardWidth` | 34 / 382 | Blur in the design's units, scaled to the canvas — 82px at full strength on a 920 card |
-| `blurCurve` | 2 | How far the blur LAGS the darkening, as an exponent on the shared ramp. 1 is the two moving together; above 1 the blur holds back near the copy and piles up towards the foot |
+| `blurAt` / `blurCardWidth` | 34 / 382 | Blur in the design's units, scaled to the canvas. Now a real destination radius — it used to be divided by `downscale` and set on the full-size context, which threw three quarters of it away |
+| `blurCurve` | 2 | How far the blur LAGS the darkening, as an exponent on the shared ramp |
+| `blurLevels` | 12 | Pre-blurred copies of the downscaled band. The blur is applied there, where the upscale multiplies it and the pixels are a sixteenth |
+| `frostReach` | 0.35 | How far into the band the blurred picture is fully present. Separate from the darkening on purpose — see below |
+| `gradientSamples` | 256 | Stops per ramp. Two gradients over one span means their joins add |
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
 | `refract` | 0.022 | How far the glass bends the picture, as a share of width |
 | `refractStrips` | 56 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
@@ -277,23 +280,47 @@ tenth of the way down the card, where the ramp has barely begun. Measured on a
 bright photograph, white body copy at that worst-case first line is 5.28:1 with
 the veil and 1.97:1 without it.
 
-**The blur lags the darkening on purpose.** Both sample `rampAlpha`, but the
-blur raises it to `GLASS.blurCurve`. Radii on a 920 card, by line:
+### Two ramps, and why the blur was invisible
 
-| | line 1 | line 3 | line 5 | foot |
-|---|---|---|---|---|
-| shared curve (`blurCurve: 1`, `blurAt: 20`) | 18px | 30px | 39px | 48px |
-| lagging (`blurCurve: 2`, `blurAt: 34`) | **12px** | 31px | 53px | **81px** |
+The frost and the darkening used to share one mask: the blurred picture and the
+dark fill were stacked into one canvas and a single ramp faded the whole stack
+in. That is why the card read as sharp near the copy however large the radius
+got — **at half mask alpha you are not looking at a half-blurred picture, you
+are looking at a blurred one at half strength over the sharp original at half
+strength, and the eye takes its reading of focus from the sharp component.**
+Measured: the strip loop asked for σ 52 at line three and the composite showed
+a 1px edge, because presence there was 60%.
 
-Raising `blurAt` alone would not have done it: that scales every depth by the
-same factor, so the leading edge blurs in step with the foot — and the leading
-edge is the one place a radius gradient is easy to catch, because it is the
-only part of the band with enough luminance left to show what sharpness was
-lost. Back-loading puts the frost where the card is nearly black instead, which
-is why `blurAt` could go up 70% while line one actually got *sharper*. It also
-moves the fastest climb in radius from y=1209 — exactly the first line — down
-to y=1372. Costs 0.7ms a page; the darkening is untouched, so peak slope stays
-at 0.25 levels/px.
+So the blurred layer has its own faster ramp (`frostReach`, 0.35 — about the
+first line) and the dark fill keeps the long gentle one. Below that point there
+is no sharp copy left anywhere, and the radius can grow under a solid layer.
+
+There was a second bug underneath it. `stripBlur` was computed as
+`blurTarget / downscale` and then set on the **full-size** context, so the
+division landed in the wrong coordinate space and was simply lost — the card
+received about a quarter of the radius the code asked for. The comment
+defending it ("most of the blur comes free from the downsample") had the
+premise wrong too: downsampling by four discards detail finer than four pixels,
+it does not multiply a later blur by four.
+
+Applying the radius honestly on the full-size context is correct and
+unaffordable — **140ms a paint against 3ms**. The band is already held at
+1/`downscale` for the read-back, and a blur applied *there* is multiplied by
+the upscale on the way out: σ 15 on the quarter-size copy lands as σ 60 on the
+card over a sixteenth of the pixels. So `blurLevels` pre-blurred copies are
+built once and each strip draws from the one matching its depth.
+
+Delivered σ on a 920 card, measured off the 10–90% width of a hard edge
+(= 2.563 σ):
+
+| | above band | line 1 | line 3 | line 5 | foot |
+|---|---|---|---|---|---|
+| before | 0.4 | 0.4 | 3.9 | 5.9 | 16.4 |
+| after | 0.4 | **15.6** | **31.2** | 53.5 | **83.9** |
+
+The picture above the band stays sharp, the darkening is untouched (peak slope
+0.30 levels/px, still above the first line), and the worst row departs from its
+local slope by 0.94 of 255 with none stepping at all. About 3ms a page.
 
 **Both ramps follow one profile.** `specAlpha` is the design's gradient — three
 stops, transparent, 80% at 63% of the way down, full at the foot — interpolated

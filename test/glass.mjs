@@ -147,6 +147,22 @@ function build({ transform = { a: 1, d: 1, e: 0, f: 0 }, overrides = {} } = {}) 
   return { api, log, target: makeCtx(log, "target") };
 }
 
+/* The treatment paints two ramps and they are not interchangeable.
+
+   `ink` is the darkening - a gradient laid straight onto the TARGET, spanning
+   the whole band, and the one whose steepness decides whether there is an edge
+   to find. `presence` is how much of the blurred picture is present, built on
+   the offscreen glass canvas and deliberately compressed into the first
+   GLASS.frostReach of the band.
+
+   They used to be one mask, and a test that grabs "the gradient with the most
+   stops" silently reads whichever happens to be longer. */
+const ramps = (log, target) => ({
+  ink: target.stops.slice(),
+  presence: (log.contexts.filter((c) => c.stops.length)
+    .sort((a, b) => b.stops.length - a.stops.length)[0] || { stops: [] }).stops.slice(),
+});
+
 let pass = 0, fail = 0;
 const ck = (n, c, d = "") => {
   if (c) { pass++; console.log("  PASS " + n); }
@@ -170,62 +186,72 @@ console.log("\nThe panel is neutral, not a colour wash");
 
 console.log("\nThe transition is gentle enough that there is no edge to find");
 {
-  /* The property, and the one nothing here used to measure.
-
-     What the eye finds is the STEEPEST part of the ramp, expressed against
-     the card - not the curve's name, not where it starts, not how many stops
-     describe it. Every previous round of tuning argued about those three and
-     left this untouched at six times the design's value, which is why each
-     round changed the look without answering the complaint.
-
-     Measured off the mask the code actually builds: the largest jump in alpha
-     between adjacent stops, over the distance between them in pixels of card.
-     The design tool's own gradient is 0.80 across 63% of its region; the bound
-     is twice that, so the curve can be retuned but not re-steepened. */
+  /* Measured on the DARKENING, which is what carries the transition. The
+     frost's own ramp is deliberately steeper and shorter - it has to be, or
+     the blurred layer never gets clear of the sharp original underneath it -
+     and reading that one instead reports an edge that is not there. */
   const { api, log, target } = build();
   api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
   const read = log.draws.find((d) => d.args.length === 9);
   const bandPx = H - read.args[2];
+  const { ink } = ramps(log, target);
+  ck("the darkening is a gradient of its own", ink.length > 60, ink.length + " stops");
 
-  const masked = log.contexts.filter((c) => c.stops.length)
-    .sort((a, b) => b.stops.length - a.stops.length)[0];
   let peak = 0;
-  for (let i = 1; i < masked.stops.length; i++) {
-    const dp = masked.stops[i].p - masked.stops[i - 1].p;
-    const da = masked.stops[i].a - masked.stops[i - 1].a;
+  for (let i = 1; i < ink.length; i++) {
+    const dp = ink[i].p - ink[i - 1].p;
+    const da = ink[i].a - ink[i - 1].a;
     if (dp > 0) peak = Math.max(peak, Math.abs(da) / (dp * bandPx));
   }
-  /* It has to leave from a standstill. A ramp that starts climbing at its
-     full rate has a corner at the top of the band, and a corner in the SLOPE
-     is what shows as a line even when every value along it is continuous.
-
-     The bound is the other half: easing the onset by multiplying the curve by
-     a smoothstep does start it from zero, and pays for it with a patch 1.69x
-     steeper than the design a fifth of the way down. Ramping the slope and
-     renormalising instead keeps the start at zero AND the peak near the
-     design's own. Both properties or neither - checking only the first is how
-     the multiply version passed. */
-  const first = masked.stops[1].a - masked.stops[0].a;
-  const biggest = Math.max(...masked.stops.map((st, i) =>
-    i ? st.a - masked.stops[i - 1].a : 0));
-  ck("it leaves from a standstill rather than a corner",
-    first < biggest / 8, first.toFixed(5) + " vs " + biggest.toFixed(5));
-
-  const REFERENCE = 0.8 / (0.63 * bandPx);   // the design tool's steepest run
+  // Normalised out of fillAlpha, since ink tops out there rather than at 1.
+  const peakOfTotal = peak / api.GLASS.fillAlpha;
+  const REFERENCE = 0.8 / (0.63 * bandPx);
   ck("its steepest run is no worse than twice the design's",
-    peak <= REFERENCE * 2,
-    (peak * 100).toFixed(3) + "% per px vs the design's " + (REFERENCE * 100).toFixed(3) + "%");
+    peakOfTotal <= REFERENCE * 2,
+    (peakOfTotal * 100).toFixed(3) + "% per px vs the design's " + (REFERENCE * 100).toFixed(3) + "%");
 
-  /* The old geometry, kept as the thing that must not come back: a 123px ramp
-     starting on the copy line, smoothstepped. It reads as an edge because it
-     cannot not - the same alpha change compressed into a fifth of the run. */
   const shortRamp = 1.5 / (LAYOUT_FADE * 0.45 * 0.83);
   ck("and far gentler than the 123px ramp it replaced",
-    peak < shortRamp / 3,
-    (peak * 100).toFixed(3) + "% per px vs the old " + (shortRamp * 100).toFixed(3) + "%");
+    peakOfTotal < shortRamp / 3,
+    (peakOfTotal * 100).toFixed(3) + "% per px vs the old " + (shortRamp * 100).toFixed(3) + "%");
+
+  const first = ink[1].a - ink[0].a;
+  const biggest = Math.max(...ink.map((st, i) => (i ? st.a - ink[i - 1].a : 0)));
+  ck("it leaves from a standstill rather than a corner",
+    first < biggest / 8, first.toFixed(5) + " vs " + biggest.toFixed(5));
+  ck("and is still climbing at the foot, not flat from a third of the way down",
+    ink[ink.length - 1].a > ink[Math.floor(ink.length * 0.6)].a + 0.05,
+    "foot " + ink[ink.length - 1].a.toFixed(3));
 }
 
-console.log("The mask is a sampled curve, not a few straight segments");
+console.log("\nThe frost clears the sharp original early, then holds");
+{
+  /* Why this is separate from the darkening at all.
+
+     At half presence you are not looking at a half-blurred picture; you are
+     looking at a blurred one at half strength over the SHARP original at half
+     strength, and the eye takes its reading of focus from the sharp half. So
+     the blurred layer has to reach full presence while there is still band
+     left, leaving everything below it a single blurred image whose RADIUS
+     grows - with no crossfade left to give it away. Measured on the rendered
+     card before the split: sigma 52 was being asked for at line three and the
+     composite showed a 1px edge, because presence there was 60%. */
+  const { api, log, target } = build();
+  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
+  const { presence } = ramps(log, target);
+  ck("the frost has a ramp of its own", presence.length > 60, presence.length + " stops");
+  const full = presence.find((st) => st.a >= 0.999);
+  ck("it reaches full presence inside the band", !!full);
+  ck("well before the foot, so the lower band has no sharp copy left in it",
+    full && full.p <= api.GLASS.frostReach + 0.02,
+    full ? `full at ${(full.p * 100).toFixed(0)}% of the band` : "never");
+  ck("and holds there rather than drifting back",
+    presence[presence.length - 1].a >= 0.999);
+  ck("it is shorter than the darkening, which is the point",
+    api.GLASS.frostReach < 1, String(api.GLASS.frostReach));
+}
+
+console.log("\nThe mask is a sampled curve, not a few straight segments");
 {
   const { api, log, target } = build();
   api.paintMistGlass(target, {
@@ -305,13 +331,16 @@ console.log("\nThe blend begins well above the first line");
   ck("but it does not start halfway up the card",
     bandTop / H >= 0.4, (bandTop / H * 100).toFixed(0) + "% down the card");
 
-  /* The ramp runs the full band instead of finishing early onto a flat panel.
-     That panel was the other half of what forced the ramp to be steep: every
-     level it did not use had to be spent in the 123px above it. */
-  const masked = log.contexts.filter((c) => c.stops.length)
-    .sort((a, b) => b.stops.length - a.stops.length)[0];
-  const rising = masked.stops.filter((st, i) => i > 0 && st.a > masked.stops[i - 1].a);
-  ck("it is still climbing at the foot, not flat from a third of the way down",
+  /* The DARKENING runs the full band instead of finishing early onto a flat
+     panel - that panel was the other half of what forced the ramp to be steep,
+     since every level it did not use had to be spent in the 123px above it.
+
+     Read off the ink gradient. The frost's presence ramp deliberately DOES
+     finish early, at GLASS.frostReach, and picking "the gradient with the most
+     stops" is how this ended up measuring that one instead. */
+  const { ink } = ramps(log, target);
+  const rising = ink.filter((st, i) => i > 0 && st.a > ink[i - 1].a);
+  ck("the darkening is still climbing at the foot",
     rising[rising.length - 1].p > 0.9,
     "stops rising at " + (rising[rising.length - 1].p * 100).toFixed(0) + "% of the band");
 }
@@ -414,70 +443,57 @@ console.log("\nThe blur lags the darkening, piling up towards the foot");
   const { api, log, target } = build();
   api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
 
-  /* Radius against DEPTH, not against position in the log.
+  /* Radius against DEPTH.
 
-     The strip loop only assigns ctx.filter when the value changes, so the log
-     holds the distinct radii rather than one per strip — and with a lagging
-     curve those are sparse at the top and dense at the foot. Reading the array
-     as if index meant depth therefore reports the blur as far more front-loaded
-     than it is. Each filter is paired with the strip that follows it instead,
-     and the strip's destination y is the depth.
-
-     Draws that cover the full height are the edge-extension pass after the
-     loop, not strips; they follow the filter reset and would read as a radius
-     of zero at the top of the band. */
-  /* One context only. paintMistGlass uses three — the small downscale buffer,
-     the full-size glass buffer, and the target — and all of them set filters
-     and draw. The read-back into the small buffer is a 9-argument draw with a
-     short destination too, so it passes for a strip and lands at depth 0. */
-  const stripCtx = (() => {
-    const n = {};
-    for (const d of log.draws) if (d.args.length === 9) n[d.ctx] = (n[d.ctx] || 0) + 1;
-    return Object.keys(n).sort((a, b) => n[b] - n[a])[0];
-  })();
-  const strips = log.draws.filter(
-    (d) => d.ctx === stripCtx && d.args.length === 9 && d.args[8] < H * 0.1);
-  const samples = [];
+     The strips no longer set ctx.filter at all - that was unaffordable at
+     these radii, 140ms a paint against 3ms. The blur is applied once per
+     LEVEL on the downscaled band, where the upscale multiplies it and the
+     pixel count is a sixteenth, and each strip draws from whichever level
+     matches its depth. So the radius a strip carries is the sigma baked into
+     the canvas it drew FROM, not a filter set just before it. */
+  const sigmaOf = new Map();
   for (const f of log.filters) {
-    if (f.ctx !== stripCtx) continue;
-    if (!/^blur\(|^none$/.test(f.value)) continue;
-    const strip = strips.find((d) => d.seq > f.seq);
-    if (strip && strip.args[6] < 0) continue;
-    if (!strip) continue;
-    samples.push({
-      depth: strip.args[6] / strips[strips.length - 1].args[6],
-      r: f.value === "none" ? 0 : parseFloat(f.value.slice(5)),
-    });
+    const m = /^blur\(([\d.]+)px\)$/.exec(f.value);
+    if (m && !sigmaOf.has(f.ctx)) sigmaOf.set(f.ctx, parseFloat(m[1]));
   }
-  ck("it set a blur per depth", samples.length > 4, samples.length + " radius changes");
+  ck("it built a range of pre-blurred levels",
+    new Set(sigmaOf.values()).size >= 4, sigmaOf.size + " levels carry a blur");
 
-  const maxR = Math.max(...samples.map((s) => s.r));
+  /* Strip draws only: the read-back into the downscale buffer and the
+     edge-extension pass are nine-argument draws too, and the latter covers
+     the full band height. */
+  const strips = log.draws.filter(
+    (d) => d.args.length === 9 && d.args[0] && d.args[0].__i !== undefined && d.args[8] < H * 0.1);
+  const maxDepth = Math.max(...strips.map((d) => d.args[6]));
+  const samples = strips.map((d) => ({
+    depth: d.args[6] / maxDepth,
+    r: sigmaOf.get("off" + d.args[0].__i) || 0,
+  }));
+  ck("every strip drew from a level", samples.length > 8, samples.length + " strips");
+
+  const maxR = Math.max(...samples.map((x) => x.r));
   ck("radius never goes backwards as it descends",
-    samples.every((s, i) => !i || s.r >= samples[i - 1].r - 1e-9),
-    samples.slice(0, 8).map((s) => s.r).join(","));
+    samples.every((x, i) => !i || x.r >= samples[i - 1].r - 1e-9),
+    samples.slice(0, 8).map((x) => x.r).join(","));
 
-  /* The property that was asked for, and the reason blurAt could be raised
-     70% without the top of the band getting harder to look at.
-
-     The bound is 0.40 because that is what discriminates, not because it is a
+  /* The bound is 0.40 because that is what discriminates, not because it is a
      round number: the shared curve puts the half-way radius at 0.60 of the
      maximum, and squaring it puts it at 0.37. Anything between the two
      separates a lagging blur from one moving in step with the darkening, and
      this fails the moment blurCurve goes back to 1. */
-  const nearest = (d) => samples.reduce((best, s) =>
-    Math.abs(s.depth - d) < Math.abs(best.depth - d) ? s : best);
+  const nearest = (d) => samples.reduce((best, x) =>
+    Math.abs(x.depth - d) < Math.abs(best.depth - d) ? x : best);
   const halfWay = nearest(0.5).r / maxR;
   ck("half way down it carries well under half its final radius",
-    halfWay < 0.4, `${(halfWay * 100).toFixed(0)}% of the maximum`);
+    halfWay < 0.4, (halfWay * 100).toFixed(0) + "% of the maximum");
   ck("and the config says so rather than it being a coincidence",
     api.GLASS.blurCurve > 1, String(api.GLASS.blurCurve));
 
-  /* Where the radius climbs fastest has to be BELOW the copy line. That is the
-     one place a sharpness gradient is cheap: the card is nearly black there,
-     so little luminance is left to reveal what focus was lost. Sharing the
-     darkening's curve put the fastest climb exactly ON the first line. */
-  const copyDepth = (COPY - (COPY - api.GLASS.runUpAboveCopy * (H / 1700))) /
-    (H - (COPY - api.GLASS.runUpAboveCopy * (H / 1700)));
+  /* Where the radius climbs fastest has to be BELOW the copy line - the one
+     place a sharpness gradient is cheap, because the card is nearly black
+     there and little luminance is left to reveal what focus was lost. */
+  const bandTop = COPY - api.GLASS.runUpAboveCopy * (H / 1700);
+  const copyDepth = (COPY - bandTop) / (H - bandTop);
   let steepest = 0, steepestAt = 0;
   for (let i = 1; i < samples.length; i++) {
     const rise = (samples[i].r - samples[i - 1].r) /
@@ -485,7 +501,8 @@ console.log("\nThe blur lags the darkening, piling up towards the foot");
     if (rise > steepest) { steepest = rise; steepestAt = samples[i].depth; }
   }
   ck("its fastest climb is below the copy line, not on the type",
-    steepestAt > copyDepth, `${(steepestAt * 100).toFixed(0)}% down, copy at ${(copyDepth * 100).toFixed(0)}%`);
+    steepestAt > copyDepth,
+    (steepestAt * 100).toFixed(0) + "% down, copy at " + (copyDepth * 100).toFixed(0) + "%");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

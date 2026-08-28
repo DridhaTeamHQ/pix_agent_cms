@@ -101,7 +101,7 @@ function makeCtx(log, label) {
     get filter() { return this._filter; },
     set filter(v) { this._filter = v; log.filters.push({ ctx: label, value: v, seq: log.seq++ }); },
     getTransform: () => log.transform,
-    drawImage(...a) { log.draws.push({ ctx: label, args: a, seq: log.seq++ }); },
+    drawImage(...a) { log.draws.push({ ctx: label, args: a, alpha: this.globalAlpha, seq: log.seq++ }); },
     fillRect(...a) { log.fills.push({ ctx: label, args: a }); },
     // Reused scratch canvases must be wiped before reuse, so the stub has to
     // accept the calls that do it.
@@ -242,9 +242,14 @@ console.log("\nThe frost clears the sharp original early, then holds");
   ck("the frost has a ramp of its own", presence.length > 60, presence.length + " stops");
   const full = presence.find((st) => st.a >= 0.999);
   ck("it reaches full presence inside the band", !!full);
-  ck("well before the foot, so the lower band has no sharp copy left in it",
-    full && full.p <= api.GLASS.frostReach + 0.02,
-    full ? `full at ${(full.p * 100).toFixed(0)}% of the band` : "never");
+  /* Against the rule, not against the knob. frostReach is a MULTIPLE of where
+     the copy line falls, so comparing full.p to it directly passes for any
+     value at all once it is above 1 — which is what it now is. */
+  const copyFrac = (api.GLASS.runUpAboveCopy * (H / 1700)) /
+    (H - (COPY - api.GLASS.runUpAboveCopy * (H / 1700)));
+  ck("it completes where the knob says, measured from the band",
+    full && Math.abs(full.p - copyFrac * api.GLASS.frostReach) < 0.02,
+    full ? `full at ${(full.p * 100).toFixed(1)}%, expected ${(copyFrac * api.GLASS.frostReach * 100).toFixed(1)}%` : "never");
   ck("and holds there rather than drifting back",
     presence[presence.length - 1].a >= 0.999);
   /* Shorter than the darkening — the actual property, read off the ramp.
@@ -472,14 +477,48 @@ console.log("\nThe blur lags the darkening, piling up towards the foot");
   /* Strip draws only: the read-back into the downscale buffer and the
      edge-extension pass are nine-argument draws too, and the latter covers
      the full band height. */
+  /* Strip draws only, and the context matters as much as the shape.
+
+     Three other things in here are nine-argument draws from a canvas: the
+     read-back into the downscale buffer, the edge-extension pass after the
+     loop, and - the one that bit - the two rows stretched into the padding
+     while each blur level is built. Those last two sit at dx 0 on the padded
+     canvas, so with the strips they make the first real strip look like a
+     4.16px sideways jump from nothing, which is precisely the tearing this
+     section exists to detect. A false positive that reports the true defect
+     is still a false positive.
+
+     The strips are the draws on whichever context receives most of them. */
+  const stripCtx = (() => {
+    const n = {};
+    for (const d of log.draws) if (d.args.length === 9) n[d.ctx] = (n[d.ctx] || 0) + 1;
+    return Object.keys(n).sort((a, b) => n[b] - n[a])[0];
+  })();
   const strips = log.draws.filter(
-    (d) => d.args.length === 9 && d.args[0] && d.args[0].__i !== undefined && d.args[8] < H * 0.1);
-  const maxDepth = Math.max(...strips.map((d) => d.args[6]));
-  const samples = strips.map((d) => ({
-    depth: d.args[6] / maxDepth,
-    r: sigmaOf.get("off" + d.args[0].__i) || 0,
-  }));
+    (d) => d.ctx === stripCtx && d.args.length === 9 &&
+           d.args[0] && d.args[0].__i !== undefined && d.args[8] < H * 0.1);
+  /* Two draws per strip, not one: the radius is BLENDED between neighbouring
+     levels rather than snapped to the nearest, so each strip lays down its
+     lower level opaque and then the upper one at the fractional weight.
+     Reading the draws individually gives an alternating 0, 1.75, 0, 1.75 and
+     reports the radius as going backwards every other row. The effective
+     radius is the blend, which is what the card actually receives. */
+  const groups = [];
+  for (const d of strips) {
+    const r = sigmaOf.get("off" + d.args[0].__i) || 0;
+    const last = groups[groups.length - 1];
+    if (last && last.y === d.args[6]) last.r = last.r * (1 - d.alpha) + r * d.alpha;
+    else groups.push({ y: d.args[6], dx: d.args[5], r });
+  }
+  /* Depth is the strip's ORDER, not its destination y. The bend gives each
+     strip a little vertical offset, and sorting by y therefore interleaves
+     neighbours whenever that offset approaches the strip height — which
+     reports the radius as jumping about and going backwards when it is doing
+     neither. The loop draws them top to bottom, so order is the depth. */
+  const samples = groups.map((gp, i) => ({ depth: i / (groups.length - 1), r: gp.r }));
   ck("every strip drew from a level", samples.length > 8, samples.length + " strips");
+  ck("and blends between two of them rather than snapping to one",
+    strips.length > samples.length, `${strips.length} draws over ${samples.length} strips`);
 
   const maxR = Math.max(...samples.map((x) => x.r));
   ck("radius never goes backwards as it descends",
@@ -518,6 +557,37 @@ console.log("\nThe blur lags the darkening, piling up towards the foot");
   }
   ck("no single step between strips carries a fifth of the range",
     steepest < maxR / 5, `${steepest.toFixed(2)} of ${maxR}`);
+
+  /* The bend has to move SMOOTHLY down the band, and this is the assertion
+     that was missing while the defect it describes was on screen.
+
+     The refraction pulls each strip sideways by a function of its depth. The
+     step between neighbours is bendMax * |dwave/dt| / strips, and at the
+     original frequencies of 7.6 and 17.3 that derivative peaks near 11 — four
+     pixels of sideways slide between strips ten pixels tall. That is not a
+     bend, it is tearing, and it was reported as "layered lines".
+
+     A pixel is the bound because that is where neighbouring slabs stop being
+     resolvable as separate: below it the bend reads as a bend. Nothing else
+     here catches this — the darkening is unaffected by a sideways shift, and
+     the radius ramp is measured per strip rather than between them, so both
+     stay green while the picture visibly tears. */
+  let worstSlide = 0;
+  for (let i = 1; i < groups.length; i++) {
+    worstSlide = Math.max(worstSlide, Math.abs(groups[i].dx - groups[i - 1].dx));
+  }
+  ck("neighbouring strips slide by less than a pixel, so the bend is a bend",
+    worstSlide < 1, worstSlide.toFixed(2) + "px between neighbours");
+
+  /* And they stay in the order they were drawn. The bend gives each strip a
+     vertical offset as well, and a large enough one relative to the strip
+     height would put a later strip above an earlier one, with the overlap
+     between them resolving the wrong way round. It has never done that -
+     measured 0.54px against a 7px strip even at the old fast frequency - but
+     it is one amplitude change away and nothing else here would notice. */
+  ck("and are drawn top to bottom, so the overlaps resolve in order",
+    groups.every((gp, i) => !i || gp.y >= groups[i - 1].y),
+    "a strip was drawn above its predecessor");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

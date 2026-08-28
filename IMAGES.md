@@ -259,8 +259,8 @@ with it. Tunable live via `window.GLASS`.
 | `frostReach` | 1 | Where the blurred picture is fully present, as a MULTIPLE of where the copy line falls in the band. 1 = full exactly at the first line, whatever the run-up is |
 | `gradientSamples` | 256 | Stops per ramp. Two gradients over one span means their joins add |
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
-| `refract` | 0.022 | How far the glass bends the picture, as a share of width |
-| `refractStrips` | 56 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
+| `refract` | 0.012 | How far the glass bends the picture, as a share of width |
+| `refractStrips` | 80 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
 | `runUpAboveCopy` | 65 | How far above the first line the glass begins, in the 1700px reference frame. The ramp then runs the whole band, so this sets both where the onset lands and how gentle the build is. Replaced `reach` and `startBelowCopy` — see below |
 
 **All three pages that put copy over a photograph use it** — the poster, the
@@ -279,6 +279,39 @@ has run-up above it, while the text page's copy grows upward and is clamped a
 tenth of the way down the card, where the ramp has barely begun. Measured on a
 bright photograph, white body copy at that worst-case first line is 5.28:1 with
 the veil and 1.97:1 without it.
+
+### The layered lines
+
+Reported on a card as horizontal slabs across the band. Two causes, and the
+metric in use at the time could see neither — it measured the row MEAN on a
+horizontal gradient, where a change in blur does not move the mean at all and a
+sideways shift barely does.
+
+**The bend was tearing, not bending.** The refraction pulls each strip sideways
+by a function of its depth, and the step between neighbours is
+`bendMax × |dwave/dt| / strips`. At the original frequencies of 7.6 and 17.3
+that derivative peaks near 11, which put adjacent ten-pixel strips **four
+pixels apart sideways**. Slowed to 2.3 and 3.9, with more strips and a smaller
+amplitude, that is now **0.13px** — below the point where neighbouring slabs
+are resolvable as separate.
+
+**The blur was quantised.** Each strip snapped to the nearest of 12 pre-blurred
+levels, and across a range reaching σ 99 that is a step of nine pixels of blur
+from one strip to the next — a band of visibly different sharpness about ten
+pixels tall. Strips now draw the lower level opaque and the upper at the
+fractional weight; a blend of two Gaussians of nearby σ is close enough to the
+one between them that the seam goes. Once blended, the level *count* stops
+mattering for quality (3.6% worst step at 12 levels and at 16), so it is set by
+cost.
+
+Worst single-row change in sharpness, on a fine-textured source, as a share of
+the unblurred detail: **5.6% → 3.0%**. What remains is the frost cross-fade
+itself, not the strips.
+
+`test/glass.mjs` asserts the per-neighbour slide directly, because nothing else
+does: the darkening is unaffected by a sideways shift, and the radius ramp is
+measured per strip rather than between them, so both stay green while the
+picture visibly tears.
 
 ### Where the band starts
 

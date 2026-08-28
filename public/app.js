@@ -5188,10 +5188,21 @@ const GLASS = (window.GLASS = Object.assign({
 
      A MULTIPLE of where the copy line falls in the band, not a fraction of
      the band: 1 means fully present exactly when the copy starts, whatever
-     runUpAboveCopy is set to. Below 1 the picture goes soft higher up the
-     photograph; above 1 walks back towards the superimposed-sharp-copy
-     problem this exists to solve. */
-  frostReach: 1,
+     runUpAboveCopy is set to.
+
+     1.8 puts it at about the second line, and that is a balance rather than a
+     preference. The run-up is 65px, so at 1 the whole sharp-to-frosted
+     crossfade is compressed into those 65px: measured on a fine-textured
+     source, detail falls from 100% to 7% of clear across them and the worst
+     single row carries 5.6% of the total. Stretching it to the second line
+     halves that to 3.1% while still leaving only 32% of the detail standing
+     where the first line sits — weak enough, under the darkening, not to read
+     as a sharp copy.
+
+     Higher is smoother still and walks back towards the superimposed-sharp-
+     copy problem this exists to solve: at 2.6 the first line keeps 56% of its
+     detail, which is the defect, not a setting. */
+  frostReach: 1.8,
 
   /* How many stops each ramp is described with.
 
@@ -5211,8 +5222,8 @@ const GLASS = (window.GLASS = Object.assign({
   blurCardWidth: 382,
   downscale: 4,     // the blur is reached by downsampling; see paintMistGlass
 
-  refract: 0.022,   // how far the glass bends the picture, as a share of width
-  refractStrips: 56,// depth resolution of the bend
+  refract: 0.012,   // how far the glass bends the picture, as a share of width
+  refractStrips: 80,// depth resolution of the bend, and of the blur ramp
   /* ── How far above the first line the glass begins ────────────────────
 
      In the 1700px reference frame, scaled to whatever the card actually is.
@@ -5496,12 +5507,37 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
     const bleed = Math.max(1, stripH * 0.6);
     for (let i = 0; i < strips; i++) {
       const t = i / (strips - 1);
-      const wave = Math.sin(t * 7.6) * 0.62 + Math.sin(t * 17.3 + 1.7) * 0.38;
+      /* Two slow waves, not two fast ones.
+
+         The step in displacement between neighbouring strips is
+         bendMax * |dwave/dt| / strips, and at 7.6 and 17.3 that derivative
+         peaks near 11 — which over 56 strips put adjacent ten-pixel slabs up
+         to four pixels apart sideways. Measured on the rendered card: a 7px
+         lateral jump across 3px of height. That is not a bend, it is tearing,
+         and it is what the layered lines were.
+
+         At 2.3 and 3.9 the derivative peaks near 2.9, and the strip count
+         below carries the rest. The bend still never repeats visibly — that is
+         what two unrelated frequencies buy — it just happens over the depth of
+         the band rather than within a few strips of it. */
+      const wave = Math.sin(t * 2.3) * 0.62 + Math.sin(t * 3.9 + 1.7) * 0.38;
       // Falls from full bend at the leading edge to a third of it at the foot.
       const depth = 1 - 0.66 * t;
       const dx = wave * bendMax * depth;
-      // A little vertical give as well, or the bend reads as a shear.
-      const dy = Math.cos(t * 11.1) * bendMax * 0.35 * depth;
+      /* A little vertical give as well, or the bend reads as a shear.
+
+         Slowed from 11.1 to match the sideways wave, so the surface undulates
+         as one thing rather than wobbling vertically at four times the rate it
+         bends horizontally.
+
+         NOT because 11.1 put the strips out of order, which is what this
+         comment claimed at first and is wrong: the step between neighbours is
+         amplitude * |dcos/dt| / strips, which even at 11.1 is 0.54px against a
+         strip height of 7 — nowhere near enough to reorder them. The test that
+         appeared to show reordering was in fact reading the cross-fade's two
+         draws per strip as two strips. Checked by reverting: the suite passes
+         either way, so this is a look, not a fix. */
+      const dy = Math.cos(t * 2.7) * bendMax * 0.35 * depth;
       /* Named for what it is, and NOT `sy` — that is the transform's scale-y,
          declared above and load-bearing for export correctness. Shadowing it
          inside the one loop that also does coordinate maths is how the
@@ -5556,20 +5592,37 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
          the top of the band actually gets SOFTER in its rate of change. */
       const rampT = Math.min(1, Math.max(0, t / copyFrac));
       const ease = Math.pow(rampAlpha(rampT), GLASS.blurCurve);
-      // Nearest pre-blurred level, rather than a filter chain per strip.
-      const src = blurLevel[Math.min(blurLevel.length - 1,
-        Math.max(0, Math.round(ease * (blurLevel.length - 1))))];
+      /* Between two levels, not snapped to the nearest one.
+
+         Snapping quantises the radius to blurLevels steps, and across a range
+         that now reaches sigma 99 that is a step of nine pixels of blur from
+         one strip to the next — which is a band of visibly different sharpness
+         about ten pixels tall, reported as "layered lines". Drawing the lower
+         level and then the upper at the fractional weight blends them, and a
+         blend of two Gaussians of nearby sigma is close enough to the one in
+         between that the seam goes away entirely. */
+      const lp = ease * (blurLevel.length - 1);
+      const k0 = Math.min(blurLevel.length - 1, Math.max(0, Math.floor(lp)));
+      const k1 = Math.min(blurLevel.length - 1, k0 + 1);
+      const frac = lp - k0;
       /* Destination follows the clamped source, so the mapping stays uniform.
          Drawing a fixed-height destination from a clamped source is what
          stretched the first and last strips: strip 0 asked for pixels above
          the canvas, got the read clipped to the top, and then scaled that
          short read over the full destination height. */
       // + pad, because the levels carry the edge-extended padding.
-      g.drawImage(
-        src,
-        0, stripSrcY0 + pad, sw, stripSrcH,
-        dx, stripSrcY0 * GLASS.downscale + dy, glass.width, stripSrcH * GLASS.downscale,
-      );
+      const put = (canvasIn, alpha) => {
+        if (alpha <= 0.001) return;
+        g.globalAlpha = alpha;
+        g.drawImage(
+          canvasIn,
+          0, stripSrcY0 + pad, sw, stripSrcH,
+          dx, stripSrcY0 * GLASS.downscale + dy, glass.width, stripSrcH * GLASS.downscale,
+        );
+      };
+      put(blurLevel[k0], 1);
+      if (k1 !== k0) put(blurLevel[k1], frac);
+      g.globalAlpha = 1;
     }
     g.filter = "none";
   } else if (blurLevel.length) {

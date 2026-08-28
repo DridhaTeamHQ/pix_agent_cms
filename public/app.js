@@ -5021,7 +5021,22 @@ const GLASS = (window.GLASS = Object.assign({
 
   refract: 0.022,   // how far the glass bends the picture, as a share of width
   refractStrips: 56,// depth resolution of the bend
-  reach: 2.2,       // multiplies the caller's fadeHeight; the dissolve length
+  /* Multiplies the caller's fadeHeight — the length of the dissolve, and so
+     how far above the first line the frost begins.
+
+     2.2 put it at 52% of the card, which is halfway up a 9:16 poster: the
+     picture was going soft well before anything needed it to. 1.5 starts it
+     at 58% and, because the mask eases in and only becomes visible about a
+     fifth of the way down its own ramp, softening does not actually show
+     until 60% — roughly 185px above the copy instead of 271.
+
+     It was raised to 2.2 when the mask was thirteen samples of a curve, which
+     canvas draws as thirteen straight segments with a slope change at every
+     join: a findable edge that a longer run-up could only spread out, not
+     remove. At sixty-four samples there is no join to hide, so the length can
+     go back to being about where the glass belongs rather than about
+     concealing a defect underneath it. */
+  reach: 1.5,
 
   /* The fill is 85% of a near-black, so it does the darkening the gradient
      used to. Left at 0.85 the two would stack to near-opaque and the

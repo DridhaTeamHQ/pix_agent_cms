@@ -144,8 +144,21 @@ console.log("\nThe glass dissolves in rather than arriving at an edge");
   const callerReach = api.blurReach(LAYOUT_FADE);
   const glassReach = callerReach * api.GLASS.reach;
   ck("it lengthens the caller's reach", api.GLASS.reach > 1, String(api.GLASS.reach));
-  ck("long enough to hide its own start",
-    glassReach / H >= 0.15, (glassReach / H * 100).toFixed(0) + "% of the card");
+
+  /* Raw length is not the property. The mask eases in, so softening only
+     becomes visible about a fifth of the way down its own ramp — which is why
+     the reach could be shortened once the curve was sampled densely enough to
+     have no join to hide.
+
+     What matters is where it SHOWS, and it is wrong in both directions. Too
+     far above the copy and the picture goes soft halfway up the card for no
+     reason; too close and the frost arrives as an edge instead of a dissolve.
+     Both have been reported here. */
+  const visibleAt = glassReach * 0.83;   // smoothstep crosses ~8% alpha here
+  ck("softening does not begin halfway up the card",
+    visibleAt / H <= 0.20, (visibleAt / H * 100).toFixed(0) + "% of the card above the copy");
+  ck("nor so close that it arrives as an edge",
+    visibleAt / H >= 0.05, (visibleAt / H * 100).toFixed(0) + "% of the card above the copy");
 }
 
 console.log("\nThe mask is a sampled curve, not a few straight segments");

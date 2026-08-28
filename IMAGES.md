@@ -32,7 +32,7 @@ so the canvas is not tainted and can be exported.
 
 `POST /api/upscale-image` — QA and admin only. One engine: OpenAI's
 `images/edits`. There is no self-hosted upscaler and no local resampler; both
-were removed deliberately (see §2.6).
+were removed deliberately (see §2.7).
 
 ### 2.1 What the browser sends
 
@@ -80,14 +80,44 @@ the model is told what it must not change.
 > the source's own shape is what fixed it. To fit a landscape photo into a
 > portrait frame, use **Fit** (§4.2), which is arithmetic and involves no model.
 
-### 2.4 Response
+### 2.4 The enlargement
+
+gpt-image caps its output at **1536px on the long edge**, and the browser caps
+the upload to match. That means the model alone cannot upscale anything: a
+3000×2000 press photo goes up as 1536×1024 and comes back 1536×1024 — restored,
+and *smaller than it started*. A 4000×3000 source loses 62% of its pixels.
+
+So after the model returns, the image is enlarged with ffmpeg — lanczos plus a
+light CAS sharpen — to `UPSCALE_TARGET_LONG_EDGE` (default **3400**, the
+poster's long edge doubled). That covers a 920×1700 card comfortably at 1× and
+holds up at 2× export.
+
+| | before | after |
+|---|---|---|
+| 3000×2000 source | returned 1536×1024 | returned **3400×2266** |
+| scale needed to cover a 9:16 poster | 1.83× (stretched) | 0.55× (downsampled) |
+
+Not 4×: that would want ~11k pixels for a picture the model only ever knew 1536
+of, and inventing that much is precisely what it was told not to do.
+
+This is **not** the local resampler that was removed. That one stood *in place
+of* the model, so one button gave three different kinds of picture depending on
+what was reachable. This runs *after* the model, always — one path, one result.
+It falls through unchanged when ffmpeg is missing or the picture is already big
+enough, so its worst case is the previous behaviour.
+
+`size` in the response is what actually came back; `modelSize` is what was asked
+of the model. They differ whenever the enlargement ran.
+
+### 2.5 Response
 
 ```json
 {
   "image":   "data:image/png;base64,…",
   "engine":  "gpt-image-1.5",
   "quality": "high",
-  "size":    "1536x1024",
+  "size":      "3400x2266",
+  "modelSize": "1536x1024",
   "mode":    "restore",
   "amount":  null,
   "context": "…what stage 1 saw…",
@@ -100,7 +130,7 @@ the model is told what it must not change.
 sharpness, so the client has to know which it got before deciding whether the
 writer's existing zoom and pan still apply.
 
-### 2.5 Cost and latency
+### 2.6 Cost and latency
 
 Billed per call, no free path.
 
@@ -113,7 +143,7 @@ Billed per call, no free path.
 Typically 20–90 seconds. The boot log states the engine and the real cost:
 `Restore & Upscale: gpt-image (quality=high, ~$0.25 each).`
 
-### 2.6 What is switched off, and why
+### 2.7 What is switched off, and why
 
 **Expand (generative zoom-out) is suppressed.** The route accepts the request,
 runs the planner, then resolves every job to `restore`. The response says so
@@ -268,6 +298,8 @@ Current cost: ~5ms median per render, 0 dropped frames while typing.
 | `OPENAI_API_KEY` | — | Required for Restore & Upscale. Without it the route returns 503 |
 | `IMAGE_QUALITY` | `high` | `low` \| `medium` \| `high` — see §2.5 |
 | `DISABLE_GPT_IMAGE` | unset | `true` switches the route off and returns 503 |
+| `UPSCALE_TARGET_LONG_EDGE` | `3400` | Long edge the restored image is enlarged to (§2.4) |
+| `UPSCALE_SHARPEN` | `0.35` | CAS strength applied after the enlargement |
 | `PEXELS_API_KEY` | — | Stock images; source skipped silently when unset |
 | `FAL_KEY` | — | Flux generation |
 
@@ -281,6 +313,7 @@ No runner, no dependencies. Each exits non-zero on failure.
 node test/image-fit.mjs   # fit/fill geometry, letterbox centring, pan clamp
 node test/glass.mjs       # panel colour, mask sampling, device transform, fade
 node test/render.mjs      # render coalescing, and that export stays synchronous
+node test/upscale.mjs     # the enlargement after the model (needs ffmpeg)
 ```
 
 They execute the real functions pulled out of `public/app.js` rather than

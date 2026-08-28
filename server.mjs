@@ -4790,6 +4790,81 @@ async function planEnhance(buffer, mime, { posterRatio = "", sourceW = 0, source
 // Primary engine: the self-hosted CodeFormer + Real-ESRGAN service on Railway
 // (pixel-faithful, never regenerates faces). Returns a PNG data URL, or null
 // if the service isn't configured / errors / times out — caller then falls
+/* ── The half of "Restore & Upscale" that was missing ────────────────────────
+
+   gpt-image caps its output at 1536px on the long edge, and the browser caps
+   the upload to match because anything larger is bytes it will not read. So a
+   3000x2000 press photograph goes up as 1536x1024 and comes back 1536x1024:
+   the detail is restored, and the picture is now SMALLER than the one the
+   writer started with. On a 4000x3000 source it loses 62% of its pixels. The
+   button did the restore half and nothing whatsoever of the upscale half.
+
+   That is not a model setting to change — 1536 is the API's ceiling. The
+   enlargement has to happen afterwards, and it needs no model: lanczos is a
+   windowed-sinc resampler, the standard high-quality choice, and it ships with
+   the ffmpeg already installed here for video.
+
+   Worth being clear about what this is NOT. A local resampler was removed from
+   this route once before, for standing in place of the model and giving one
+   button three different kinds of result depending on what happened to be
+   reachable. This is not that: the model always runs, and this always runs
+   after it. One path, one kind of picture, every time.
+
+   The target is the poster's long edge doubled — enough to cover a 920x1700
+   card at 1x with room to spare, and to hold up at 2x export. Not 4x: that
+   would want 11k pixels for a picture the model only ever knew 1536 of, and
+   inventing that much is what the model was asked not to do. */
+const UPSCALE_TARGET_LONG_EDGE = Number(env("UPSCALE_TARGET_LONG_EDGE") || 3400);
+const UPSCALE_SHARPEN = env("UPSCALE_SHARPEN") || "0.35";
+
+async function enlargeRestoredImage(pngBuffer) {
+  if (!ffmpegAvailable) return null;
+
+  const job = randomUUID().replace(/-/g, "");
+  const dir = join(tmpdir(), `pix-enlarge-${job}`);
+  mkdirSync(dir, { recursive: true });
+  const inPath = join(dir, "in.png");
+  const outPath = join(dir, "out.png");
+
+  try {
+    writeFileSync(inPath, pngBuffer);
+    const probe = await run("ffprobe", [
+      "-v", "error", "-select_streams", "v:0",
+      "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", inPath,
+    ], 20_000);
+    const [w, h] = probe.stdout.toString("utf-8").trim().split("x").map(Number);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 2 || h < 2) return null;
+
+    const factor = UPSCALE_TARGET_LONG_EDGE / Math.max(w, h);
+    // Already big enough. Enlarging by a hair costs bytes and buys nothing.
+    if (factor <= 1.05) return null;
+
+    const outW = Math.round((w * factor) / 2) * 2;
+    const outH = Math.round((h * factor) / 2) * 2;
+    const t0 = Date.now();
+    const enc = await run("ffmpeg", [
+      "-hide_banner", "-loglevel", "error", "-y", "-i", inPath,
+      // CAS rather than unsharp: resampling costs a little crispness and this
+      // puts it back without the halos unsharp leaves on hard edges.
+      "-vf", `scale=${outW}:${outH}:flags=lanczos,cas=strength=${UPSCALE_SHARPEN}`,
+      "-frames:v", "1", outPath,
+    ], 60_000);
+    if (enc.code !== 0 || !existsSync(outPath)) {
+      console.warn(`⚠ enlarge failed: ${enc.stderr.toString("utf-8").slice(-200)}`);
+      return null;
+    }
+    const out = readFileSync(outPath);
+    if (!out.length) return null;
+    console.log(`✓ enlarged ${w}x${h} → ${outW}x${outH} (lanczos) in ${Date.now() - t0}ms`);
+    return { buffer: out, width: outW, height: outH };
+  } catch (err) {
+    console.warn(`⚠ enlarge error: ${err.message}`);
+    return null;
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* temp dir */ }
+  }
+}
+
 async function handleUpscaleImage(req, res) {
   /* No OpenAI key needed to sharpen a picture. The local path below is
      arithmetic, and gating the whole route on a key it may never use turned a
@@ -5042,12 +5117,27 @@ async function handleUpscaleImage(req, res) {
        checked from outside the box. IMAGE_QUALITY is an environment variable
        and an override in Railway silently reinstates the clay — without this
        the only way to know was to read a log line on the host. */
+    /* The model is done; now actually upscale. Falls through unchanged when
+       ffmpeg is missing or the picture is already big enough, so the worst
+       case is exactly the behaviour that shipped before. */
+    let outB64 = b64;
+    let finalSize = size;
+    const enlarged = await enlargeRestoredImage(Buffer.from(b64, "base64"));
+    if (enlarged) {
+      outB64 = enlarged.buffer.toString("base64");
+      finalSize = `${enlarged.width}x${enlarged.height}`;
+    }
+
     sendJson(res, 200, {
-      image: `data:image/png;base64,${b64}`,
+      image: `data:image/png;base64,${outB64}`,
       context: description,
       engine: modelUsed,
       quality,
-      size,
+      // The size actually returned. `modelSize` is what was asked of the model;
+      // they differ whenever the enlargement ran, and the caller cares about
+      // the first.
+      size: finalSize,
+      modelSize: size,
       // Which job ran. The two return pictures that differ in framing, not
       // just in sharpness, so the caller has to know which one it got before
       // it decides whether the writer's existing zoom and pan still apply.

@@ -4912,7 +4912,11 @@ function drawBackground() {
    that work now, and does it better, so the colour no longer needs the runway:
    at 0.6 it begins just above the copy, around 59%, and the picture above is
    left alone. */
-const FADE_STRETCH = 0.6;
+/* 2.0, from the gradient spec. Measured off the mock, its stops run from 21%
+   of the card down to 61%, completing at the first line — about 680px on a
+   1700px frame, against the 198px this used to run in. The shape below only
+   reads as that shape if it is given that distance. */
+const FADE_STRETCH = 2.0;
 
 /* The blur gets its own, shorter reach.
 
@@ -5428,11 +5432,44 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
 
      The value AT the copy line, and every value below it, is unchanged: that
      is what the text is read against, and it was already right. */
+  /* ── The ramp, to the gradient spec ──────────────────────────────────────
+
+     Three stops, from the design: transparent at the top, 80% at 63% of the
+     way down, full at the copy line. Interpolated linearly between them,
+     which is what the design tool does — so this IS that gradient rather
+     than an approximation of it.
+
+     It is the opposite shape to the quadratic it replaces. A quadratic holds
+     near nothing for most of its length and does the work at the end; this
+     spends most of its strength early and eases off into the copy. On a card
+     that means the picture starts giving way high and gently rather than
+     staying sharp and then dropping.
+
+     The two segments meet at 63% with a slope change of about 2.3x — 1.27
+     against 0.54 per unit of ramp. That is a real corner, and it is under the
+     ~2.5x that has previously been invisible here, which is the only reason
+     it is left as the design drew it rather than rounded off.
+
+     Sampled at 48 points for the same reason everything else here is: canvas
+     interpolates linearly between stops, so a curve given few of them becomes
+     a few straight lines with a visible corner at every join. These two
+     segments are straight by intent; the sampling is what keeps the ends and
+     the join from acquiring any others. */
+  const SPEC_STOPS = [[0, 0], [0.63, 0.80], [1, 1]];
+  const specAlpha = (t) => {
+    for (let k = 1; k < SPEC_STOPS.length; k++) {
+      const [p0, a0] = SPEC_STOPS[k - 1];
+      const [p1, a1] = SPEC_STOPS[k];
+      if (t <= p1) return a0 + ((t - p0) / (p1 - p0)) * (a1 - a0);
+    }
+    return 1;
+  };
+
   const RAMP_SAMPLES = 48;
   stopAt(0, 0);
   for (let i = 1; i <= RAMP_SAMPLES; i++) {
     const t = i / RAMP_SAMPLES;
-    above(t, COPY_LINE_ALPHA * t ** 2);
+    above(t, COPY_LINE_ALPHA * specAlpha(t));
   }
 
   /* ── Below the copy: keep some photograph ──

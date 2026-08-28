@@ -260,6 +260,16 @@ with it. Tunable live via `window.GLASS`.
 | `reach` | 1.2 | Length of the dissolve, as a multiple of the caller's fadeHeight. Peak steepness is the curve's peak slope divided by this — 1.2 ≈ 178px ramp, 0.0084 alpha/px |
 | `startBelowCopy` | 0 | Where the ramp BEGINS, measured down from the top of the first line. The band runs downward from there, so nothing above the copy is frosted. 0 puts the visible onset at the line's midpoint, since smoothstep needs about a sixth of its ramp before softening shows |
 
+**The fade's shape comes from the design's gradient**, not from a formula:
+three stops — transparent, 80% at 63% of the way down, full at the first line
+— interpolated linearly, which is what the design tool does. It runs over
+2.0 × the layout's fadeHeight (about 660px on a 9:16 card, matching the mock's
+40% of the frame) and is anchored so it completes at the copy.
+
+It is then scaled by `GLASS.fadeMax` (0.20), because the glass fill does the
+darkening. So the fade contributes the *shape* at a fifth of full strength;
+measured, every stop lands within 0.005 of 0.20 × the spec.
+
 **Two rules worth knowing before touching either:**
 
 - **Sample curves densely.** `addColorStop` interpolates *linearly*, so a curve

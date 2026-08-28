@@ -257,7 +257,7 @@ with it. Tunable live via `window.GLASS`.
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
 | `refract` | 0.022 | How far the glass bends the picture, as a share of width |
 | `refractStrips` | 56 | Depth resolution of the bend |
-| `reach` | 2.2 | Multiplies the caller's fadeHeight — the dissolve length |
+| `reach` | 0.6 | Multiplies the caller's fadeHeight — the dissolve length, and so how far above the first line the frost begins (~74px). Raise toward 1.0 if an edge ever shows |
 
 **Two rules worth knowing before touching either:**
 

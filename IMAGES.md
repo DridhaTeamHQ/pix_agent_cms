@@ -256,8 +256,8 @@ with it. Tunable live via `window.GLASS`.
 | `blurAt` / `blurCardWidth` | 26 / 382 | Blur in the design's units, scaled to the canvas — 63px on a 920 card |
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
 | `refract` | 0.022 | How far the glass bends the picture, as a share of width |
-| `refractStrips` | 56 | Depth resolution of the bend |
-| `reach` | 1.2 | Length of the dissolve, as a multiple of the caller's fadeHeight. Peak steepness is the curve's peak slope divided by this — 1.2 ≈ 178px ramp, 0.0084 alpha/px |
+| `refractStrips` | 56 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
+| `reach` | 0.83 | Length of the dissolve, as a multiple of the caller's fadeHeight. Peak steepness is the curve's peak slope divided by this — 1.2 ≈ 178px ramp, 0.0084 alpha/px |
 | `startBelowCopy` | 0 | Where the ramp BEGINS, measured down from the top of the first line. The band runs downward from there, so nothing above the copy is frosted. 0 puts the visible onset at the line's midpoint, since smoothstep needs about a sixth of its ramp before softening shows |
 
 **The fade's shape comes from the design's gradient**, not from a formula:
@@ -277,6 +277,11 @@ measured, every stop lands within 0.005 of 0.20 × the spec.
   each join. The eye resolves a change in slope far more readily than a change
   in value — that is Mach banding, and it appears as a hard line where the
   frost begins. The fade samples 48 times, the glass mask 64.
+- **The blur ramps its radius, not its opacity.** Fading one fully-blurred
+  layer in leaves a sharp copy of the picture superimposed mid-transition,
+  which the eye finds however smooth the alpha curve is. Each refraction strip
+  carries its own radius instead, so every depth is a single genuinely blurred
+  image. Costs ~6ms a render in extra filter chains.
 - **Blur needs padding.** A blur samples outward, and past the canvas edge there
   is nothing; those samples return transparent and the sharp original shows
   through as an unblurred strip at the foot. The frame is padded and edge-

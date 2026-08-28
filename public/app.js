@@ -5039,11 +5039,15 @@ const GLASS = (window.GLASS = Object.assign({
      before anything needs it. 0.8 was the other end: near the text, but 119px
      is a short distance to go from sharp to frosted in, and it read as abrupt.
 
-     1.2 gives 178px. The number that decides whether a transition looks abrupt
-     is its steepest part, and that is the curve's peak slope divided by the
-     length it has to run in — so half again the length is a third off the
-     steepest step, from 0.0126 alpha per pixel to 0.0084. Softening appears
-     around 147px above the copy, about two and a half line-heights.
+     1.2 ran 178px, which is 2.9 line-heights: starting at the first line, it
+     was still arriving at the THIRD. 0.83 gives 124px — two line-heights — so
+     the blur is fully present by the second line, which is where it should be.
+
+     Shortening a ramp normally makes it more visible, since the steepest part
+     is the curve's peak slope over its length. What pays for it is the blur
+     now ramping its RADIUS rather than being faded in at full strength: there
+     is no longer a sharp copy of the picture superimposed mid-transition for
+     the eye to catch. See the strip loop in paintMistGlass.
 
      It was 2.2 when the mask was thirteen samples of a curve, which canvas
      draws as thirteen straight segments with a slope change at every join: a
@@ -5055,7 +5059,7 @@ const GLASS = (window.GLASS = Object.assign({
      Tunable live: window.GLASS.reach = 0.6 then redraw. Lower starts nearer
      the text and shortens the dissolve; if an edge ever appears at the top of
      the frost, this is the number that caused it. */
-  reach: 1.2,
+  reach: 0.83,
 
   /* Where the ramp BEGINS, measured down from the top of the first line and
      in the 1700px reference frame. 31 is half a line at the poster's 62px
@@ -5229,6 +5233,7 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
   const bendMax = devW * GLASS.refract;
   if (bendMax >= 0.5) {
     const strips = Math.max(8, Math.round(GLASS.refractStrips));
+    let lastStripFilter = null;
     const stripH = glass.height / strips;
     // Sampled a strip taller than it is drawn, so a bent strip never exposes
     // an unpainted sliver where it has been pulled away from its neighbour.
@@ -5248,7 +5253,39 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
          reintroduced by someone reading quickly. */
       const stripSrcY = (i * stripH - bleed) / GLASS.downscale;
       const stripSrcH = (stripH + bleed * 2) / GLASS.downscale;
-      g.filter = smallBlur;
+
+      /* ── The blur RAMPS, rather than being faded in at full strength ──────
+
+         Until now one fully-blurred layer was alpha-faded over the sharp
+         picture. Halfway through that ramp you are looking at both at once —
+         a sharp image and a 63px-blurred one superimposed at half strength —
+         and the eye reads the sharp copy still sitting in it. That is what
+         makes the transition findable however smooth the alpha curve is: the
+         curve is smooth, but what it is fading between is two different
+         pictures rather than two amounts of the same effect.
+
+         Ramping the radius instead means every depth is a single, genuinely
+         blurred image at its own strength. Nothing is superimposed and there
+         is no sharp copy left to notice.
+
+         It costs nothing here because the refraction already redraws the band
+         as strips: the radius simply varies per strip. Fifty-six of them
+         across the band is about a pixel of blur between neighbours, well
+         under anything the eye resolves as a step. */
+      const rampT = copyFrac > 0 ? Math.min(1, t / copyFrac) : 1;
+      const ease = rampT * rampT * (3 - 2 * rampT);
+      /* Quantised to a quarter pixel, and only assigned when it changes.
+         Setting ctx.filter builds a filter chain every time, so giving all
+         fifty-six strips their own string tripled the render — 3.3ms to
+         10.9ms — for differences far below anything visible. Below the ramp
+         every strip wants the same radius anyway, so most of them now reuse
+         the one already set. */
+      const stripBlur = Math.round(((blurTarget * ease) / GLASS.downscale) * 4) / 4;
+      const wanted = stripBlur >= 0.3 ? `blur(${stripBlur}px)` : "none";
+      if (wanted !== lastStripFilter) {
+        g.filter = wanted;
+        lastStripFilter = wanted;
+      }
       g.drawImage(
         small,
         0, Math.max(0, stripSrcY), sw, Math.min(sh, stripSrcH),

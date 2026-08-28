@@ -5024,25 +5024,19 @@ const GLASS = (window.GLASS = Object.assign({
   /* Multiplies the caller's fadeHeight — the length of the dissolve, and so
      how far above the first line the frost begins.
 
-     The frost should begin at the copy, not above it: the picture stays sharp
-     until the words, and the glass is what the words sit on. 2.2 began the
-     dissolve halfway up a 9:16 poster and 1.5 was still three line-heights
-     clear of the text. At 0.6 the ramp is 89px and, since the mask eases in
-     and only shows about a fifth of the way down it, softening appears around
-     74px above the first line — a bit over one line-height, which reads as
-     starting AT the copy rather than somewhere above it.
+     2.2 put it at 52% of the card, which is halfway up a 9:16 poster: the
+     picture was going soft well before anything needed it to. 1.5 starts it
+     at 58% and, because the mask eases in and only becomes visible about a
+     fifth of the way down its own ramp, softening does not actually show
+     until 60% — roughly 185px above the copy instead of 271.
 
-     A short ramp used to be exactly what produced a findable edge, so this is
-     only safe because of what changed underneath it: the mask is sixty-four
-     samples of a smoothstep, which leaves and arrives at zero rate, and the
-     blur is 7px rather than 55. There is no join to hide any more, so the
-     length can be about where the glass belongs instead of about spreading a
-     defect thin enough to miss.
-
-     This is the shortest run-up the treatment has had. If an edge ever shows
-     at the top of the frost, this is the number that caused it — going back up
-     toward 1.0 costs nothing but the picture softening a little sooner. */
-  reach: 0.6,
+     It was raised to 2.2 when the mask was thirteen samples of a curve, which
+     canvas draws as thirteen straight segments with a slope change at every
+     join: a findable edge that a longer run-up could only spread out, not
+     remove. At sixty-four samples there is no join to hide, so the length can
+     go back to being about where the glass belongs rather than about
+     concealing a defect underneath it. */
+  reach: 1.5,
 
   /* The fill is 85% of a near-black, so it does the darkening the gradient
      used to. Left at 0.85 the two would stack to near-opaque and the

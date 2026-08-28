@@ -143,28 +143,22 @@ console.log("\nThe glass dissolves in rather than arriving at an edge");
   const { api } = build();
   const callerReach = api.blurReach(LAYOUT_FADE);
   const glassReach = callerReach * api.GLASS.reach;
-  /* Raw length is not the property, and neither is "longer than the caller
-     asked for" — an earlier version asserted reach > 1, which only restated
-     the value it happened to have.
+  ck("it lengthens the caller's reach", api.GLASS.reach > 1, String(api.GLASS.reach));
 
-     The mask eases in, so softening becomes visible about a fifth of the way
-     down its own ramp. Where it SHOWS is the thing worth guarding, and only
-     one end of it is really a correctness question:
+  /* Raw length is not the property. The mask eases in, so softening only
+     becomes visible about a fifth of the way down its own ramp — which is why
+     the reach could be shortened once the curve was sampled densely enough to
+     have no join to hide.
 
-       too far    the picture goes soft halfway up the card for no reason.
-                  Reported, and a real defect.
-       too close  the frost stops being a dissolve and becomes a step.
-
-     How close it SHOULD start is a design decision made by eye, not something
-     a test can settle — it has been moved deliberately from 271px to 74px
-     above the copy. So the floor here is only a backstop against a ramp so
-     short it is effectively a hard edge, deliberately well below the value in
-     use, rather than an opinion about where the glass belongs. */
+     What matters is where it SHOWS, and it is wrong in both directions. Too
+     far above the copy and the picture goes soft halfway up the card for no
+     reason; too close and the frost arrives as an edge instead of a dissolve.
+     Both have been reported here. */
   const visibleAt = glassReach * 0.83;   // smoothstep crosses ~8% alpha here
   ck("softening does not begin halfway up the card",
     visibleAt / H <= 0.20, (visibleAt / H * 100).toFixed(0) + "% of the card above the copy");
-  ck("the dissolve is still a dissolve, not a step",
-    visibleAt >= 25, Math.round(visibleAt) + "px of ramp above the copy");
+  ck("nor so close that it arrives as an edge",
+    visibleAt / H >= 0.05, (visibleAt / H * 100).toFixed(0) + "% of the card above the copy");
 }
 
 console.log("\nThe mask is a sampled curve, not a few straight segments");

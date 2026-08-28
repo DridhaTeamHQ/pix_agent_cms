@@ -358,5 +358,50 @@ console.log("\nThe bottom fade is still black, anchored, and capped");
     (surviving * 100).toFixed(1) + "% of the picture left");
 }
 
+console.log("\nEvery page that shows copy over a photograph gets the treatment");
+{
+  /* The text page did not, and nobody noticed for a long time: it painted a
+     four-stop wash over the whole frame instead, and drew its photograph
+     through blur(18px) brightness(62%) on top of that. Both of those make the
+     glass invisible — one buries it, the other removes the sharp input it
+     needs to be a transition at all — so this checks the source directly.
+
+     Reading the file rather than executing it, because these are three
+     separate screen functions with their own DOM and state; what matters is
+     that none of them quietly goes back to washing the frame. */
+  const screens = ["drawPixTextScreen", "drawStoryScreen", "drawHero"];
+  for (const name of screens) {
+    const body = (() => {
+      const i = app.indexOf("function " + name);
+      if (i < 0) return null;
+      let k = app.indexOf(") {", i) + 2, d = 0;
+      for (let j = k; j < app.length; j++) {
+        if (app[j] === "{") d++;
+        else if (app[j] === "}") { d--; if (!d) return app.slice(i, j + 1); }
+      }
+    })();
+    if (!body) { console.log("  SKIP " + name + " not found"); continue; }
+    ck(name + " paints the glass", /paintMistGlass\(/.test(body));
+    ck(name + " paints the fade", /paintBottomFade\(/.test(body));
+    ck(name + " anchors both to the copy, not to the frame",
+      !/copyTop:\s*0/.test(body));
+  }
+
+  // The text page specifically: sharp input, and no full-frame wash left.
+  const text = (() => {
+    const i = app.indexOf("function drawPixTextScreen");
+    let k = app.indexOf(") {", i) + 2, d = 0;
+    for (let j = k; j < app.length; j++) {
+      if (app[j] === "{") d++;
+      else if (app[j] === "}") { d--; if (!d) return app.slice(i, j + 1); }
+    }
+  })();
+  ck("the text page draws its photograph sharp",
+    /drawTextPreviewBackgroundImage\([\s\S]*?"none"\)/.test(text),
+    "a pre-blurred input has no sharp-to-frosted transition to show");
+  ck("and the four-stop full-frame wash is gone",
+    !/addColorStop\(0\.34/.test(text) && !/rgba\(0, 0, 0, 0\.98\)/.test(text));
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

@@ -4180,25 +4180,60 @@ function drawPixTextScreen() {
   ctx.fillStyle = "#070707";
   ctx.fillRect(0, 0, W, H);
 
-  drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s);
+  /* "none", like the story page — and this is the other half of why the frost
+     could not be seen here.
 
-  const dim = ctx.createLinearGradient(0, 0, 0, H);
-  dim.addColorStop(0, "rgba(0, 0, 0, 0.68)");
-  dim.addColorStop(0.34, "rgba(0, 0, 0, 0.52)");
-  dim.addColorStop(0.62, "rgba(0, 0, 0, 0.68)");
-  dim.addColorStop(1, "rgba(0, 0, 0, 0.98)");
-  ctx.fillStyle = dim;
-  ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = "rgba(0, 0, 0, 0.22)";
-  ctx.fillRect(0, 0, W, H);
+     The default draws the photograph through blur(18px) brightness(62%)
+     across the WHOLE frame, so the picture arrived already soft and already
+     dark. A treatment that goes from sharp to frosted has nothing to show
+     when its input is uniformly frosted to begin with: there was no
+     transition on this page, only a flat blur that happened to look like one.
 
-  drawFixedLogos();
+     The picture is drawn sharp now and the glass supplies the softening where
+     the copy is, which is what the other two pages do. */
+  drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s, "none");
 
   const textX = L.headline.x;
   const minTextY = state.forceTextExport ? H * 0.16 : H * 0.1;
   const bottomTextPadding = state.forceTextExport ? L.headline.bottomPadding : 335;
   const lastLineY = H - bottomTextPadding * (H / 1700);
-  drawWrappedPreviewText(getDetailTextForPreview(), textX, minTextY, L.headline.maxWidth, lastLineY, 39 * s, 61 * s);
+  /* Measured before anything is painted over the photograph, because the glass
+     and the fade below are anchored to the top of this block. */
+  const textLayout = layoutWrappedPreviewText(
+    getDetailTextForPreview(), minTextY, L.headline.maxWidth, lastLineY, 39 * s, 61 * s);
+
+  /* ── The same treatment the poster and the story page get ──────────────
+
+     This page used to be the exception: a four-stop wash over the whole frame
+     — 0.68 at the top, 0.52, 0.68, 0.98 at the foot — with a flat 0.22 on top
+     of that. Between 75% and 98% black everywhere, which is why the frosted
+     glass could not be seen on this page. There was nothing to see: the
+     photograph was already gone before the copy was drawn.
+
+     It is the same glass and the same fade as the other two pages now,
+     anchored to the copy the same way.
+
+     The veil is what the wash leaves behind, and it is here for a real reason
+     rather than as a leftover. The other two pages put their copy in a known
+     place near the foot, so the ramp always has run-up above it. This page's
+     copy GROWS UPWARD from the foot and is clamped at minTextY, so a long
+     enough post starts its first line a tenth of the way down the card, where
+     the ramp has barely begun. The veil is the floor that keeps that first
+     line legible; the glass supplies the build and the frost on top of it. */
+  ctx.fillStyle = `rgba(0, 0, 0, ${GLASS.textPageVeil})`;
+  ctx.fillRect(0, 0, W, H);
+
+  paintMistGlass(ctx, { width: W, height: H, copyTop: textLayout.startY });
+  paintBottomFade(ctx, {
+    width: W,
+    height: H,
+    copyTop: textLayout.startY,
+    fadeHeight: L.gradient.fadeHeight,
+  });
+
+  drawFixedLogos();
+
+  drawWrappedPreviewTextLayout(textLayout, textX, L.headline.maxWidth);
 
   if (!state.forceTextExport) {
     drawEngagementBar();
@@ -4707,15 +4742,14 @@ function drawPixStatusBar(scaleX, scaleY, s) {
   ctx.restore();
 }
 
-function drawWrappedPreviewText(text, x, minY, maxWidth, maxY, fontSize, lineHeight) {
-  ctx.save();
-  ctx.fillStyle = "#ffffff";
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  ctx.shadowColor = "rgba(0, 0, 0, 0.48)";
-  ctx.shadowBlur = 14;
-  ctx.shadowOffsetY = 5;
+/* Where the text page's copy lands, worked out without drawing it.
 
+   Split from the drawing for the same reason the story page measures its block
+   first: the glass and the fade are anchored to the top of the copy, so the
+   treatment underneath cannot be painted until the copy's position is known.
+   Painting first is exactly what forced this page to use a fixed full-frame
+   wash — at that point nothing here knew where the words were going to sit. */
+function layoutWrappedPreviewText(text, minY, maxWidth, maxY, fontSize, lineHeight) {
   const preserveOpenBullet = !state.isDownloading && state.previewMode === "text";
   const fit = fitPreviewTextLines(text, maxWidth, minY, maxY, fontSize, lineHeight, { preserveOpenBullet });
   const { lines, visibleLines } = fit;
@@ -4727,9 +4761,24 @@ function drawWrappedPreviewText(text, x, minY, maxWidth, maxY, fontSize, lineHei
     visibleLines[ellipsisIndex] = `${visibleLines[ellipsisIndex]}...`;
   }
 
+  ctx.save();
   ctx.font = `${PREVIEW_TEXT_WEIGHT} ${Math.round(fit.fontSize)}px ${PREVIEW_TEXT_FONT}`;
   const visibleHeight = visibleLines.reduce((sum, line) => sum + getPreviewTextStep(line, fit.lineHeight), 0);
+  ctx.restore();
   const startY = Math.max(minY, maxY - Math.max(0, visibleHeight - fit.lineHeight));
+  return { fit, visibleLines, ellipsisIndex, startY };
+}
+
+function drawWrappedPreviewTextLayout(layout, x, maxWidth) {
+  const { fit, visibleLines, ellipsisIndex, startY } = layout;
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.48)";
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 5;
+  ctx.font = `${PREVIEW_TEXT_WEIGHT} ${Math.round(fit.fontSize)}px ${PREVIEW_TEXT_FONT}`;
   let cy = startY;
   visibleLines.forEach((visibleLine, index) => {
     if (visibleLine) {
@@ -4742,6 +4791,11 @@ function drawWrappedPreviewText(text, x, minY, maxWidth, maxY, fontSize, lineHei
     cy += getPreviewTextStep(visibleLine, fit.lineHeight);
   });
   ctx.restore();
+}
+
+function drawWrappedPreviewText(text, x, minY, maxWidth, maxY, fontSize, lineHeight) {
+  drawWrappedPreviewTextLayout(
+    layoutWrappedPreviewText(text, minY, maxWidth, maxY, fontSize, lineHeight), x, maxWidth);
 }
 
 function fitPreviewTextLines(text, maxWidth, minY, maxY, fontSize, lineHeight, options = {}) {
@@ -5128,6 +5182,18 @@ const GLASS = (window.GLASS = Object.assign({
      that is 9.1%, against 12% before. Below about 7% the picture stops being
      a picture and the card is a black panel with type on it. */
   fadeMax: 0.24,
+
+  /* The text page's floor, under the glass rather than instead of it.
+
+     The poster and the story page put their copy in a known place near the
+     foot, so the ramp always has run-up above it. The text page's copy grows
+     UPWARD from the foot and is clamped at a tenth of the card, so a long
+     enough post starts its first line where the ramp has hardly begun. This is
+     the floor that keeps that line legible; the glass builds on top of it.
+
+     Set by measurement, not taste: white body copy on a bright photograph has
+     to clear 4.5:1 at the first line in that worst case. */
+  textPageVeil: 0.42,
 }, window.GLASS));
 
 /* ── Scratch canvases, kept rather than remade ───────────────────────────────

@@ -259,6 +259,23 @@ with it. Tunable live via `window.GLASS`.
 | `refractStrips` | 56 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
 | `runUpAboveCopy` | 272 | How far above the first line the glass begins, in the 1700px reference frame. The ramp then runs the whole band, so this sets both where the onset lands and how gentle the build is. Replaced `reach` and `startBelowCopy` — see below |
 
+**All three pages that put copy over a photograph use it** — the poster, the
+story page and the text page. The text page did not until recently, and the
+reason it looked untreated is worth keeping: it painted a four-stop wash over
+the whole frame (0.68 / 0.52 / 0.68 / 0.98, plus a flat 0.22) *and* drew its
+photograph through `blur(18px) brightness(62%)`. Between 75% and 98% black
+everywhere, over an input that was already uniformly soft. A treatment that
+goes from sharp to frosted has nothing to show when its input starts frosted:
+there was no transition on that page, only a flat blur that resembled one.
+
+It draws the picture sharp now and anchors the same glass and fade to its copy.
+`GLASS.textPageVeil` (0.42) is the one thing the wash left behind, and it earns
+its place: the other two pages put their copy near the foot so the ramp always
+has run-up above it, while the text page's copy grows upward and is clamped a
+tenth of the way down the card, where the ramp has barely begun. Measured on a
+bright photograph, white body copy at that worst-case first line is 5.28:1 with
+the veil and 1.97:1 without it.
+
 **Both ramps follow one profile.** `specAlpha` is the design's gradient — three
 stops, transparent, 80% at 63% of the way down, full at the foot — interpolated
 linearly, which is what the design tool does. `rampAlpha` is that profile with

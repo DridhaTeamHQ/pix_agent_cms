@@ -253,7 +253,8 @@ with it. Tunable live via `window.GLASS`.
 | `brightness` | 0.07 | The picker's was 0.09; darkened on request |
 | `fillAlpha` | 0.88 | The 85% beside the hex, taken up on request |
 | `fadeMax` | 0.24 | Cap on the gradient. The fill does most of the darkening; what must stay bounded is the *product* — see below |
-| `blurAt` / `blurCardWidth` | 20 / 382 | Blur in the design's units, scaled to the canvas — 48px on a 920 card. Was 26 (63px) when the ramp was 123px long, which is half a pixel of radius per pixel descended; sharpness is the one property of a photograph the eye can check without a reference, so a radius gradient that steep is findable however smooth the alpha under it |
+| `blurAt` / `blurCardWidth` | 34 / 382 | Blur in the design's units, scaled to the canvas — 82px at full strength on a 920 card |
+| `blurCurve` | 2 | How far the blur LAGS the darkening, as an exponent on the shared ramp. 1 is the two moving together; above 1 the blur holds back near the copy and piles up towards the foot |
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
 | `refract` | 0.022 | How far the glass bends the picture, as a share of width |
 | `refractStrips` | 56 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
@@ -275,6 +276,24 @@ has run-up above it, while the text page's copy grows upward and is clamped a
 tenth of the way down the card, where the ramp has barely begun. Measured on a
 bright photograph, white body copy at that worst-case first line is 5.28:1 with
 the veil and 1.97:1 without it.
+
+**The blur lags the darkening on purpose.** Both sample `rampAlpha`, but the
+blur raises it to `GLASS.blurCurve`. Radii on a 920 card, by line:
+
+| | line 1 | line 3 | line 5 | foot |
+|---|---|---|---|---|
+| shared curve (`blurCurve: 1`, `blurAt: 20`) | 18px | 30px | 39px | 48px |
+| lagging (`blurCurve: 2`, `blurAt: 34`) | **12px** | 31px | 53px | **81px** |
+
+Raising `blurAt` alone would not have done it: that scales every depth by the
+same factor, so the leading edge blurs in step with the foot — and the leading
+edge is the one place a radius gradient is easy to catch, because it is the
+only part of the band with enough luminance left to show what sharpness was
+lost. Back-loading puts the frost where the card is nearly black instead, which
+is why `blurAt` could go up 70% while line one actually got *sharper*. It also
+moves the fastest climb in radius from y=1209 — exactly the first line — down
+to y=1372. Costs 0.7ms a page; the darkening is untouched, so peak slope stays
+at 0.25 levels/px.
 
 **Both ramps follow one profile.** `specAlpha` is the design's gradient — three
 stops, transparent, 80% at 63% of the way down, full at the foot — interpolated

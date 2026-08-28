@@ -5150,7 +5150,18 @@ const GLASS = (window.GLASS = Object.assign({
      carried entirely by the darkening. Halving it keeps the surface reading
      as glass while handing the actual transition back to the gradient, which
      is the part the eye cannot catch. */
-  blurAt: 20,
+  blurAt: 34,
+
+  /* How far the blur LAGS the darkening, as an exponent on the shared ramp.
+
+     1 is the two moving together, which is what it was. Above 1 the blur
+     holds back near the copy and accumulates towards the foot — the same
+     total frost, redistributed downward. At 2 the leading edge carries about
+     a third of the radius it would at 1, which is what pays for blurAt going
+     20 -> 34 without the top of the band getting harder to look at.
+
+     Tunable live: window.GLASS.blurCurve = 1 restores the old distribution. */
+  blurCurve: 2,
   blurCardWidth: 382,
   downscale: 4,     // the blur is reached by downsampling; see paintMistGlass
 
@@ -5407,7 +5418,20 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
          diff against a constant-radius render puts at under 0.01 of 255 levels
          on the finished card. If copyFrac is ever shortened again, this
          divides by fourteen, not fifty-six. */
-      const ease = rampAlpha(Math.min(1, Math.max(0, t / copyFrac)));
+      /* The blur follows the darkening's curve RAISED TO A POWER, so it lags
+         it: barely there where the band begins, and piling up towards the
+         foot. Asked for as "more blurry as you go down".
+
+         Raising blurAt alone would not do it. That scales every depth by the
+         same factor, so the leading edge gets blurrier in step with the foot
+         — and the leading edge is the one place a radius gradient is easy to
+         catch, because it is the only part of the band with enough luminance
+         left to show what sharpness was lost. Back-loading it instead adds
+         the blur where the card is nearly black and the eye has almost no
+         reference for focus, which is why blurAt can go up a long way while
+         the top of the band actually gets SOFTER in its rate of change. */
+      const rampT = Math.min(1, Math.max(0, t / copyFrac));
+      const ease = Math.pow(rampAlpha(rampT), GLASS.blurCurve);
       /* Quantised to a quarter pixel, and only assigned when it changes.
          Setting ctx.filter builds a filter chain every time, so giving all
          fifty-six strips their own string tripled the render — 3.3ms to

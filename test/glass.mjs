@@ -93,9 +93,15 @@ function makeCtx(log, label) {
     canvas: { __label: label }, stops, label,
     globalAlpha: 1, globalCompositeOperation: "source-over",
     imageSmoothingEnabled: false, imageSmoothingQuality: "",
-    fillStyle: null, filter: "none",
+    fillStyle: null,
+    /* filter is a real property on a context, and the strip loop assigns it
+       per strip. Recording the assignments is the only way to see the blur
+       RADIUS the code actually asks for, which is the thing being checked. */
+    _filter: "none",
+    get filter() { return this._filter; },
+    set filter(v) { this._filter = v; log.filters.push({ ctx: label, value: v, seq: log.seq++ }); },
     getTransform: () => log.transform,
-    drawImage(...a) { log.draws.push({ ctx: label, args: a }); },
+    drawImage(...a) { log.draws.push({ ctx: label, args: a, seq: log.seq++ }); },
     fillRect(...a) { log.fills.push({ ctx: label, args: a }); },
     // Reused scratch canvases must be wiped before reuse, so the stub has to
     // accept the calls that do it.
@@ -109,7 +115,7 @@ function makeCtx(log, label) {
 }
 
 function build({ transform = { a: 1, d: 1, e: 0, f: 0 }, overrides = {} } = {}) {
-  const log = { draws: [], fills: [], gradients: [], clears: [], contexts: [], created: [], transform };
+  const log = { draws: [], fills: [], gradients: [], clears: [], contexts: [], created: [], filters: [], seq: 0, transform };
   let n = 0;
   const doc = {
     createElement: () => {
@@ -401,6 +407,85 @@ console.log("\nEvery page that shows copy over a photograph gets the treatment")
     "a pre-blurred input has no sharp-to-frosted transition to show");
   ck("and the four-stop full-frame wash is gone",
     !/addColorStop\(0\.34/.test(text) && !/rgba\(0, 0, 0, 0\.98\)/.test(text));
+}
+
+console.log("\nThe blur lags the darkening, piling up towards the foot");
+{
+  const { api, log, target } = build();
+  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
+
+  /* Radius against DEPTH, not against position in the log.
+
+     The strip loop only assigns ctx.filter when the value changes, so the log
+     holds the distinct radii rather than one per strip — and with a lagging
+     curve those are sparse at the top and dense at the foot. Reading the array
+     as if index meant depth therefore reports the blur as far more front-loaded
+     than it is. Each filter is paired with the strip that follows it instead,
+     and the strip's destination y is the depth.
+
+     Draws that cover the full height are the edge-extension pass after the
+     loop, not strips; they follow the filter reset and would read as a radius
+     of zero at the top of the band. */
+  /* One context only. paintMistGlass uses three — the small downscale buffer,
+     the full-size glass buffer, and the target — and all of them set filters
+     and draw. The read-back into the small buffer is a 9-argument draw with a
+     short destination too, so it passes for a strip and lands at depth 0. */
+  const stripCtx = (() => {
+    const n = {};
+    for (const d of log.draws) if (d.args.length === 9) n[d.ctx] = (n[d.ctx] || 0) + 1;
+    return Object.keys(n).sort((a, b) => n[b] - n[a])[0];
+  })();
+  const strips = log.draws.filter(
+    (d) => d.ctx === stripCtx && d.args.length === 9 && d.args[8] < H * 0.1);
+  const samples = [];
+  for (const f of log.filters) {
+    if (f.ctx !== stripCtx) continue;
+    if (!/^blur\(|^none$/.test(f.value)) continue;
+    const strip = strips.find((d) => d.seq > f.seq);
+    if (strip && strip.args[6] < 0) continue;
+    if (!strip) continue;
+    samples.push({
+      depth: strip.args[6] / strips[strips.length - 1].args[6],
+      r: f.value === "none" ? 0 : parseFloat(f.value.slice(5)),
+    });
+  }
+  ck("it set a blur per depth", samples.length > 4, samples.length + " radius changes");
+
+  const maxR = Math.max(...samples.map((s) => s.r));
+  ck("radius never goes backwards as it descends",
+    samples.every((s, i) => !i || s.r >= samples[i - 1].r - 1e-9),
+    samples.slice(0, 8).map((s) => s.r).join(","));
+
+  /* The property that was asked for, and the reason blurAt could be raised
+     70% without the top of the band getting harder to look at.
+
+     The bound is 0.40 because that is what discriminates, not because it is a
+     round number: the shared curve puts the half-way radius at 0.60 of the
+     maximum, and squaring it puts it at 0.37. Anything between the two
+     separates a lagging blur from one moving in step with the darkening, and
+     this fails the moment blurCurve goes back to 1. */
+  const nearest = (d) => samples.reduce((best, s) =>
+    Math.abs(s.depth - d) < Math.abs(best.depth - d) ? s : best);
+  const halfWay = nearest(0.5).r / maxR;
+  ck("half way down it carries well under half its final radius",
+    halfWay < 0.4, `${(halfWay * 100).toFixed(0)}% of the maximum`);
+  ck("and the config says so rather than it being a coincidence",
+    api.GLASS.blurCurve > 1, String(api.GLASS.blurCurve));
+
+  /* Where the radius climbs fastest has to be BELOW the copy line. That is the
+     one place a sharpness gradient is cheap: the card is nearly black there,
+     so little luminance is left to reveal what focus was lost. Sharing the
+     darkening's curve put the fastest climb exactly ON the first line. */
+  const copyDepth = (COPY - (COPY - api.GLASS.runUpAboveCopy * (H / 1700))) /
+    (H - (COPY - api.GLASS.runUpAboveCopy * (H / 1700)));
+  let steepest = 0, steepestAt = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const rise = (samples[i].r - samples[i - 1].r) /
+      Math.max(1e-6, samples[i].depth - samples[i - 1].depth);
+    if (rise > steepest) { steepest = rise; steepestAt = samples[i].depth; }
+  }
+  ck("its fastest climb is below the copy line, not on the type",
+    steepestAt > copyDepth, `${(steepestAt * 100).toFixed(0)}% down, copy at ${(copyDepth * 100).toFixed(0)}%`);
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

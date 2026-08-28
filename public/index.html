@@ -683,12 +683,19 @@
                 <!-- The readout doubles as the reset. A separate reset button
                      needed ~28px this column does not have, and appearing only
                      off-100% made the row jump width as you clicked. -->
+                <!-- Doubles as Fit: a landscape photograph on a 9:16 poster
+                     loses about 68% of itself to the crop, and sometimes the
+                     picture IS the story. Click to show all of it, letterboxed;
+                     click again to fill the frame. -->
                 <button type="button" class="zoom-readout" id="img-zoom-value"
-                        title="Reset to 100%" aria-label="Reset zoom to 100%">100%</button>
+                        title="Fit the whole photo (click again to fill)"
+                        aria-label="Fit the whole photo, or fill the frame">100%</button>
                 <button type="button" class="zoom-step" id="img-zoom-in"
                         aria-label="Zoom in" title="Zoom in">+</button>
               </span>
-              <input type="range" id="img-zoom" min="10" max="300" value="100" hidden />
+              <!-- Floor is 5, not 10: fitting a very wide panorama into a 9:16 frame
+                   needs under 10% and would otherwise still overflow. -->
+              <input type="range" id="img-zoom" min="5" max="300" value="100" hidden />
             </div>
             <label class="slider-container">
               <span class="slider-label">Pan X</span>

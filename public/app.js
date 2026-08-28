@@ -169,7 +169,11 @@ const stockImagesGrid = document.getElementById("stock-images-grid");
 const imgZoom = document.getElementById("img-zoom");
 /* Bounds live with the input: the range attributes are the contract, and the
    - / + buttons must clamp to exactly the same numbers the restore path does. */
-const ZOOM_MIN = 10;
+/* 5, not 10. applyZoom clamps to this, so it is also the floor on Fit — and a
+   very wide panorama needs under 10% to sit inside a 9:16 frame (3000x600
+   wants 9.8), which made the one shape that most needs fitting the one shape
+   that could not be fitted. */
+const ZOOM_MIN = 5;
 const ZOOM_MAX = 300;
 const ZOOM_STEP = 5;
 const fontSizeInput = document.getElementById("font-size");
@@ -1752,10 +1756,55 @@ function applyZoom(next) {
   scheduleRender();
 }
 
+/* ── Fit: the whole photograph, letterboxed ──────────────────────────────────
+
+   Zoom is a multiplier on the COVER scale — the scale at which the picture
+   fills the frame and the overflow is cropped. A 16:9 photograph on a 9:16
+   poster loses about 68% of itself that way, which is right for most poster
+   images and wrong when the picture is the story.
+
+   Fit is the other scale: the largest the picture can be with all of it
+   inside the frame. Expressed as a zoom so it travels through the existing
+   control, the page snapshot and the saved design without any new field —
+   the writer can nudge it afterwards and it behaves like any other zoom.
+
+   IMAGE_PAN_HEADROOM is divided back out because drawCoverImage multiplies it
+   in; without that the "fit" would still overflow by that margin, which is
+   the whole thing it is supposed not to do. */
+function fitZoomFor(image) {
+  if (!image || !image.width || !image.height) return 100;
+  const frameW = canvas.width;
+  const frameH = canvas.height;
+  const coverScale = Math.max(frameW / image.width, frameH / image.height);
+  const containScale = Math.min(frameW / image.width, frameH / image.height);
+  const zoom = (containScale / (coverScale * IMAGE_PAN_HEADROOM)) * 100;
+  /* Floored, not rounded. The zoom control carries whole percentages, and
+     rounding up is enough to push the picture back over the edge it was just
+     fitted inside — on a 16:9 photo in a 9:16 frame, 27.7 rounds to 28 and
+     overflows by 11px, so the thing lands one crop short of doing its job.
+     A percent under is invisible; a percent over is the bug.
+
+     The floor matches the control's own minimum. It used to be 10, which a
+     panorama cannot fit inside a 9:16 frame in — 3000x600 needs 9.8% — so the
+     one shape that most needs fitting was the one shape it refused to fit. */
+  return Math.max(ZOOM_MIN, Math.floor(zoom));
+}
+
+/* Already showing the whole picture? Then the useful thing this button can do
+   is give the frame back. Fit and reset from one control, because the row has
+   no space for two and the writer only ever wants one of them. */
+function toggleFitZoom() {
+  const image = state.mainImage;
+  if (!image) return;
+  const fit = fitZoomFor(image);
+  const atFit = Math.abs(Number(imgZoom.value) - fit) <= 1;
+  applyZoom(atFit ? 100 : fit);
+}
+
 imgZoom.addEventListener("input", () => applyZoom(imgZoom.value));
 imgZoomOut?.addEventListener("click", () => applyZoom(Number(imgZoom.value) - ZOOM_STEP));
 imgZoomIn?.addEventListener("click", () => applyZoom(Number(imgZoom.value) + ZOOM_STEP));
-imgZoomValue?.addEventListener("click", () => applyZoom(100));
+imgZoomValue?.addEventListener("click", toggleFitZoom);
 
 /* Press-and-hold to run, so crossing the range does not take forty clicks. */
 [[imgZoomOut, -ZOOM_STEP], [imgZoomIn, ZOOM_STEP]].forEach(([btn, delta]) => {
@@ -5961,10 +6010,17 @@ function drawCoverImage(image, x, y, width, height, offset, zoom) {
     dy += offset.y;
   }
 
+  /* Clamping is what stops a pan dragging an empty edge into frame, and it
+     only means anything while the picture is BIGGER than the frame. Once it is
+     smaller — zoomed out to fit a landscape photo into a 9:16 poster — the
+     minimum runs past the maximum and clamp() collapses to the maximum, which
+     pinned the photograph into the top-left corner instead of leaving it in
+     the middle of the card. A fitted photo belongs centred, with the backdrop
+     showing evenly around it. */
   const minX = x + width - drawWidth;
   const minY = y + height - drawHeight;
-  dx = clamp(dx, minX, x);
-  dy = clamp(dy, minY, y);
+  if (drawWidth >= width) dx = clamp(dx, minX, x);
+  if (drawHeight >= height) dy = clamp(dy, minY, y);
 
   // Apply filters (brightness/contrast/saturation/blur) only to the image
   // layer — gradient, headline, logo, etc. should NOT be filtered. Reset to

@@ -264,9 +264,25 @@ console.log("\nThe frost clears the sharp original early, then holds");
   /* Shorter than the darkening — the actual property, read off the ramp.
      GLASS.frostReach is a multiple of where the copy line falls, not a
      fraction of the band, so it is 1 when the frost completes AT the copy;
-     asserting `< 1` on it stopped meaning anything the moment that changed. */
-  ck("it is shorter than the darkening, which is the point",
-    full && full.p < 0.5, full ? `full at ${(full.p * 100).toFixed(0)}%` : "never");
+     asserting `< 1` on it stopped meaning anything the moment that changed.
+
+     It was then `< 0.5`, which had the same fault one level down: a constant
+     standing in for a property. Where the frost completes is
+     copyFrac * frostReach, and that is already asserted exactly, against the
+     knob, immediately above. What THIS assertion is for is the consequence —
+     that the ramp finishes with band left over, so the foot is a hold and not
+     a crossfade. Raising frostReach from 0.9 to 1.8 moved completion from 29%
+     to 57% of the band, which the old constant read as a regression and which
+     is the fix: at 0.9 the crossfade was compressed into 207px and slammed
+     into a clamp 23px above the copy, full width, which is what a reviewer
+     reported as a hard stop. */
+  ck("the ramp finishes with band to spare, so the foot holds rather than crossfades",
+    full && full.p < 0.85, full ? `full at ${(full.p * 100).toFixed(0)}%` : "never");
+  /* And the hold is long enough to be a hold. Below about a tenth of the band
+     the "completes early" property is nominal — the crossfade would be
+     running essentially to the foot. */
+  ck("the hold is a real stretch of band, not a rounding",
+    full && (1 - full.p) > 0.1, full ? `${((1 - full.p) * 100).toFixed(0)}% held` : "never");
 }
 
 console.log("\nThe mask is a sampled curve, not a few straight segments");
@@ -645,6 +661,91 @@ console.log("\nThe blur is dithered, or it bands");
   off.api.paintMistGlass(off.target, { width: W, height: H, copyTop: COPY });
   ck("and 0 turns it off cleanly, so it is a knob and not a fixed cost",
     off.log.patterns.length === 0, off.log.patterns.length + " patterns");
+}
+
+/* ── The strips have to cover the band they are masked over ─────────────────
+
+   Nothing measured this, and it left a hard line across the foot of every
+   card. The presence mask reaches alpha 1.0 at the bottom of the band, so the
+   compositor is promising a fully frosted foot — but the strip loop stopped
+   painting about three rows short of it, and the sharp photograph showed
+   through at full strength across the full width. A 63-level step in three
+   rows, which is exactly the "hard stop" shape.
+
+   Two shortfalls stacked, and both are rounding rather than logic:
+
+     sh = round(devSpan / downscale)   721 / 4 rounds to 180, and 180 * 4 is
+                                       720 — one row short before anything else
+     dy at the foot                    the refraction bend is negative there,
+                                       taking roughly two more rows
+
+   The old bound clamped the source interval to [0, sh]. Reading past sh was
+   always safe — the level canvases are sh + pad * 2 tall and the read is
+   already offset by pad — so the clamp was guarding a short read that could
+   not happen, at the cost of the rows it refused to paint.
+
+   What this asserts is coverage, not the constants: the union of the strip
+   destinations has to span the whole glass canvas. That survives someone
+   retuning refractStrips, downscale, bleed or the bend, which a test written
+   against "720 vs 721" would not.                                          */
+console.log("\nThe blurred strips cover the whole band, foot included");
+{
+  const { api, log, target } = build();
+  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
+
+  /* Every strip draw onto the glass canvas, as destination intervals. The
+     9-argument drawImage form is (img, sx,sy,sw,sh, dx,dy,dw,dh), so the
+     destination top is args[6], its width args[7] and its height args[8].
+
+     Filtered on DESTINATION WIDTH, and that is load-bearing. "Any 9-argument
+     draw that is not onto the target" also catches the edge-extend passes
+     that build the padded blur levels, and those span the padded canvas top
+     to bottom — so they hand back a full-height interval and paper over
+     exactly the shortfall this is looking for. Verified by mutation: with the
+     old clamp restored, the loose filter still passed. Strip draws are the
+     ones a band wide; the padded ones are a downscaled sw. */
+  const strips = log.draws
+    .filter((d) => d.args.length === 9 && d.ctx !== "target" && d.args[7] === W)
+    .map((d) => ({ top: d.args[6], bottom: d.args[6] + d.args[8] }));
+
+  ck("the strip loop ran at all", strips.length > 0, strips.length + " draws");
+
+  if (strips.length) {
+    /* The band's REAL height, off the glass canvas the code sized — not
+       derived from the strips. Deriving it from the strips is circular: the
+       question is whether the strips reach the band's foot, and a band
+       measured as "wherever the strips ended" always answers yes. The glass
+       canvas is the full-width one; the blur levels are downscaled. */
+    const glassCanvas = log.created.filter((c) => c.width === W)
+      .sort((a, b) => b.height - a.height)[0];
+    ck("found the glass canvas to measure against", !!glassCanvas,
+       log.created.map((c) => `${c.width}x${c.height}`).join(" "));
+    const bandH = glassCanvas ? glassCanvas.height : 0;
+
+    const top = Math.min(...strips.map((s) => s.top));
+    const bottom = Math.max(...strips.map((s) => s.bottom));
+
+    ck("the strips start at or above the top of the band", top <= 0.001,
+       `first strip top ${top.toFixed(3)} — anything below 0 is unpainted band`);
+
+    /* The foot is the one that was bare: three rows short, full width, under
+       a mask at alpha 1.0. Generous by a hundredth of a pixel. */
+    ck("and reach the foot of it", bandH > 0 && bottom >= bandH - 0.001,
+       `strips end at ${bottom.toFixed(3)}, band is ${bandH} tall — ` +
+       `${(bandH - bottom).toFixed(2)}px of it unpainted under a mask at full presence`);
+
+    // No gaps in the middle either: sorted by top, each strip must start
+    // before the previous one ended.
+    const sorted = strips.slice().sort((a, b) => a.top - b.top);
+    let worstGap = 0, gapAt = null;
+    for (let i = 1; i < sorted.length; i++) {
+      const gap = sorted[i].top - sorted[i - 1].bottom;
+      if (gap > worstGap) { worstGap = gap; gapAt = sorted[i].top; }
+    }
+    ck("and leave no gap between them",
+       worstGap <= 0.001,
+       `largest gap ${worstGap.toFixed(3)}px at y ${gapAt}`);
+  }
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

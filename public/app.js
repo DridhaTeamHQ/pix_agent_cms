@@ -5373,7 +5373,26 @@ const GLASS = (window.GLASS = Object.assign({
      Higher is smoother still and walks back towards the superimposed-sharp-
      copy problem this exists to solve: at 2.6 the first line keeps 56% of its
      detail, which is the defect, not a setting. */
-  frostReach: 0.9,       // must fall with the run-up; see below
+  /* 1.8, which is what the paragraph above already argued for and what this
+     had drifted below.
+
+     At 0.9 the whole sharp-to-frosted crossfade is squeezed into 207px on a
+     9:16 card and reaches full presence 23px ABOVE the first line of copy —
+     where it is then clamped flat. That clamp is a first-derivative
+     discontinuity running the full width of the card at a fixed height, which
+     is the "hard stop" a reviewer reported seeing: not the blur radius
+     stepping, but the frost's PRESENCE arriving and stopping dead.
+
+     It is worth being precise that this is the opposite of a smoothness knob
+     turned too far. 0.9 is BELOW the 1.0 the text above measures as the bad
+     case — the compressed one, where detail falls 100% to 7% across the
+     run-up and the worst single row carries 5.6% of the total drop. 1.8
+     halves that to 3.1%, spends 414px on the crossfade instead of 207, and
+     completes 184px past the copy top where the darkening is already deep
+     enough to hide what is left.
+
+     Live: window.GLASS.frostReach = 1.2 then redraw, for a tighter frost. */
+  frostReach: 1.8,
 
   /* How many stops each ramp is described with.
 
@@ -5768,8 +5787,27 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
          strips ask for pixels past the bottom of the small canvas; the read is
          short and the strip is drawn stretched. Harmless at fifty-six strips
          where the overhang is a fraction of one, live at refractStrips <= 8. */
-      const stripSrcY0 = Math.max(0, (i * stripH - bleed) / GLASS.downscale);
-      const stripSrcY1 = Math.min(sh, (i * stripH + stripH + bleed) / GLASS.downscale);
+      /* Clamped into the PADDING, not to the band.
+
+         [0, sh] was the conservative bound, and it left the foot bare. The
+         last strip's destination bottom is sh * downscale + dy, and both
+         terms fall short: sh is round(devSpan / downscale), so on a 721px
+         band that is 180 and 180 * 4 = 720, one row shy; and dy at the foot
+         is negative, taking another ~2px. Three rows of the band get no
+         blurred content at all while the presence mask sits at alpha 1.0, so
+         the sharp photograph shows through at full strength — a 63-level drop
+         across the full width in three rows, which is a hard line.
+
+         Reading past `sh` is safe and was safe all along: the level canvases
+         are sh + pad * 2 tall and the read is already offset by `pad`, so
+         rows sh..sh+pad exist and hold edge-extended pixels. The clamp was
+         guarding against a short read that no longer happens.
+
+         What must NOT change is that the destination follows the clamped
+         source — that uniform mapping is what stops the first and last strips
+         being drawn stretched. It still does; only the interval got wider. */
+      const stripSrcY0 = Math.max(-pad, (i * stripH - bleed) / GLASS.downscale);
+      const stripSrcY1 = Math.min(sh + pad, (i * stripH + stripH + bleed) / GLASS.downscale);
       const stripSrcH = Math.max(1, stripSrcY1 - stripSrcY0);
 
       /* ── The blur RAMPS, rather than being faded in at full strength ──────

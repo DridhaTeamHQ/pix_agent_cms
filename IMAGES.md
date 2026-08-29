@@ -730,6 +730,7 @@ No runner, no dependencies. Each exits non-zero on failure.
 node test/image-fit.mjs   # fit/fill geometry, letterbox centring, pan clamp
 node test/glass.mjs       # panel colour, mask sampling, device transform, fade
 node test/render.mjs      # render coalescing, and that export stays synchronous
+node test/highlight-tones.mjs # which bracket paints which accent colour
 node test/enhance-params.mjs # cache identity, and the output shape the plan asks for
 node test/expand-frame.mjs # expand placement, mask, paste-back, and the card crop
 ```

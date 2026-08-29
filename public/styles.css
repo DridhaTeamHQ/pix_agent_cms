@@ -6434,3 +6434,20 @@ select option[value=""] {
   width: 100%;
   margin-top: 8px;
 }
+
+/* Which bracket drives which colour. The two pickers are otherwise identical
+   and a hex alone does not say what types it — this is the label that makes
+   the pair legible at a glance. Sits between them and the panel edge, so it
+   takes the leftover space rather than pushing the hex around. */
+.color-picker-wrap + .color-picker-wrap {
+  margin-top: 10px;
+}
+
+.color-bracket-hint {
+  font-family: 'SF Mono', 'Fira Code', 'Menlo', monospace;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  opacity: 0.75;
+  margin-left: auto;
+  letter-spacing: 0.04em;
+}

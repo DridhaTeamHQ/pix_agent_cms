@@ -179,6 +179,8 @@ const ZOOM_STEP = 5;
 const fontSizeInput = document.getElementById("font-size");
 const accentColorInput = document.getElementById("accent-color");
 const accentHexLabel = document.getElementById("accent-hex");
+const accentAltColorInput = document.getElementById("accent-alt-color");
+const accentAltHexLabel = document.getElementById("accent-alt-hex");
 const tagPresetsContainer = document.getElementById("tag-presets");
 
 const faceDetector =
@@ -250,6 +252,9 @@ const LAYOUT_PRESETS = {
 const state = {
   aspectRatio: "9:16",         // key into LAYOUT_PRESETS
   accent: "#3979FF",
+  /* The second highlight colour. [square] and (round) brackets take `accent`;
+     {curly} takes this one — see HIGHLIGHT_TONES. */
+  accentAlt: "#7A1726",
   headline: "",
   detailText: "",
   sourceUrl: "",               // article URL from the last scrape (grounds the AI writer)
@@ -438,6 +443,35 @@ function getLayout() {
 const HIGHLIGHT_OPEN_CHAR  = /[\[({]/;     // matches  [  (  {
 const HIGHLIGHT_CLOSE_CHAR = /[\])}]/;     // matches  ]  )  }
 const HIGHLIGHT_ANY_CHARS_GLOBAL = /[\[\](){}]/g;  // any bracket char, /g for replace
+
+/* ── Two highlight colours, chosen by which bracket you type ────────────────
+
+   All three pairs used to be synonyms. They are not any more: {curly} marks a
+   run in the second colour, and [square] / (round) keep the first.
+
+   Round stays with square deliberately. It was a synonym for square before
+   this, so every headline already written with (parens) keeps the colour it
+   already has — a silent recolour of published work is not a feature.
+
+   A run carries the STATE KEY, never the hex. So it resolves through whatever
+   the pickers hold at render time, and a design saved last week does not
+   carry a stale colour back with it. */
+const HIGHLIGHT_TONES = { "{": "accentAlt", "[": "accent", "(": "accent" };
+
+/* Which tone a word OPENS, or null if it opens none. First bracket wins: a
+   mismatched "[word}" is square, because the alternative is taking the tone
+   from a closing character that may belong to a different run. */
+function highlightToneFor(rawWord) {
+  const m = /[[({]/.exec(String(rawWord || ""));
+  return m ? HIGHLIGHT_TONES[m[0]] : null;
+}
+
+/* The hex a tone resolves to now. An absent or unknown tone falls back to the
+   accent, which is what every highlighted run was before there were two — so
+   older content and any future bracket both land somewhere sensible. */
+function highlightColor(tone) {
+  return (tone && state[tone]) || state.accent;
+}
 
 // Switch ratio: resize canvas, reset any pan that no longer makes sense, re-render.
 function applyAspectRatio(ratio) {
@@ -1950,6 +1984,17 @@ accentColorInput.addEventListener("input", () => {
   state.accent = accentColorInput.value;
   accentHexLabel.textContent = accentColorInput.value.toUpperCase();
   document.querySelector('.color-circle').style.borderColor = state.accent;
+  scheduleRender();
+});
+
+// The {curly} highlight colour. Guarded: an older cached index.html has no
+// such input, and an unguarded addEventListener on null takes the editor down
+// at load rather than merely losing one control.
+accentAltColorInput?.addEventListener("input", () => {
+  state.accentAlt = accentAltColorInput.value;
+  if (accentAltHexLabel) accentAltHexLabel.textContent = accentAltColorInput.value.toUpperCase();
+  const circle = accentAltColorInput.closest(".color-circle");
+  if (circle) circle.style.borderColor = state.accentAlt;
   scheduleRender();
 });
 
@@ -4147,7 +4192,9 @@ function drawVideoCaption() {
   const top = H - L.headline.bottomPadding * (H / 1700) - blockHeight;
 
   // Pass 1 — accent boxes behind highlighted runs.
-  let highlighted = false;
+  // `tone` rather than a boolean: a run is open in ONE of two colours now, and
+  // the segment has to carry which so the box can be filled per run.
+  let tone = null;
   lines.forEach((text, i) => {
     const y = top + i * lineHeight;
     let cursor = left;
@@ -4160,28 +4207,30 @@ function drawVideoCaption() {
       const opening = HIGHLIGHT_OPEN_CHAR.test(rawWord);
       const closing = HIGHLIGHT_CLOSE_CHAR.test(rawWord);
       const clean = rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, "");
-      if (opening) highlighted = true;
+      if (opening) tone = highlightToneFor(rawWord);
 
       const wordWidth = ctx.measureText(clean).width;
       const advance = wordWidth + ctx.measureText(" ").width;
 
-      if (highlighted && clean.length) {
+      if (tone && clean.length) {
         if (segStart === null) segStart = cursor;
         segWidth += (closing || idx === parts.length - 1) ? wordWidth : advance;
       }
       if ((closing || idx === parts.length - 1) && segStart !== null) {
-        segments.push({ x: segStart, w: segWidth });
+        segments.push({ x: segStart, w: segWidth, tone });
         segStart = null;
         segWidth = 0;
       }
-      if (closing) highlighted = false;
+      if (closing) tone = null;
       cursor += advance;
     });
 
-    ctx.fillStyle = state.accent;
     const padX = fontSize * 0.16;
     const padY = fontSize * 0.14;
     segments.forEach(seg => {
+      // Per segment, not once for the line — two runs on one line can be two
+      // different colours.
+      ctx.fillStyle = highlightColor(seg.tone);
       const r = fontSize * 0.18;
       const bx = seg.x - padX;
       const by = y - padY;
@@ -4442,14 +4491,16 @@ function storyHeadingLayout(text, maxWidth, fontSize) {
   ctx.font = `700 ${Math.round(fontSize)}px 'Roboto Serif', 'Poppins', serif`;
 
   const words = [];
-  let open = false;
+  // The tone of the run currently open, or null between runs — see
+  // HIGHLIGHT_TONES. A word carries the key, not the colour.
+  let openTone = null;
   text.split(" ").forEach((rawWord) => {
     const opening = HIGHLIGHT_OPEN_CHAR.test(rawWord);
     const closing = HIGHLIGHT_CLOSE_CHAR.test(rawWord);
-    if (opening) open = true;
+    if (opening) openTone = highlightToneFor(rawWord);
     const clean = rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, "");
-    if (clean.length) words.push({ text: clean, marked: open });
-    if (closing) open = false;
+    if (clean.length) words.push({ text: clean, marked: Boolean(openTone), tone: openTone });
+    if (closing) openTone = null;
   });
 
   const space = ctx.measureText(" ").width;
@@ -4499,7 +4550,7 @@ function drawStoryHeading(lines, left, top, fontSize, lineHeight, s) {
          sentence across a photograph with nothing marking it as a kicker.
          Plain is now plain, and the accent stays available for the words
          somebody actually chooses to mark. */
-      ctx.fillStyle = word.marked ? state.accent : "#ffffff";
+      ctx.fillStyle = word.marked ? highlightColor(word.tone) : "#ffffff";
       ctx.fillText(word.text, cursor, y);
       cursor += ctx.measureText(word.text).width + space;
     }
@@ -6301,7 +6352,7 @@ function drawHeadline() {
   ctx.textBaseline = "top";
   ctx.font = layout.font;
 
-  let currentlyHighlighted = false;
+  let currentlyHighlighted = null;
 
   // PASS 1: Draw Accent Backgrounds
   layout.lines.forEach((line, lineIndex) => {
@@ -6321,7 +6372,9 @@ function drawHeadline() {
       const isClosing = HIGHLIGHT_CLOSE_CHAR.test(rawWord);
       const cleanWord = rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '');
 
-      if (isOpening) currentlyHighlighted = true;
+      // The tone of the open run, or null. Was a boolean before there were
+      // two colours; the segment carries it so each box fills its own.
+      if (isOpening) currentlyHighlighted = highlightToneFor(rawWord);
 
       const wordWidth = ctx.measureText(cleanWord).width;
       const spaceWidth = ctx.measureText(" ").width;
@@ -6341,16 +6394,14 @@ function drawHeadline() {
       }
 
       if ((isClosing || i === rawWords.length - 1) && segmentStartX !== null) {
-        segments.push({ x: segmentStartX, w: segmentWidth });
+        segments.push({ x: segmentStartX, w: segmentWidth, tone: currentlyHighlighted });
         segmentStartX = null;
         segmentWidth = 0;
       }
 
-      if (isClosing) currentlyHighlighted = false;
+      if (isClosing) currentlyHighlighted = null;
       bgCursor += totalAdvance;
     });
-
-    ctx.fillStyle = state.accent;
 
     // Pull the actual font size out of the font string (e.g. "600 49px ...")
     // so the highlight box hugs the glyph height, not the line-height. Using
@@ -6364,6 +6415,8 @@ function drawHeadline() {
     const CORNER_RAD   = Math.max(6, Math.round(fontSize * 0.18));
 
     segments.forEach(seg => {
+      // Per segment: two runs on one line can now be two colours.
+      ctx.fillStyle = highlightColor(seg.tone);
       const drawX = seg.x - PAD_X;
       const widthToFill = seg.w + PAD_X * 2;
       const drawY = y - OVERSHOOT_T;
@@ -6376,7 +6429,7 @@ function drawHeadline() {
   });
 
   // reset for pass 2
-  currentlyHighlighted = false;
+  currentlyHighlighted = null;
 
   // PASS 2: Draw White Text with Shadow
   ctx.shadowColor = "rgba(0,0,0,0.6)";
@@ -11621,6 +11674,7 @@ function collectDesignSnapshot(view) {
   return {
     aspectRatio: view.aspectRatio,
     accent: view.accent,
+    accentAlt: view.accentAlt,
     headlineStyle: view.headlineStyle,
     fontSize: view.fontSize,
     enhanceStrength: view.enhanceStrength,
@@ -12118,6 +12172,7 @@ function applyDesignSnapshot(design, post) {
   if (ratio && LAYOUT_PRESETS[ratio]) applyAspectRatio(ratio);
 
   state.accent = design.accent || post.accent_color || state.accent;
+  state.accentAlt = design.accentAlt || state.accentAlt;
   state.tag = design.tag || post.tag || "none";
   state.headlineStyle = design.headlineStyle || state.headlineStyle;
   state.fontSize = numberOr(design.fontSize, state.fontSize);
@@ -12150,11 +12205,13 @@ function applyDesignSnapshot(design, post) {
   syncControl(imgZoom, state.imageZoom);
   syncControl(fontSizeInput, state.fontSize);
   syncControl(accentColorInput, state.accent);
+  if (accentAltColorInput) syncControl(accentAltColorInput, state.accentAlt);
   syncControl(filterBrightnessInput, state.filterBrightness);
   syncControl(filterContrastInput, state.filterContrast);
   syncControl(filterSaturationInput, state.filterSaturation);
   syncControl(filterBlurInput, state.filterBlur);
   if (accentHexLabel) accentHexLabel.textContent = String(state.accent).toUpperCase();
+  if (accentAltHexLabel) accentAltHexLabel.textContent = String(state.accentAlt).toUpperCase();
 
   // Rebuild the added pages, then hand the editor back to page 1 — which is
   // what the writer is looking at when a post opens.

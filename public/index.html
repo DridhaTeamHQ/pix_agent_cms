@@ -283,7 +283,7 @@
         <label class="field">
           <span class="field-label">Headline</span>
           <textarea id="write-headline" rows="4" placeholder="Type your headline..."></textarea>
-          <small class="helper-text">Wrap words in [brackets], (parens), or {braces} to highlight them.</small>
+          <small class="helper-text">Wrap words in [brackets] or (parens) for the first accent colour, or {braces} for the second.</small>
         </label>
         <label class="field">
           <span class="field-label">Text Paragraph</span>
@@ -388,6 +388,14 @@
                 <input type="color" id="accent-color" value="#3979FF" />
               </div>
               <span class="color-hex" id="accent-hex">#3979FF</span>
+              <span class="color-bracket-hint">[square]</span>
+            </label>
+            <label class="color-picker-wrap">
+              <div class="color-circle" style="border-color: #7A1726;">
+                <input type="color" id="accent-alt-color" value="#7A1726" />
+              </div>
+              <span class="color-hex" id="accent-alt-hex">#7A1726</span>
+              <span class="color-bracket-hint">{curly}</span>
             </label>
           </div></div>
         </div>
@@ -825,7 +833,7 @@
           </button>
           <div class="acc-body"><div class="acc-inner">
             <textarea id="headline-edit" rows="4" placeholder="Edit your headline..."></textarea>
-            <small class="helper-text">Wrap words in [brackets], (parens), or {braces} to highlight them.</small>
+            <small class="helper-text">Wrap words in [brackets] or (parens) for the first accent colour, or {braces} for the second.</small>
             <h3 class="acc-subtitle">Text Paragraph</h3>
             <textarea id="detail-edit" rows="12" placeholder="Edit the paragraph shown in Text preview..."></textarea>
             <small class="helper-text">This copy appears in the Text preview.</small>
@@ -836,7 +844,7 @@
             <div id="story-fields" hidden>
               <h3 class="acc-subtitle">Story Page</h3>
               <textarea id="story-heading-edit" rows="2" placeholder="Short heading for this slide..."></textarea>
-              <small class="helper-text">Wrap words in [brackets] to highlight them. Left plain, the whole heading is highlighted.</small>
+              <small class="helper-text">Wrap words in [brackets] or (parens) for the first accent colour, or {braces} for the second. Left plain, the whole heading is highlighted.</small>
               <textarea id="story-body-edit" rows="6" placeholder="The paragraph for this slide..."></textarea>
               <small class="helper-text">Belongs to this page only — each story slide carries its own copy.</small>
             </div>
@@ -929,7 +937,7 @@
 
               <h3 class="acc-subtitle">Caption</h3>
               <textarea id="video-caption" rows="4" placeholder="Text burned into the bottom of the clip..."></textarea>
-              <small class="helper-text">Wrap words in [brackets], (parens), or {braces} to highlight them.</small>
+              <small class="helper-text">Wrap words in [brackets] or (parens) for the first accent colour, or {braces} for the second.</small>
               <label class="slider-container" style="margin-top:10px;">
                 <span class="slider-label">Size</span>
                 <input type="range" id="video-caption-size" min="24" max="72" step="1" value="40" />

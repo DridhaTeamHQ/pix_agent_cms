@@ -8260,12 +8260,14 @@ const enhanceModeHint   = document.getElementById("enhance-mode-hint");
 const ENHANCE_LABELS = {
   restore: { done: "Restored and upscaled", failed: "Restore failed" },
   expand:  { done: "Expanded and reframed", failed: "Expand failed" },
+  reframe: { done: "Reframed to fill the poster", failed: "Reframe failed" },
 };
 
 const ENHANCE_WORKING = {
   auto:    "Reading the photograph, then either recovering detail or extending it to fill the frame (30–90s)…",
   restore: "Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…",
   expand:  "Expanding — reading how the photo is cropped, then drawing the scene outward (30–90s)…",
+  reframe: "Reframing — redrawing the whole picture at the poster's shape (30–90s)…",
 };
 
 /* Pull back is the distance to zoom out, and it only means anything when a
@@ -8279,8 +8281,9 @@ const ENHANCE_WORKING = {
    reads it before picking is told the wrong thing about the option they are
    about to pick, so it has to move with the selector. */
 const ENHANCE_MODE_HINTS = {
-  auto: "Reads the photograph and picks the job: recovers detail at your framing, or — when the poster would crop most of the picture away — extends it outward to fill the frame, keeping the original pixels untouched in the middle. Uses paid AI credits.",
+  auto: "Reads the photograph and picks the job: recovers detail at your framing, or — when the poster would crop most of the picture away — reframes it to fill the poster. A reframe REDRAWS the picture, so faces and detail come back recognisably the same rather than identically the same. Uses paid AI credits.",
   restore: "Recovers detail at exactly the framing you set. Nothing is reframed, zoomed or invented. Uses paid AI credits.",
+  reframe: "Redraws the whole picture at the poster's shape, showing more of the scene above and below. This is the one that looks best, and it REGENERATES: faces, tattoos, signage and fine detail come back recognisably the same, not pixel-identical. Do not use it on a photograph that must not be altered — use Expand or Restore for that.",
   expand: "Draws new scene outward past the edges of the photograph to fill the poster. The original is pinned in place by a mask, but the margin is generated — check the result before publishing. Costs more than Restore.",
 };
 
@@ -8807,7 +8810,11 @@ async function runImageAI() {
       form.append("image", sourceBlob, "source.png");
       form.append("composited", "0");
     }
-    form.append("mode", place ? "expand" : "restore");
+    /* A reframe needs nothing built for it — that is the point of it. The raw
+       source goes up, the model returns the whole picture at the poster's
+       shape, and there is no composite to align or mask to pin. Only expand
+       requires the frame, so only expand is gated on having built one. */
+    form.append("mode", place ? "expand" : (plan.mode === "reframe" ? "reframe" : "restore"));
     form.append("amount", plan.amount || "moderate");
     form.append("subject", plan.subject || "people");
     form.append("description", plan.description || "");
@@ -8889,7 +8896,7 @@ async function runImageAI() {
        Set rather than skipped, because the field is what drawCoverImage reads
        and an absent one falls back to the centre anyway; writing it down
        makes the intent explicit and stops the detector running for nothing. */
-    if (data.mode === "expand") {
+    if (data.mode === "expand" || data.mode === "reframe") {
       enhanced.__focalPoint = { x: enhanced.width / 2, y: enhanced.height / 2 };
     }
     await ensureImageFocalPoint(enhanced);
@@ -8911,7 +8918,7 @@ async function runImageAI() {
        arrives (see resetImageControls / stashImageForAbsentPage), and let
        the writer reframe from there. A restore keeps its framing: same
        picture, same shape, so the numbers still mean what they meant. */
-    if (data.mode === "expand") {
+    if (data.mode === "expand" || data.mode === "reframe") {
       /* EXPAND_COMMIT_ZOOM, not 100, and it is the same number the placement
          was planned against — posterVisibleRect() defaults to it. The two
          have to agree or the guarantee breaks: the picture was fitted inside

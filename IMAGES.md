@@ -32,7 +32,7 @@ so the canvas is not tainted and can be exported.
 
 `POST /api/upscale-image` — QA and admin only. One engine: OpenAI's
 `images/edits`. There is no self-hosted upscaler and no local resampler; both
-were removed deliberately (see §2.7).
+were removed deliberately (see §2.11).
 
 ### 2.1 What the browser sends
 
@@ -41,7 +41,7 @@ before upload — gpt-image-1's maximum output, so anything larger is bytes spen
 to be thrown away.
 
 That cap is on the **upload only**. An expand pastes the writer's original back
-over the result at up to its own resolution — see §2.8.
+over the result at up to its own resolution — see §2.10.
 
 | Header | Value | Read by |
 |---|---|---|
@@ -50,10 +50,10 @@ over the result at up to its own resolution — see §2.8.
 | `X-Image-Orientation` | `landscape` \| `portrait` | Decides output size (§2.3) |
 | `X-Source-Size` | `WxH` of the capped upload | The planner — shape alone cannot tell a 400px crop from a 3000px one |
 | `X-Headline` | URL-encoded, ≤200 chars | Stage 1 context only. **Never** given to the image model — a quoted string in an image prompt is a string to render, which put headlines inside photographs |
-| `X-Enhance-Mode` | `restore` \| `expand` \| `auto` | Unrecognised or absent ⇒ `restore` |
-| `X-Poster-Ratio` | e.g. `9:16` | Expand only. The restore path ignores it — see §2.3 |
+| `X-Enhance-Mode` | `restore` \| `reframe` \| `expand` \| `auto` | Unrecognised or absent ⇒ `restore`. `reframe` REGENERATES — §2.7 |
+| `X-Poster-Ratio` | e.g. `9:16` | Reframe and expand. The restore path ignores it — see §2.3 |
 | `X-Expand-Amount` | `slight` \| `moderate` \| `wide` | Expand only. Anything else ⇒ `moderate` |
-| `X-Expand-Capable` | `1` | The caller composites the frame, sends the mask and pastes the source back. Only such a caller may be given an expand on `auto` (§2.6) |
+| `X-Expand-Capable` | `1` | The caller composites the frame, sends the mask and pastes the source back. Only such a caller may be given an expand on `auto` (§2.8) |
 | `X-Enhance-Strength` | `0`–`1` | **Currently unused server-side.** Left over from the deleted self-hosted upscaler; the slider still moves and changes nothing |
 
 ### 2.2 Two stages
@@ -66,7 +66,7 @@ framing is what is being judged).
 Returns `{ mode, amount, subject, description, reason, fit, size, posterRatio }`.
 Any failure falls back to `restore`, so a broken planner degrades to the job
 that reframes nothing. `fit: true` asks the browser to letterbox the result
-instead of leaving it cropped (§2.6). `size` is the exact canvas the caller
+instead of leaving it cropped (§2.8). `size` is the exact canvas the caller
 must build for an expand — the browser has to match it or the model rescales
 the composite and undoes the point of compositing it.
 
@@ -106,7 +106,7 @@ by it.**
 
 **Expand does not care.** The model's output is only ever the *margin* there.
 The photograph itself is composited by the browser and pasted back over the
-result from the writer's original (§2.8), so the drawn margin is the only part
+result from the writer's original (§2.10), so the drawn margin is the only part
 of an expand the model actually supplies. This is the path a landscape photo on a 9:16 card takes,
 so it is the path that matters most here.
 
@@ -120,11 +120,11 @@ it draws the image to the card, so upscaling a 1536px return to 3000px before
 storing it produces a *byte-heavier file and a pixel-identical poster*. The only
 enlargement worth having is a better kernel than the renderer's — lanczos with a
 contrast-adaptive sharpen — and that means a real image pipeline, which this
-route deliberately no longer carries (§2.7).
+route deliberately no longer carries (§2.8).
 
 > **If restore must exceed 1536**, the honest route is a model that outputs
 > larger natively rather than a resampler bolted behind this one. `gpt-image-2`
-> goes to 3840. It was assessed and declined on cost — see §2.9.
+> goes to 3840. It was assessed and declined on cost — see §2.11.
 
 ### 2.5 Response
 
@@ -177,7 +177,44 @@ near-zero bill into a real one, and `medium` is the correction.
   nothing. This is a spend cap, not a security control — the reviewer-only
   route gate is that.
 
-### 2.6 Expand, and when `auto` picks it
+### 2.7 Reframe — the job that regenerates, and what `auto` now picks
+
+A reviewer typed *"make this image 9:16"* at ChatGPT, on the same landscape
+still this route had just handled badly, and got back something better than
+anything the pipeline was producing. **Same model.** The difference was never
+capability; it was everything being piled on top of it.
+
+| | Expand | Reframe |
+|---|---|---|
+| what the model receives | a composite: sharp photo inset in blurred scaffolding | the picture |
+| mask | yes, pinning the original | none |
+| prompt | ~60 lines, mostly prohibitions | 9 lines |
+| what comes back | a margin, bolted on at a seam | the whole picture at the poster's shape |
+| the original | preserved pixel-for-pixel | **redrawn** |
+
+Every failure this route has shipped was a failure of that bolt — the doubled
+subject, the framed print, the smeared sky (§2.8). Reframe has no bolt because
+it has no seam.
+
+**The cost is real and is the reviewer's to accept.** The output is a
+regeneration: faces, tattoos, jewellery and signage come back *recognisably*
+the same, not *identically* the same. `input_fidelity: high` narrows that gap
+and does not close it. On the promotional art this product mostly handles it is
+invisible and the result is better. On a news photograph of a real person it is
+a fabrication with a masthead on it — so Expand and Restore stay on the Job
+selector, and the UI says which is which.
+
+`auto` resolves an expand verdict to **reframe**. Nothing gates it on the
+caller any more, since there is no frame to build; a shape that cannot be
+resolved still falls to Fit.
+
+**The prompt is short on purpose.** The long one is not more careful, it is more
+contradictory — "extend outward" and "change nothing" in the same breath, forty
+prohibitions deep — and a model handed a contradiction hedges by giving back
+what it was given. That is the smeared sky, restated.
+
+---
+### 2.8 Expand, and when `auto` picks it
 
 **`auto` resolves to expand when the planner says so and the caller can
 composite.** A landscape photograph on a 9:16 poster is the case this exists
@@ -222,7 +259,7 @@ expand that arrives without a composited frame, degrading to restore and saying
 so. The model output is then laid back over that frame, so a transparent
 margin or a refusal cannot leave a hole.
 
-### 2.7 Where the picture is placed, and why not in the middle of the file
+### 2.9 Where the picture is placed, and why not in the middle of the file
 
 gpt-image sells three shapes. A 9:16 poster resolves to **1024x1536**, which is
 2:3 — taller than the source but not as tall as the card, which is 920x1700. So
@@ -255,7 +292,7 @@ the width, and aiming it at whichever face the detector returned first turned a
 landscape photograph of two people into a portrait of one of them. A single
 face is unchanged — the union of one box is that box.
 
-### 2.8 What resolution an expand comes back at, and why not more
+### 2.10 What resolution an expand comes back at, and why not more
 
 The composite is rendered at the model's own frame size — 1024×1536 for a 9:16
 card — and the photograph is pasted into it at that scale. Every layer sits at
@@ -292,7 +329,7 @@ had in fact painted both.
 the original could support, and nothing on the card is sharper than what sits
 next to it. Getting that sharpness back is not a scale factor: it needs a
 feather wide enough to cross the step honestly, or a model that returns more
-than 1536px (§2.9).
+than 1536px (§2.11).
 
 `canvasToImage` still encodes through `toBlob` rather than `toDataURL` — a
 synchronous encode froze the editor at the end of the call. It produces a
@@ -300,7 +337,7 @@ synchronous encode froze the editor at the end of the call. It produces a
 enhance from an address, and a `blob:` URL would be recorded as the picture's
 permanent address and die with the tab.
 
-### 2.9 The model ladder
+### 2.11 The model ladder
 
 The route runs on `gpt-image-1.5`, falling back to `gpt-image-1` for an
 account that does not have it. One model family, one parameter set, one kind of

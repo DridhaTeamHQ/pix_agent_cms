@@ -165,5 +165,65 @@ console.log("\nEvery size the plan can emit is one stage 2 will accept back");
   }
 }
 
+/* ── Reframe: the job that regenerates ───────────────────────────────────
+
+   Expand pins the original and bolts a generated margin to it. Every failure
+   this route shipped was a failure of that bolt — the doubled subject, the
+   framed print, the smeared sky. Reframe hands the model the picture and asks
+   for it at the poster's shape, which is what the same model does well when it
+   is asked plainly, and what the reviewer picked after comparing the two.
+
+   It regenerates, so the things that keep it honest are worth pinning:
+   it asks for the POSTER's shape (not the source's), it sends no mask (there
+   is nothing to pin), and its prompt stays SHORT — the long one is not more
+   careful, it is more contradictory, and contradiction is what makes a model
+   hedge by handing back what it was given.                                  */
+
+const REFRAME_SRC = (() => {
+  const a = server.indexOf("function buildReframePrompt");
+  if (a < 0) throw new Error("buildReframePrompt is gone");
+  return fnSrc("buildReframePrompt");
+})();
+
+const reframe = new Function(`${REFRAME_SRC}\nreturn buildReframePrompt;`)();
+
+console.log("\nReframe asks for the poster's shape, not the source's");
+{
+  // Same resolver as expand: the poster is the point of the job.
+  ck("9:16 poster -> a portrait frame",
+     sizes.sizeForExpand("9:16", "landscape") === "1024x1536",
+     sizes.sizeForExpand("9:16", "landscape"));
+  ck("...even though the SOURCE is landscape, which is the whole point",
+     sizes.sizeForRatio("", "landscape", 1280, 873) === "1536x1024",
+     "restore still follows the source; reframe must not");
+}
+
+console.log("\nThe reframe prompt stays short and says the load-bearing things");
+{
+  const p = reframe("two men on a street at golden hour", "9:16", "people");
+  const lines = p.split("\n").filter((l) => l.trim()).length;
+
+  ck(`it is short (${lines} non-empty lines, expand is ~60)`, lines <= 15, String(lines));
+  ck("it names the target shape", /9:16/.test(p), p.slice(0, 80));
+  ck("it carries the vision stage's description",
+     /two men on a street at golden hour/.test(p));
+  ck("it asks to keep the subjects recognisable",
+     /recognisably themselves/i.test(p));
+  ck("it forbids inventing people", /Do not add people/i.test(p));
+  ck("it forbids text and watermarks", /Do not add text|watermarks/i.test(p));
+  /* The ghost, named once. This prompt has no mask and no paste-back behind
+     it, so the only thing standing between it and a photo-print-in-a-scene is
+     this sentence. */
+  ck("it forbids the picture-in-a-picture that has bitten twice",
+     /not a picture inside a picture/i.test(p) && /border, frame or photo print/i.test(p));
+  ck("it does NOT tell the model to place the image smaller in the frame",
+     !/place the supplied|smaller within the output frame/i.test(p),
+     "that sentence is what drew the framed print");
+
+  const g = reframe("the boAt wordmark", "9:16", "graphic");
+  ck("a graphic is told to keep its letterforms, not its face",
+     /letterforms/i.test(g) && !/faces, expressions/i.test(g));
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

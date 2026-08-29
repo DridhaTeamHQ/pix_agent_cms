@@ -4597,6 +4597,58 @@ function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject
   ].filter((line) => line !== null).join("\n");
 }
 
+/* ── Reframe: ask the model for the whole picture, at the shape we want ──────
+
+   This is the job that a reviewer got from ChatGPT by typing "make this image
+   9:16" at it, and it came back better than anything this route was producing.
+   Same model. The difference was never capability, it was everything we were
+   piling on top of it.
+
+   What expand does: composite the source into a frame, mask it, hand the model
+   a picture that is half sharp photograph and half blurred scaffolding, and
+   spend sixty lines of prompt forbidding it to touch the middle. What comes
+   back is the margin, bolted to the original along a seam. Every failure this
+   route has had — the doubled subject, the framed print, the smeared sky — was
+   a failure of that bolting, not of the model's imagination.
+
+   What reframe does: hand over the picture and ask for it at the poster's
+   shape. No mask, no composite, no paste-back, and a prompt short enough that
+   the model is not arguing with it. The model re-renders the whole frame,
+   which is precisely what it is good at.
+
+   THE COST, AND IT IS NOT SMALL: the output is a REGENERATION. Faces, tattoos,
+   jewellery, signage — all redrawn, recognisably the same and not identically
+   the same. On the promotional art this product mostly handles, that is
+   invisible and the result is better. On a news photograph of a real person it
+   is a fabrication with a masthead on it, and `input_fidelity: high` narrows
+   that gap without closing it. That is why this is a job the reviewer picks,
+   sitting next to one that cannot alter a pixel, and why the UI says so.
+
+   The prompt is deliberately SHORT. The long one is not more careful, it is
+   more contradictory: "extend outward" and "change nothing" in the same
+   breath, forty prohibitions deep, is how you get a model that hedges by
+   handing back what it was given. */
+function buildReframePrompt(description, ratioLabel, subject = "people") {
+  const shape = ratioLabel ? `a ${ratioLabel} vertical frame` : "a taller vertical frame";
+  return [
+    `Reframe this image to fill ${shape}.`,
+    "",
+    description ? `The image shows: ${description}` : null,
+    "",
+    "Show the same scene and the same subjects, continuing naturally beyond the",
+    "current edges so the taller frame is filled with more of the setting —",
+    "more sky and surroundings above, more of the subjects and the ground below.",
+    "",
+    subject === "graphic"
+      ? "Keep the mark, its letterforms, colours and proportions exactly as they are, drawn once, on more of its own background."
+      : "Keep the subjects recognisably themselves: the same faces, expressions, hair, clothing, tattoos and jewellery, in the same light and the same place.",
+    "",
+    "Do not add people who are not already there. Do not add text, captions,",
+    "logos or watermarks. Do not draw a border, frame or photo print — the",
+    "result is one continuous image, not a picture inside a picture.",
+  ].filter((l) => l !== null).join("\n");
+}
+
 /* The SOURCE's shape, never the poster's.
 
    Asking for the poster ratio is what produced the overlay. A landscape photo
@@ -5185,7 +5237,7 @@ async function runEnhanceEdit({
      it in prose is exactly the instruction that returned a photograph inside a
      photograph. Fall back to the job that invents nothing, and say so in the
      response rather than quietly handing back a differently-shaped picture. */
-  let job = mode === "expand" ? "expand" : "restore";
+  let job = ["expand", "reframe"].includes(mode) ? mode : "restore";
   let jobReason = reason;
   if (job === "expand" && !composited) {
     console.warn("⚠ expand asked for without a composited frame — restoring instead");
@@ -5209,8 +5261,9 @@ async function runEnhanceEdit({
     return { ...cached, decidedBy, reason: jobReason, cached: true };
   }
 
-  const prompt = job === "expand"
-    ? buildExpandPrompt(description, posterRatio, amount, subject, composited)
+  const prompt =
+    job === "reframe" ? buildReframePrompt(description, posterRatio, subject)
+    : job === "expand" ? buildExpandPrompt(description, posterRatio, amount, subject, composited)
     : buildEnhancePrompt(description, headline, posterRatio);
 
   const t0 = Date.now();
@@ -5261,7 +5314,7 @@ async function runEnhanceEdit({
   };
 
   let modelUsed = IMAGE_MODEL_PRIMARY;
-  let usedMask = Boolean(mask) && job === "expand";
+  let usedMask = Boolean(mask) && job === "expand";   // never on reframe: the whole frame is redrawn
   let aiRes = await callEdit(modelUsed, usedMask);
 
   /* Two different retries, and they must not be confused with each other.
@@ -5375,7 +5428,7 @@ async function handleEnhancePlan(req, res) {
      between a caller that knows nothing about any of this and a reframe it
      never asked for. An unrecognised value falls back the same way. */
   const rawMode = (req.headers["x-enhance-mode"] || "restore").toString().toLowerCase();
-  const requestedMode = ["auto", "expand", "restore"].includes(rawMode) ? rawMode : "restore";
+  const requestedMode = ["auto", "expand", "restore", "reframe"].includes(rawMode) ? rawMode : "restore";
   const rawAmount = (req.headers["x-expand-amount"] || "moderate").toString().toLowerCase();
   const requestedAmount = ["slight", "moderate", "wide"].includes(rawAmount) ? rawAmount : "moderate";
 
@@ -5417,18 +5470,35 @@ async function handleEnhancePlan(req, res) {
      bytes — cannot build the frame or the mask, so for that caller an expand
      verdict still means Fit. The safety lives on the side that can enforce
      it. */
-  const canComposite = String(req.headers["x-expand-capable"] || "") === "1";
+  /* ── and on `auto` it is now REFRAME, not expand ─────────────────────────
+     Everything above described the composited expand and remains true of it.
+     What changed is which job an expand verdict resolves to.
+
+     Expand protects the original by pinning it and bolting a generated margin
+     to it, and every failure this route has shipped was a failure of that
+     bolt: the doubled subject, the framed print, the smeared sky. Reframe
+     asks the model for the whole picture at the poster's shape and lets it
+     re-render — which is what the same model does, well, when it is asked
+     plainly. The reviewer compared the two side by side and picked this.
+
+     It costs fidelity: the result is a regeneration, recognisably the same
+     rather than identically the same. That is a deliberate trade and it is
+     stated in the UI, because it is the reviewer's to make per picture — the
+     composited expand is still on the Job selector for anything that must not
+     be redrawn.
+
+     No compositing is needed, so nothing gates this on the caller's abilities
+     any more. X-Expand-Capable is therefore no longer read here; a forced
+     expand that arrives without a frame is still caught in runEnhanceEdit,
+     which is the place that can actually tell. */
   const wantedExpand = plan.mode === "expand";
-  /* Real dimensions or nothing. `auto` is the shape gpt-image picks for
-     itself, and the caller cannot composite onto a canvas whose size it was
-     not told — so an unresolvable size falls to Fit rather than to an expand
-     nobody can pin. */
+  // Real dimensions or nothing: an unresolvable shape leaves the model to
+  // guess at the poster, which is the overlay bug. That falls to Fit.
   const expandSize = wantedExpand ? sizeForExpand(posterRatio, sizeHint) : "";
-  const autoExpand =
-    requestedMode === "auto" && wantedExpand && canComposite && expandSize !== "auto";
-  const autoFit = requestedMode === "auto" && wantedExpand && !autoExpand;
+  const autoReframe = requestedMode === "auto" && wantedExpand && expandSize !== "auto";
+  const autoFit = requestedMode === "auto" && wantedExpand && !autoReframe;
   const mode = requestedMode === "auto"
-    ? (autoExpand ? "expand" : (wantedExpand ? "restore" : plan.mode))
+    ? (autoReframe ? "reframe" : (wantedExpand ? "restore" : plan.mode))
     : requestedMode;
   const amount = requestedMode === "auto" ? plan.amount : requestedAmount;
   const decidedBy = autoFit ? "auto-fit" : (requestedMode === "auto" ? plan.decidedBy : "caller");
@@ -5446,7 +5516,7 @@ async function handleEnhancePlan(req, res) {
      the SOURCE: any other shape forces the model to invent margin nobody
      asked for. Expand follows the POSTER: the margin is the point, and a 9:16
      poster is where a landscape photograph most needs the room. */
-  const size = mode === "expand"
+  const size = (mode === "expand" || mode === "reframe")
     ? sizeForExpand(posterRatio, sizeHint)
     : sizeForRatio(posterRatio, sizeHint, sourceW, sourceH);
 
@@ -5516,7 +5586,10 @@ async function handleEnhanceEditStage(req, res) {
     mime: enhanceMime(image.mime),
     mask,
     composited: String(fields.composited || "") === "1",
-    mode: String(fields.mode || "restore").toLowerCase() === "expand" ? "expand" : "restore",
+    mode: (() => {
+      const m = String(fields.mode || "restore").toLowerCase();
+      return ["expand", "reframe"].includes(m) ? m : "restore";
+    })(),
     amount: ["slight", "moderate", "wide"].includes(rawAmount) ? rawAmount : "moderate",
     subject: ["people", "scene", "graphic"].includes(rawSubject) ? rawSubject : "people",
     description: String(fields.description || "").slice(0, 4000),
@@ -5548,7 +5621,7 @@ async function handleEnhanceSingleShot(req, res) {
   const posterRatio = (req.headers["x-poster-ratio"] || "").toString();
   const sizeHint = (req.headers["x-image-orientation"] || "").toString();
   const rawMode = (req.headers["x-enhance-mode"] || "restore").toString().toLowerCase();
-  const requestedMode = ["auto", "expand", "restore"].includes(rawMode) ? rawMode : "restore";
+  const requestedMode = ["auto", "expand", "restore", "reframe"].includes(rawMode) ? rawMode : "restore";
   const srcDims = (req.headers["x-source-size"] || "").toString().match(/^(\d{1,5})x(\d{1,5})$/);
   const sourceW = srcDims ? Number(srcDims[1]) : 0;
   const sourceH = srcDims ? Number(srcDims[2]) : 0;

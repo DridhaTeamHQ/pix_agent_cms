@@ -261,57 +261,27 @@ end of the call. It still produces a `data:` URL: `describeMainImage` reads the
 `data:` prefix to tell an enhance from an address, and a `blob:` URL would be
 recorded as the picture's permanent address and die with the tab.
 
-### 2.9 The model ladder, and migrating off it
+### 2.9 The model ladder
 
-Both rungs are deprecated. `gpt-image-1.5` and its siblings shut down **1 Dec
-2026**, and every one of them names **`gpt-image-2`** as the replacement. The
-route works today and stops working on a date.
+The route runs on `gpt-image-1.5`, falling back to `gpt-image-1` for an
+account that does not have it. One model family, one parameter set, one kind of
+picture.
 
-So the ladder is configuration — `IMAGE_MODEL` / `IMAGE_MODEL_FALLBACK` — and
-the migration is a Railway variable edit rather than a deploy. The default
-stays on what is live and proven on this account; a model it has never called
-is not the thing to discover in production.
+Both rungs are on OpenAI's deprecations page with a shutdown date of
+**1 Dec 2026**. Nothing acts on that today, but when it arrives the route
+returns 502 on every press until a newer model is put in. So the ids are read
+from the environment — `IMAGE_MODEL` and `IMAGE_MODEL_FALLBACK` — which costs
+two lines and makes that day a variable edit on the host rather than an
+emergency deploy. The boot log states what they resolved to, and the `engine`
+field of every response says which rung actually served.
 
-**A one-line model swap does not work, and fails silently.** Two parameters
-are not portable, so `callEdit()` derives them from the model:
-
-| | gpt-image-1 / 1.5 | gpt-image-2 |
-|---|---|---|
-| `input_fidelity` | `high` — the identity-preservation control | **must be omitted.** The guide: *"omit this parameter; the API doesn't allow changing it because the model processes every image input at high fidelity automatically"* |
-| `size` | three fixed shapes only | arbitrary `WxH`: edges multiples of 16, long edge ≤ 3840, aspect ≤ 3:1, 655,360–8,294,400 px |
-
-Send `input_fidelity` to gpt-image-2 and every press 400s, falls through to the
-deprecated rung, and keeps working — at which point the migration looks done
-and has not started. Send an arbitrary size to the older rung and it 400s, the
-mask-drop retry 400s, and a degraded route becomes a hard 502.
-`nearestStandardSize()` is what stops that: every rung can answer the request
-it is handed.
-
-**What flipping it actually buys.** The three fixed shapes are why a 9:16 card
-gets a 2:3 frame and trims a fifth of the width off — the mismatch
-`posterVisibleRect()` exists to absorb. Asking for the poster's real shape
-removes it:
-
-| | as shipped | `IMAGE_MODEL=gpt-image-2` |
-|---|---|---|
-| expand, 9:16 | `1024x1536` — 18.5% off | `1088x1920` — **0.7% off** |
-| expand, 16:9 | `1536x1024` — 15.6% off | `1920x1088` — 0.7% off |
-| restore, 16:9 source | `1536x1024` — must invent ~15% of vertical content on the one job forbidden to invent | `1920x1088` — its own shape, and a real upscale past 1536 |
-
-**Before flipping it in production**, run one masked expand and check the
-response's `engine` field says `gpt-image-2` and not the fallback. The 400
-branch now does double duty — model-unavailable *and* bad-parameter — so a
-silent permanent fallback is the likely failure and `engine` is the only way
-to see it. Confirm `quality` and `output_format` are accepted in the same test.
-
-Known residual: on a fallback the client has composited at `1088x1920` while
-the model returns `1024x1536`, so the drawn margin arrives at the wrong aspect
-and is stretched. Layers 3 and 4 keep the photograph pixel-exact, so it
-degrades to a soft margin rather than a broken poster.
-
-Still to do when that gate passes: `public/app.js`'s 1536px upload cap should
-rise with it, or gpt-image-2 is inventing detail from a 1536px input rather
-than reading real pixels.
+**A newer model may not be a drop-in.** Adopting one is not necessarily an id
+swap: `size` is resolved in the plan stage before anything knows which rung
+will serve, and `input_fidelity` is sent unconditionally. A model that rejects
+either would 400 on every press, fall through to the rung below, and keep
+working — the migration looking finished without having started. If that day
+comes, derive the parameters from `model` inside `callEdit()` and check the
+`engine` field before trusting it.
 
 **Also removed:** the self-hosted Real-ESRGAN/SwinIR service (`upscaler/`), a
 local lanczos resampler, and the per-image colour tint. One button returning
@@ -447,8 +417,8 @@ Current cost: ~5ms median per render, 0 dropped frames while typing.
 |---|---|---|
 | `OPENAI_API_KEY` | — | Required for Restore & Upscale. Without it the route returns 503 |
 | `IMAGE_QUALITY` | `high` | `low` \| `medium` \| `high` — see §2.5 |
-| `IMAGE_MODEL` | `gpt-image-1.5` | Primary rung of the model ladder. **Deprecated: shuts down 1 Dec 2026** — see §2.9 |
-| `IMAGE_MODEL_FALLBACK` | `gpt-image-1` | Second rung, tried on 400/403/404. Also deprecated |
+| `IMAGE_MODEL` | `gpt-image-1.5` | Which model the route calls. **Shuts down 1 Dec 2026** — see §2.9 |
+| `IMAGE_MODEL_FALLBACK` | `gpt-image-1` | Tried on 400/403/404, for an account without the above. Same shutdown date |
 | `DISABLE_GPT_IMAGE` | unset | `true` switches the route off and returns 503 |
 | `PEXELS_API_KEY` | — | Stock images; source skipped silently when unset |
 | `FAL_KEY` | — | Flux generation |
@@ -463,7 +433,7 @@ No runner, no dependencies. Each exits non-zero on failure.
 node test/image-fit.mjs   # fit/fill geometry, letterbox centring, pan clamp
 node test/glass.mjs       # panel colour, mask sampling, device transform, fade
 node test/render.mjs      # render coalescing, and that export stays synchronous
-node test/enhance-params.mjs # cache identity, the model ladder, size negotiation
+node test/enhance-params.mjs # cache identity, and the output shape the plan asks for
 node test/expand-frame.mjs # expand placement, mask, paste-back, and the card crop
 ```
 

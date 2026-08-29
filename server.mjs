@@ -181,25 +181,22 @@ function enhanceCostLabel() {
 }
 /* ── The model ladder ──────────────────────────────────────────────────────
 
-   Both rungs are deprecated. Per OpenAI's deprecations page, `gpt-image-1.5`,
-   `gpt-image-1-mini` and `chatgpt-image-latest` shut down on 1 Dec 2026, and
-   every one of them names `gpt-image-2` as the replacement. Today is inside
-   that window, so the route works — but it stops working on a date, and until
-   now that date could only be answered with a deploy.
+   The route runs on gpt-image-1.5, falling back to gpt-image-1 for an account
+   that does not have it. That is the whole ladder, deliberately: one model
+   family, one parameter set, one kind of picture.
 
-   So the ladder is configuration. Set IMAGE_MODEL on the host and the
-   migration is a variable edit and a restart.
+   It is worth writing down that both rungs are on OpenAI's deprecations page
+   with a shutdown date of 1 Dec 2026. Nothing here needs to act on that today
+   and nothing here does — but the date is real, and when it arrives this route
+   returns 502 on every press until a newer model is put in.
 
-   The DEFAULT stays on what is live and proven on this account today rather
-   than jumping to gpt-image-2 unprompted: a model this account has never
-   called is not the thing to discover in production, and the 400 branch below
-   cannot tell "no such model" from "bad parameter". Flip it deliberately,
-   and check the `engine` field of the response says what you set — see
-   §2.9 of IMAGES.md. */
+   Which is why the ids are read from the environment rather than written into
+   the call. It costs two lines and it is the difference between that day being
+   a variable edit on the host and an emergency deploy. Set IMAGE_MODEL to
+   change what runs; the boot log states what it resolved to, and the `engine`
+   field of every response says which rung actually served. */
 const IMAGE_MODEL_PRIMARY  = process.env.IMAGE_MODEL          || "gpt-image-1.5";
 const IMAGE_MODEL_FALLBACK = process.env.IMAGE_MODEL_FALLBACK || "gpt-image-1";
-
-const isGptImage2 = (model) => /^gpt-image-2/.test(String(model));
 
 if (gptImageDisabled) {
   console.log("Restore & Upscale is switched off (DISABLE_GPT_IMAGE).");
@@ -4623,26 +4620,6 @@ function sizeForRatio(_posterRatioNoLongerUsed, orientationHint, sourceW = 0, so
   if (sourceW > 0 && sourceH > 0) {
     const aspect = sourceW / sourceH;
     if (aspect > 0.95 && aspect < 1.05) return "1024x1024";
-
-    /* On gpt-image-2, the source's OWN shape — not the nearest of three.
-
-       Restore is the job that is supposed to invent nothing, and bucketing
-       every landscape to 3:2 broke that on its most common input: a 16:9
-       press photo asked back at 1536x1024 has to grow about 15% of vertical
-       content it never had, on the one call whose entire prompt forbids
-       inventing anything. This function's own preamble claims to prevent
-       exactly that and could only do it for squares, because three shapes
-       were all there were.
-
-       It is also a real upscale rather than a reshape: 1920 on the long edge
-       against the 1536 the older rungs cap at. */
-    if (isGptImage2(IMAGE_MODEL_PRIMARY)) {
-      const long = 1920;
-      const built = aspect >= 1
-        ? gptImage2Size(long, long / aspect)
-        : gptImage2Size(long * aspect, long);
-      if (built) return built;
-    }
   }
   if (orientationHint === "landscape") return "1536x1024";
   if (orientationHint === "portrait")  return "1024x1536";
@@ -4695,31 +4672,6 @@ function coverCropLoss(sourceW, sourceH, posterRatio) {
    off a frame that now has margin to spare, which is the point of the
    exercise. */
 function sizeForExpand(ratio, orientationHint) {
-  /* On gpt-image-2 the poster's ratio is not approximated, it is ASKED FOR.
-
-     The three fixed shapes are why a 9:16 card gets a 2:3 frame and then
-     trims a fifth of its width away — the mismatch posterVisibleRect() on the
-     client exists to absorb, at the cost of placing the photograph smaller
-     than it needed to be. gpt-image-2 takes arbitrary dimensions, so on that
-     rung the frame is simply built at the shape the poster actually is and
-     almost nothing is trimmed.
-
-     Falls through to the standard shapes if the arithmetic cannot produce a
-     legal size, and callEdit() degrades it again for the older rungs, so a
-     failed flip is a worse frame rather than a broken call. */
-  if (isGptImage2(IMAGE_MODEL_PRIMARY)) {
-    const target = RATIO_VALUES[ratio];
-    if (target) {
-      // Long edge 1920 keeps a 9:16 frame at 1088x1920 — inside every
-      // documented bound, and a real upscale over the 1536 the old rungs cap
-      // at rather than a differently-shaped version of the same pixels.
-      const long = 1920;
-      const built = target < 1
-        ? gptImage2Size(long * target, long)
-        : gptImage2Size(long, long / target);
-      if (built) return built;
-    }
-  }
   switch (ratio) {
     case "9:16":
     case "4:5":  return "1024x1536";
@@ -4988,61 +4940,6 @@ async function planEnhance(buffer, mime, { posterRatio = "", sourceW = 0, source
 // gpt-image-1/1.5's output shapes. A size arriving from a browser is checked
 // against this rather than trusted — it is what OpenAI gets billed for.
 const ENHANCE_SIZES = new Set(["1024x1024", "1024x1536", "1536x1024", "auto"]);
-
-/* gpt-image-2 takes arbitrary dimensions, and the constraints are quoted from
-   the image-generation guide: "Maximum edge length must be less than or equal
-   to 3840px", "Both edges must be multiples of 16px", "Long edge to short edge
-   ratio must not exceed 3:1", "Total pixels must be at least 655,360 and no
-   more than 8,294,400".
-
-   That is the door to asking for a REAL 9:16 instead of the 2:3 the older
-   models force, which is the mismatch posterVisibleRect() exists to absorb.
-   The builder is here and correct so that the migration is one decision
-   rather than a second round of arithmetic. */
-function gptImage2Size(w, h) {
-  const round16 = (n) => Math.max(16, Math.round(n / 16) * 16);
-  let W = round16(w);
-  let H = round16(h);
-  if (Math.max(W, H) > 3840) {
-    const k = 3840 / Math.max(W, H);
-    W = round16(W * k);
-    H = round16(H * k);
-  }
-  const ratio = Math.max(W, H) / Math.min(W, H);
-  if (ratio > 3) return null;                       // 3:1 is the documented cap
-  const px = W * H;
-  if (px < 655_360 || px > 8_294_400) return null;
-  return `${W}x${H}`;
-}
-
-/* The nearest shape gpt-image-1/1.5 will actually accept.
-
-   The fallback rung is the reason this exists. `size` is resolved once, before
-   the model is known, and the retry ladder re-sends it — so an arbitrary
-   1088x1920 chosen for gpt-image-2 would be handed verbatim to gpt-image-1.5,
-   which 400s, then the mask-drop retry 400s, and a route that was merely
-   degraded becomes a hard 502. Every rung must be able to answer the request
-   it is given. */
-function nearestStandardSize(size) {
-  const m = /^(\d{3,5})x(\d{3,5})$/.exec(String(size || ""));
-  if (!m) return ENHANCE_SIZES.has(size) ? size : "auto";
-  const aspect = Number(m[1]) / Number(m[2]);
-  if (aspect > 1.15) return "1536x1024";
-  if (aspect < 0.87) return "1024x1536";
-  return "1024x1024";
-}
-
-/* What stage 2 will accept back from the browser. A plain Set could not
-   express "any legal gpt-image-2 shape", and coercing an unrecognised size to
-   "auto" is not harmless here: the client has already composited its frame at
-   that exact size, and "auto" lets the model rescale the composite, which is
-   the whole thing compositing exists to prevent. */
-function validEnhanceSize(size) {
-  if (ENHANCE_SIZES.has(size)) return size;
-  const m = /^(\d{3,5})x(\d{3,5})$/.exec(String(size || ""));
-  if (m && gptImage2Size(Number(m[1]), Number(m[2])) === size) return size;
-  return "auto";
-}
 
 /* ── Result cache ──────────────────────────────────────────────────────────
    Every press of AI Enhance is a fresh charge — there is no free path since
@@ -5318,28 +5215,25 @@ async function runEnhanceEdit({
 
   const t0 = Date.now();
 
-  /* Every parameter that is not portable across the ladder is derived from
-     the model HERE, not captured once above.
+  /* One parameter set, because both rungs of the ladder take the same one.
 
-     `size` is resolved in handleEnhancePlan, before anything knows which rung
-     will serve, and `input_fidelity` used to be appended unconditionally. Both
-     are model-specific, and getting that wrong is silent in the worst way: the
-     guide says of gpt-image-2, "omit this parameter; the API doesn't allow
-     changing it because the model processes every image input at high fidelity
-     automatically". So a one-line swap of the model id 400s on every single
-     press, falls through to the deprecated rung, and keeps working — at which
-     point the migration looks done and has not started. */
+     Worth knowing before the ladder ever changes: this is only true of the
+     gpt-image-1 family. A later model may not accept `input_fidelity` at all,
+     and `size` is resolved back in handleEnhancePlan before anything knows
+     which rung will serve — so a model whose parameters differ cannot be
+     adopted by swapping the id. It would 400 on every press, fall through to
+     the rung below, and keep working, which is the migration looking finished
+     without having started. Derive the parameters from `model` at that point,
+     rather than sending one set to a model that wants another. */
   const callEdit = async (model, withMask) => {
-    const g2 = isGptImage2(model);
     const form = new FormData();
     form.append("model", model);
     form.append("prompt", prompt);
-    form.append("size", g2 ? size : nearestStandardSize(size));
+    form.append("size", size);
     form.append("quality", quality);
-    // gpt-image-2 is unconditionally high-fidelity and REJECTS the parameter;
-    // on the older rungs it is the identity-preservation control and the thing
-    // standing between a restore and a handsome stranger in the right shirt.
-    if (!g2) form.append("input_fidelity", "high");
+    // OpenAI's identity-preservation control, and the thing standing between a
+    // restore and a handsome stranger in the right shirt.
+    form.append("input_fidelity", "high");
     /* NEVER "auto", which is the default.
 
        Handed an input that carries an alpha channel, gpt-image is entitled to
@@ -5628,7 +5522,7 @@ async function handleEnhanceEditStage(req, res) {
     description: String(fields.description || "").slice(0, 4000),
     headline: decodeURIComponent(String(fields.headline || "")).slice(0, 200),
     posterRatio: String(fields.posterRatio || ""),
-    size: validEnhanceSize(rawSize),
+    size: ENHANCE_SIZES.has(rawSize) ? rawSize : "auto",
     decidedBy: String(fields.decidedBy || "caller"),
     reason: String(fields.reason || "").slice(0, 200),
     onCharge,

@@ -1031,6 +1031,122 @@ function resetImageControls() {
   imgZoom.value = 100;
 }
 
+/* ── Undo: back to the picture the writer posted ─────────────────────────
+
+   AI Enhance is a reviewer's tool and it costs money, so it gets used on
+   pictures that turn out not to need it: an expand that pulls back further
+   than the story wanted, a restore that smooths a texture somebody liked.
+   Until now the only way back was to re-open the post, which throws away
+   every other edit made since.
+
+   ONE SLOT PER PAGE, and it holds the picture as the reviewer FOUND it —
+   not a history of every change. Enhancing twice still undoes to the same
+   place, because the question the button answers is "show me what the writer
+   sent", not "step back one operation". The framing goes with it: an expand
+   resets zoom and pan (see runImageAI), so restoring the picture without the
+   numbers would hand back the right photograph in the wrong crop.
+
+   Held OUTSIDE page.content deliberately. content is what gets captured into
+   the saved design — syncActivePageContent() replaces it wholesale with the
+   declared fields — so anything parked there is either discarded on the next
+   sync or, if declared, written into every autosave. This is editor state
+   that lives as long as the tab does, and a Map keyed by page id is the whole
+   of it.
+
+   STALENESS IS DETECTED, NOT SUBSCRIBED TO. Every picture the AI hands back
+   is remembered alongside the original, and a slot is only honoured while the
+   page is still showing one of them. The moment a reviewer uploads, pastes,
+   drags in or picks a different image, the picture on the page is none of
+   ours and the slot is dropped on the next look. That is why none of the
+   half-dozen places an image can arrive from has to know this exists — and
+   why an enhance that failed cannot leave a button offering to undo it. */
+const imageUndo = new Map();
+
+/* The picture actually on a page right now.
+
+   The active page's content is only refreshed by syncActivePageContent(), so
+   between an edit and the next render its `content.mainImage` is stale — the
+   truth is in `state`. Every other page has it the other way round. Same
+   live/stored split commitFieldToPage() makes on the way in. */
+function imageOnPage(page) {
+  if (!page) return null;
+  return activePage() === page ? state.mainImage : (page.content?.mainImage || null);
+}
+
+/* The slot for a page, or null — dropping it if the picture has moved on to
+   something the AI did not produce. */
+function imageUndoEntry(page) {
+  if (!page) return null;
+  const entry = imageUndo.get(page.id);
+  if (!entry) return null;
+  const current = imageOnPage(page);
+  if (!current || !entry.produced.has(current)) {
+    imageUndo.delete(page.id);
+    return null;
+  }
+  return entry;
+}
+
+function canUndoImage(page) {
+  const entry = imageUndoEntry(page);
+  // A slot whose original is still the picture on screen is a slot with
+  // nothing to undo — the enhance has not landed yet, or it failed.
+  return Boolean(entry) && imageOnPage(page) !== entry.image;
+}
+
+/* Called before an enhance replaces the picture. First one wins: the slot is
+   the writer's image, and a second enhance must not overwrite it with the
+   first enhance's output. */
+function rememberImageBeforeAI(page, image) {
+  if (!page || !image) return;
+  if (imageUndo.has(page.id)) return;
+  imageUndo.set(page.id, {
+    image,
+    offset: { ...(page.content?.imageOffset || state.imageOffset || { x: 0, y: 0 }) },
+    zoom: numberOr(page.content?.imageZoom ?? state.imageZoom, 100),
+    // The original counts as one of ours: it is what the page shows between
+    // the click and the result landing, and a failed enhance leaves it there.
+    produced: new Set([image]),
+  });
+}
+
+// Whatever the AI just handed back, so the slot survives looking at it.
+function noteAIImage(page, image) {
+  if (!page || !image) return;
+  imageUndo.get(page.id)?.produced.add(image);
+}
+
+function revertImageToOriginal() {
+  const page = activePage();
+  const entry = imageUndoEntry(page);
+  if (!entry || !canUndoImage(page)) return;
+
+  commitFieldToPage(page, "mainImage", entry.image);
+  commitFieldToPage(page, "imageOffset", { ...entry.offset });
+  commitFieldToPage(page, "imageZoom", entry.zoom);
+  syncControl(imgOffsetX, entry.offset.x);
+  syncControl(imgOffsetY, entry.offset.y);
+  syncControl(imgZoom, entry.zoom);
+
+  /* The slot is KEPT, not cleared. The original is still the original, so an
+     enhance-undo-enhance sequence undoes to the same picture rather than to
+     the middle of its own history — and canUndoImage() disables the button on
+     its own now that the page is showing it. */
+  renderPoster();
+  setEnhanceStatus("↩ Back to the image as the writer posted it.", "success");
+}
+
+/* Enable the button only when there is something behind it. Called from the
+   end of renderPoster(), which is the one place that runs after every change
+   to the picture with the live page's values restored — the per-card paint
+   sees whichever page it is drawing, not the one on screen. */
+function syncImageUndoUI() {
+  const btn = document.getElementById("image-undo-btn");
+  if (!btn) return;
+  const enhancing = document.getElementById("ai-enhance-btn")?.classList.contains("working");
+  btn.disabled = Boolean(enhancing) || !canUndoImage(activePage());
+}
+
 /* The page a pending image pick belongs to.
 
    The nonce alone answers "is this still the picture the writer wants"; it
@@ -3079,6 +3195,10 @@ function renderPoster() {
   } finally {
     applyPageFields(live);
     if (currentModalCard) updateScreenPreviewModal();
+    // After applyPageFields(live), not before: the paint loop leaves state
+    // holding whichever page it drew last, and the button belongs to the page
+    // on screen.
+    syncImageUndoUI();
   }
 }
 
@@ -6057,6 +6177,22 @@ async function createImage(src) {
   });
 }
 
+/* Where the poster should centre this picture when it crops it.
+
+   EVERY face, not the first one. drawCoverImage() centres the crop on this
+   point, so on a 9:16 poster — which keeps about a third of a landscape
+   photograph's width — the focal point decides who survives the cut. Reading
+   `faces[0]` centred the poster on whichever face the detector happened to
+   return first, and a landscape press photo of two people came back as a
+   portrait of one of them with the other's shoulder at the edge. Nothing was
+   wrong with the picture; the crop was aimed at half of it.
+
+   The centre of the box that contains all the faces keeps a group together:
+   two people either side of the frame average back to the middle and both
+   stay in, and a single face is unchanged because the union of one box is
+   that box. It is not a promise that everyone fits — a crop that narrow
+   cannot make that promise, which is what the expand path below is for — but
+   it aims at the group instead of at one member of it. */
 async function ensureImageFocalPoint(image) {
   if (image.__focalPoint) return image.__focalPoint;
 
@@ -6065,11 +6201,18 @@ async function ensureImageFocalPoint(image) {
     try {
       const faces = await faceDetector.detect(image);
       if (faces?.length) {
-        const box = faces[0].boundingBox;
-        focalPoint = {
-          x: box.x + box.width / 2,
-          y: box.y + box.height / 2
-        };
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const face of faces) {
+          const box = face.boundingBox;
+          if (!box) continue;
+          x0 = Math.min(x0, box.x);
+          y0 = Math.min(y0, box.y);
+          x1 = Math.max(x1, box.x + box.width);
+          y1 = Math.max(y1, box.y + box.height);
+        }
+        if (Number.isFinite(x0) && Number.isFinite(y0)) {
+          focalPoint = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+        }
       }
     } catch { }
   }
@@ -7537,6 +7680,7 @@ function setEnhanceStatus(msg, kind) {
 const enhanceModeSel    = document.getElementById("enhance-mode");
 const expandAmountSel   = document.getElementById("expand-amount");
 const expandAmountField = document.getElementById("expand-amount-field");
+const enhanceModeHint   = document.getElementById("enhance-mode-hint");
 
 /* Two jobs behind one button.
 
@@ -7561,7 +7705,7 @@ const ENHANCE_LABELS = {
 };
 
 const ENHANCE_WORKING = {
-  auto:    "Reading the photograph, then recovering detail at your framing (30–90s)…",
+  auto:    "Reading the photograph, then either recovering detail or extending it to fill the frame (30–90s)…",
   restore: "Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…",
   expand:  "Expanding — reading how the photo is cropped, then drawing the scene outward (30–90s)…",
 };
@@ -7570,12 +7714,426 @@ const ENHANCE_WORKING = {
    reviewer has forced expand. On Auto the stage that picks the job picks the
    distance from the same look at the photograph, so leaving the control up
    would offer a choice nothing is reading. */
+/* What each job actually does, in the reviewer's terms. This used to be one
+   static sentence that said "It does not reframe, zoom out or generate
+   anything past the edges" — true of restore, and the exact opposite of what
+   Expand does, sitting under a selector that offers Expand. A reviewer who
+   reads it before picking is told the wrong thing about the option they are
+   about to pick, so it has to move with the selector. */
+const ENHANCE_MODE_HINTS = {
+  auto: "Reads the photograph and picks the job: recovers detail at your framing, or — when the poster would crop most of the picture away — extends it outward to fill the frame, keeping the original pixels untouched in the middle. Uses paid AI credits.",
+  restore: "Recovers detail at exactly the framing you set. Nothing is reframed, zoomed or invented. Uses paid AI credits.",
+  expand: "Draws new scene outward past the edges of the photograph to fill the poster. The original is pinned in place by a mask, but the margin is generated — check the result before publishing. Costs more than Restore.",
+};
+
 function syncEnhanceModeUI() {
-  if (!expandAmountField) return;
-  expandAmountField.hidden = (enhanceModeSel?.value || "auto") !== "expand";
+  const mode = enhanceModeSel?.value || "auto";
+  if (expandAmountField) expandAmountField.hidden = mode !== "expand";
+  if (enhanceModeHint) {
+    enhanceModeHint.textContent = ENHANCE_MODE_HINTS[mode] || ENHANCE_MODE_HINTS.auto;
+  }
 }
 if (enhanceModeSel) enhanceModeSel.addEventListener("change", syncEnhanceModeUI);
 syncEnhanceModeUI();
+
+/* ── Expand geometry: the browser's half of the fix ──────────────────────
+
+   The reported bug was a ghost second image — the photograph shrunk into a
+   hard-edged rectangle sitting in the middle of a larger, invented picture,
+   so the card showed two images at once. It was not a rendering bug and not a
+   compositing bug on this side. It was the expand prompt.
+
+   Expanding a picture means placing it inside a bigger frame and drawing the
+   rest. That placement used to be a SENTENCE in the prompt — "place the
+   supplied photograph smaller within the output frame and draw the scene
+   continuing outward". gpt-image reads that as what it says: it generates a
+   scene, and it puts a picture in the middle of it. Every other rule in the
+   prompt stayed satisfied while it did — no new people, no lettering, faithful
+   to the source — because a photograph lying in a landscape breaks none of
+   them.
+
+   The geometry was never the model's job. It is arithmetic, and this side has
+   the decoded pixels, so it is done here: the source is drawn into a canvas of
+   exactly the output size, at exactly the position and scale it should keep,
+   and the rest is left transparent. An alpha mask marks that transparent area
+   as the only region the model may paint. The prompt then has no placement
+   left to ask for — it only describes what fills the margin — and the model
+   cannot move, rescale or re-render what it was handed.
+
+   Three things now have to go wrong at once for a doubled image to come back,
+   and the last of them is unconditional: the mask would have to be refused,
+   the prompt's anti-ghost rules ignored, and the feathered paste-back below
+   skipped. */
+
+/* How much of the output frame should be margin, by area, per pull-back.
+   Area rather than a linear percentage because that is what "show 50% more
+   scene" actually means to someone looking at the result — a linear 0.5 leaves
+   three quarters of the frame empty and shrinks the subject to a stamp. */
+const EXPAND_MARGIN_AREA = { slight: 0.20, moderate: 0.35, wide: 0.50 };
+
+/* Where the vertical margin goes, as the fraction of it that sits ABOVE the
+   picture. Centred is the wrong answer for people: a subject cut at the chest
+   needs the room below — that is where the torso, the arms and the lap are —
+   and centring spends half of it on empty sky above a head. A scene or a
+   graphic has no such asymmetry, so those stay centred. */
+const EXPAND_TOP_BIAS = { people: 0.30, scene: 0.5, graphic: 0.5 };
+
+function parseEnhanceSize(size) {
+  const m = /^(\d{3,5})x(\d{3,5})$/.exec(String(size || ""));
+  return m ? { w: Number(m[1]), h: Number(m[2]) } : null;
+}
+
+/* ── The frame the model returns is NOT the frame the poster shows ─────────
+
+   This is the arithmetic that was missing, and it is why an expand could come
+   back correct and still land on the card with the subject cut off.
+
+   gpt-image sells three shapes. A 9:16 poster resolves to 1024x1536, which is
+   2:3 — taller than the picture the model draws but not as tall as the card.
+   The card then does what it does to every image: covers the frame and clips
+   the overflow. 1024x1536 into 920x1700 loses about a fifth of its width
+   before the pan headroom is applied, and a quarter after.
+
+   So the margin the model was paid to draw is not the part that gets cut.
+   The picture is placed at contain scale — full frame width — and it is the
+   picture's own left and right edges that go over the side. On a landscape
+   photograph of two people, one at each end, that is one person per edge.
+
+   The visible rect is knowable here: the layout preset gives the card's real
+   dimensions and drawCoverImage's scale is fixed arithmetic. So it is
+   computed, and the placement is planned inside it rather than inside the
+   full model canvas. The generated margin absorbs the crop, which is what
+   margin is for. */
+
+/* The zoom an expanded frame is committed at.
+
+   IMAGE_PAN_HEADROOM oversizes every image by 10% so there is something to
+   pan with. That is right for a photograph the writer is framing by hand and
+   wrong for a frame built to these exact dimensions thirty seconds ago: it
+   spends a tenth of a purpose-built picture on slack nobody asked for.
+
+   Ceiling, not floor. The zoom control carries whole percentages, and 90%
+   puts the scale a hair UNDER cover — which does not crop the picture, it
+   letterboxes it, leaving 17px of backdrop across the top and bottom of a
+   9:16 card. A percent over is invisible; a percent under is a seam. */
+const EXPAND_COMMIT_ZOOM = Math.ceil(100 / IMAGE_PAN_HEADROOM);
+
+/* What of a `frameW × frameH` picture the poster actually shows, in that
+   picture's own pixels, at the zoom an expand commits. Centred, because
+   composeExpandResult() centres the frame's focal point for the same reason
+   this function exists. */
+function posterVisibleRect(frameW, frameH, zoomPct = EXPAND_COMMIT_ZOOM) {
+  const L = getLayout();
+  const scale =
+    Math.max(L.W / frameW, L.H / frameH) * IMAGE_PAN_HEADROOM * (zoomPct / 100);
+  const w = Math.min(frameW, L.W / scale);
+  const h = Math.min(frameH, L.H / scale);
+  return { x: (frameW - w) / 2, y: (frameH - h) / 2, w, h };
+}
+
+function canvasToPng(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("Couldn't encode the image."))),
+      "image/png",
+    );
+  });
+}
+
+/* A data: URL, and it has to stay one.
+
+   describeMainImage() reads `state.mainImage.src` to decide what a picture IS:
+   a data: URL means an upload or an enhance, with no address until Save pushes
+   it to storage, and anything else is treated as an address and recorded as
+   one. A blob: URL would be filed as the image's permanent address and die
+   with the tab.
+
+   Encoded through toBlob rather than toDataURL because the composite is now
+   several times larger than it was — toDataURL is synchronous and would hold
+   the main thread for the whole PNG encode, freezing the editor at the very
+   end of a call the reviewer has already waited a minute for. */
+async function canvasToImage(canvas) {
+  const blob = await canvasToPng(canvas);
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("Couldn't read the enhanced image."));
+    reader.readAsDataURL(blob);
+  });
+  return await new Promise((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error("Enhanced image failed to load."));
+    el.src = dataUrl;
+  });
+}
+
+/* Where the picture sits inside the frame the model will be given.
+
+   `safe` is the part of that frame the poster will actually show — see
+   posterVisibleRect() above. Everything is measured against it rather than
+   against the full canvas, so the picture is whole in the crop and not merely
+   whole in the file. Omitted, it is the whole frame, which is the right answer
+   when there is no poster to crop against and is what the geometry tests
+   measure. */
+function planExpandPlacement(srcW, srcH, frameW, frameH, amount, subject, safe) {
+  const area = safe && safe.w > 0 && safe.h > 0
+    ? safe
+    : { x: 0, y: 0, w: frameW, h: frameH };
+
+  // The largest the picture can be drawn without cropping any of it.
+  const contain = Math.min(area.w / srcW, area.h / srcH);
+  /* How much of the visible area that alone already leaves empty. This is the
+     number the old prose prompt had no way to reason about: a landscape photo
+     on a 9:16 frame is mostly margin before anything is pulled back at all,
+     while a photo whose shape already matches the poster has none. */
+  const filled = (srcW * contain * srcH * contain) / (area.w * area.h);
+  const wantFilled = 1 - (EXPAND_MARGIN_AREA[amount] ?? EXPAND_MARGIN_AREA.moderate);
+  /* Shrink only if the shape mismatch has not already delivered the margin.
+     Pulling back further than asked costs resolution on the subject for
+     nothing — the output is a fixed size, so every percent of frame the
+     picture gives up is detail it does not get back. */
+  const scale = contain * (filled > wantFilled ? Math.sqrt(wantFilled / filled) : 1);
+
+  const w = Math.max(1, Math.round(srcW * scale));
+  const h = Math.max(1, Math.round(srcH * scale));
+  const bias = EXPAND_TOP_BIAS[subject] ?? 0.5;
+
+  return {
+    frameW,
+    frameH,
+    w,
+    h,
+    x: Math.round(area.x + (area.w - w) / 2),
+    y: Math.round(area.y + (area.h - h) * bias),
+    /* The blend band, in frame pixels. The mask's opaque rectangle is inset by
+       this much so the model may repaint the outermost sliver of the picture
+       and feather its margin into it; the paste-back ramps across the same
+       band. Without it the source ends on a hard line, and a hard line around
+       a rectangle is a picture frame — which is the thing this whole file is
+       trying not to draw. */
+    band: Math.min(24, Math.max(4, Math.round(Math.min(w, h) * 0.02))),
+  };
+}
+
+/* ── What actually goes up the wire on an expand ──────────────────────────
+
+   THE MARGIN IS NOT TRANSPARENT, and that is the second half of the ghost fix.
+
+   Sending a frame with a transparent margin looks like the obvious thing to
+   do — here is the picture, here is the hole, fill the hole — and it is what
+   caused the second report. Two things go wrong with it:
+
+     · `background` on /v1/images/edits defaults to "auto", so handed an input
+       with an alpha channel the model is entitled to answer with one. A
+       returned PNG whose margin is still transparent draws, through
+       drawCoverImage() (which lays down no backing fill), as the card's own
+       pale backdrop with a hairline where the alpha edge was antialiased.
+       That is the washed-out field with a thin white rectangle around the
+       photo. The server now sends background="opaque" as well, but a client
+       that never asks for transparency cannot be given it by accident.
+
+     · An empty margin is a weak brief. Given a void the model produces
+       low-confidence filler; given something to continue it continues it.
+
+   So the margin is pre-filled with a blurred bleed: the same photograph
+   scaled to cover the whole frame and blurred, with the sharp original laid
+   over it at its rect. It is the fill every phone gallery uses to pad a photo
+   into a taller frame, and it has two properties that matter here — its
+   colour and light already match the picture, so it is a real starting point
+   for the model; and if the model contributes nothing usable, what is left is
+   a clean blurred bleed, which nobody has ever mistaken for a second image. */
+function fillExpandBleed(ctx, srcCanvas, place) {
+  const cover = Math.max(place.frameW / srcCanvas.width, place.frameH / srcCanvas.height);
+  const w = srcCanvas.width * cover;
+  const h = srcCanvas.height * cover;
+  const x = (place.frameW - w) / 2;
+  const y = (place.frameH - h) / 2;
+
+  /* An UNBLURRED cover pass first, and it is not decoration.
+
+     A canvas blur samples past the edge of what it is handed and fades it out,
+     so a blurred pass on its own does not reach the frame's own borders at
+     full alpha — on a 9:16 frame from a 4:3 source it left 112 transparent
+     rows top and bottom. That is a hole, and a hole is the very thing this
+     layer exists to prevent: it is what the model is entitled to answer with
+     an alpha channel of its own, and what shows the card's backdrop through
+     the poster. This pass is what makes the frame opaque. */
+  ctx.drawImage(srcCanvas, x, y, w, h);
+
+  // The soft pass on top is what makes it read as a bleed rather than as a
+  // second, badly cropped copy of the photograph. Overdrawn by three blur
+  // radii, which is where a Gaussian has nothing left to give, so it too
+  // arrives at the edges at full strength.
+  const blur = Math.max(8, Math.round(Math.min(place.frameW, place.frameH) * 0.05));
+  const pad = blur * 3;
+  ctx.save();
+  ctx.filter = `blur(${blur}px)`;
+  ctx.drawImage(srcCanvas, x - pad, y - pad, w + pad * 2, h + pad * 2);
+  ctx.restore();
+}
+
+function buildExpandFrame(srcCanvas, place) {
+  const frame = document.createElement("canvas");
+  frame.width = place.frameW;
+  frame.height = place.frameH;
+  const fctx = frame.getContext("2d");
+  fillExpandBleed(fctx, srcCanvas, place);
+  fctx.drawImage(srcCanvas, place.x, place.y, place.w, place.h);
+
+  /* The mask still goes with it, but it is a HINT and the code no longer
+     pretends otherwise.
+
+     OpenAI have confirmed that gpt-image-1 does not inpaint the way dall-e-2
+     did: the mask is applied as a soft mask and the whole image is recreated,
+     so the opaque region is not preserved pixel-for-pixel and the model
+     remains free to re-render the picture as an object sitting in a scene.
+     It is still worth sending — it biases the edit toward the margin — but
+     every guarantee in this file now comes from composeExpandResult() below,
+     which does not ask the model for permission.
+
+     Mask semantics are the opposite of what they look like: TRANSPARENT is
+     where the model may paint, opaque is what it should leave alone. */
+  const mask = document.createElement("canvas");
+  mask.width = place.frameW;
+  mask.height = place.frameH;
+  const mctx = mask.getContext("2d");
+  mctx.fillStyle = "#000";
+  mctx.fillRect(
+    place.x + place.band,
+    place.y + place.band,
+    Math.max(1, place.w - place.band * 2),
+    Math.max(1, place.h - place.band * 2),
+  );
+
+  return { frame, mask };
+}
+
+/* ── How big the composite is rendered ───────────────────────────────────
+
+   The model's frame is 1024x1536 and the photograph sits in about 830 of that
+   width. That is the resolution the picture used to arrive at, and it was
+   thinner than everything downstream wants:
+
+     preview      920px wide          needs ~1.1x
+     X export     2x, 1840px          needs ~2.2x
+     full export  4x, 3680px          needs ~4.4x
+
+   So the photograph was being upscaled by the renderer at every size — the
+   card was showing an 830px picture stretched across a 920px frame, and the
+   4x export was inventing three quarters of its pixels.
+
+   None of that was necessary. The source is only downscaled to 1536px because
+   that is gpt-image's maximum INPUT; the writer's original is still in hand at
+   whatever it was, often 2000-3000px, and layer 4 pastes the source back
+   without asking the model anything. So the composite is rendered larger and
+   the paste-back is done from the original rather than from the copy that was
+   shrunk for upload. Only layers 3 and 4 gain by it — the drawn margin is
+   still the model's 1024x1536, scaled up — but layers 3 and 4 are the
+   photograph, which is the part anyone looks at.
+
+   Two ceilings, and the lower one wins:
+
+     the source's own pixels   scaling past 1:1 with the original would be the
+                               same invention, moved earlier
+     EXPAND_MAX_EDGE           the composite becomes a PNG data: URL held in
+                               memory and uploaded on Save. 3072 puts a 9:16
+                               result at 2048x3072 — around 9MB, comfortably
+                               inside Storage's default 50MB object limit, and
+                               enough to cover the X export exactly and the 4x
+                               export to within 1.7x. Raising it costs memory
+                               and upload time on every save, not just once */
+const EXPAND_MAX_EDGE = 3072;
+
+function expandOutputScale(sourceImage, place) {
+  const nativeW = sourceImage?.naturalWidth || sourceImage?.width || 0;
+  if (!nativeW || !place?.w) return 1;
+  const fromSource = nativeW / place.w;
+  const fromBudget = EXPAND_MAX_EDGE / Math.max(place.frameW, place.frameH);
+  // Never below 1: the composite is not allowed to come back SMALLER than the
+  // frame the model was given, whatever the original's resolution.
+  return Math.max(1, Math.min(fromSource, fromBudget));
+}
+
+/* ── Assembling the result, in four layers ───────────────────────────────
+
+   Nothing here trusts the model with anything except the margin, because the
+   margin is the only thing it was needed for.
+
+     1. the locally built frame — sharp picture, blurred bleed — which is
+        fully opaque, so no hole in the model's return can reach the canvas;
+     2. the model's picture over it, which is where a real drawn margin comes
+        from when the call worked;
+     3. a ring of the source painted OUTWARD across the boundary;
+     4. the source itself, hard-edged and pixel-exact.
+
+   Layer 3 is the correction for what the first attempt at this got wrong. It
+   used to feather the source's alpha DOWN to zero at its own edge, which
+   deliberately let the model's pixels show exactly where the model's border
+   artifact lives — it imported the halo instead of hiding it. Fading outward
+   from a slightly oversized copy covers that band with real picture content
+   and blends into the margin beyond it, where there is nothing to hide.
+
+   The ~2% stretch on the ring is a sub-pixel misregistration against layer 4
+   at their shared edge and is not visible; the alternative, replicating edge
+   pixels outward, costs four more draws to look the same.
+
+   This is not the composite that had to be removed from this pipeline before.
+   That one blended the model's whole output over the original at an alignment
+   nobody knew, and printed a doubled outline for its trouble. Here the
+   rectangle is one this file chose, in a frame this file built. */
+/* `scale` renders the whole composite larger, and `srcCanvas` is expected to
+   carry the resolution to match — see expandOutputScale(). Layers 1 and 2 are
+   the model's frame stretched to the new size, which costs nothing real: the
+   bleed is blurred by construction and the drawn margin is scenery. Layers 3
+   and 4 are drawn from whatever `srcCanvas` actually holds, so handing this a
+   full-resolution source is the whole of the sharpness gain.
+
+   1 is the identity: every rect below rounds back to the number it started
+   from, which is what the geometry tests measure. */
+function composeExpandResult(resultImg, srcCanvas, baseFrame, place, scale = 1) {
+  const s = scale > 0 ? scale : 1;
+  const out = document.createElement("canvas");
+  out.width = Math.round(place.frameW * s);
+  out.height = Math.round(place.frameH * s);
+  const ctx = out.getContext("2d");
+
+  ctx.drawImage(baseFrame, 0, 0, out.width, out.height);
+  if (resultImg) ctx.drawImage(resultImg, 0, 0, out.width, out.height);
+
+  const band = Math.max(1, Math.round(place.band * s));
+  const px = Math.round(place.x * s);
+  const py = Math.round(place.y * s);
+  const pw = Math.round(place.w * s);
+  const ph = Math.round(place.h * s);
+  const ring = document.createElement("canvas");
+  ring.width = pw + band * 2;
+  ring.height = ph + band * 2;
+  const rctx = ring.getContext("2d");
+  rctx.drawImage(srcCanvas, 0, 0, ring.width, ring.height);
+
+  // Ramp the ring's alpha to zero across its outer band, so it covers the
+  // boundary at full strength and disappears into the margin.
+  rctx.globalCompositeOperation = "destination-out";
+  const fade = (gx0, gy0, gx1, gy1, rx, ry, rw, rh) => {
+    const g = rctx.createLinearGradient(gx0, gy0, gx1, gy1);
+    g.addColorStop(0, "rgba(0,0,0,1)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    rctx.fillStyle = g;
+    rctx.fillRect(rx, ry, rw, rh);
+  };
+  const rw = ring.width;
+  const rh = ring.height;
+  fade(0, 0, band, 0, 0, 0, band, rh);                       // left
+  fade(rw, 0, rw - band, 0, rw - band, 0, band, rh);         // right
+  fade(0, 0, 0, band, 0, 0, rw, band);                       // top
+  fade(0, rh, 0, rh - band, 0, rh - band, rw, band);         // bottom
+  rctx.globalCompositeOperation = "source-over";
+
+  ctx.drawImage(ring, px - band, py - band);
+  ctx.drawImage(srcCanvas, px, py, pw, ph);
+  return out;
+}
 
 async function runImageAI() {
   const btn = aiEnhanceBtn;
@@ -7584,6 +8142,12 @@ async function runImageAI() {
   if (!img) return;
   // Whose picture this is. Read before the first await — see the commit below.
   const enhanceOwner = activePage();
+  /* Before anything is spent. Taken here rather than beside the commit so the
+     slot exists even if the call fails halfway — and taken from the same page
+     the result will be committed to, not from whatever is selected when it
+     lands. First one wins, so enhancing twice still undoes to the writer's
+     image. */
+  rememberImageBeforeAI(enhanceOwner, img);
 
   btn.disabled = true;
   btn.classList.add("working");
@@ -7591,7 +8155,7 @@ async function runImageAI() {
 
   try {
     // Snapshot the current background to a temp canvas, capped at 1536 on
-    // the long edge (gpt-image-1's max output — no point uploading more).
+    // the long edge (gpt-image's max output — no point uploading more).
     const rawW = img.naturalWidth || img.width;
     const rawH = img.naturalHeight || img.height;
     const scale = Math.min(1, 1536 / Math.max(rawW, rawH));
@@ -7600,13 +8164,19 @@ async function runImageAI() {
     tmp.height = Math.round(rawH * scale);
     tmp.getContext("2d").drawImage(img, 0, 0, tmp.width, tmp.height);
 
-    const blob = await new Promise(r => tmp.toBlob(r, "image/png"));
-    if (!blob) throw new Error("Couldn't read the current image.");
+    const sourceBlob = await canvasToPng(tmp);
 
-    const resp = await fetch("/api/upscale-image", {
+    /* ── Stage 1: what does this picture need, and at what size ──
+       Cheap (one gpt-4o-mini look), spends no image credits, returns no
+       picture. It exists as its own round trip because its answer decides
+       what this function has to BUILD before the paid call — an expand needs
+       a composited frame at exactly the size the server resolved, and there
+       is no way to build that from inside a single request. */
+    const planResp = await fetch("/api/upscale-image", {
       method: "POST",
       headers: {
         "Content-Type": "image/png",
+        "X-Enhance-Stage": "plan",
         "X-Image-Orientation": rawW >= rawH ? "landscape" : "portrait",
         // Read by the expand path, which renders into the poster's shape so
         // there is somewhere for the widened scene to go. The restore path
@@ -7626,6 +8196,15 @@ async function runImageAI() {
         // auto path, where stage 1 sets it; sent always so the request shape
         // does not depend on the mode.
         "X-Expand-Amount": expandAmountSel?.value || "moderate",
+        /* This caller builds the frame itself: it composites the source onto
+           a canvas of exactly the size the server resolves, sends the mask,
+           and pastes the source back over whatever returns. That is what
+           makes an expand safe, and it is the only reason `auto` is allowed
+           to choose one — the legacy single-shot path cannot do any of it and
+           does not send this, so an expand verdict there still degrades to a
+           restore. See the "auto expands when the caller composites" block in
+           server.mjs. */
+        "X-Expand-Capable": "1",
         /* The real pixel size, which the server cannot cheaply read out of the
            PNG and the browser has in hand. The planner needs it: an expand
            places the photograph smaller inside a fixed-size output, so a small
@@ -7633,25 +8212,125 @@ async function runImageAI() {
            shape alone cannot tell a 400px crop from a 3000px one. These are
            the capped dimensions, which is what the model will actually see. */
         "X-Source-Size": `${tmp.width}x${tmp.height}`,
-        // How much of the model output to keep. Both upscalers manufacture
-        // roughly twice the fine detail the original had, which is what
-        // reads as a painted face; mixing back toward a plain resample is
-        // the dial for that.
-        "X-Enhance-Strength": String((state.enhanceStrength ?? 20) / 100),
       },
-      body: blob,
+      body: sourceBlob,
+    });
+    const plan = await planResp.json().catch(() => ({}));
+    if (!planResp.ok) throw new Error(plan.error || `HTTP ${planResp.status}`);
+
+    /* An expand only happens if there is a frame to build it in. A size the
+       server could not resolve to real dimensions ("auto") leaves nothing to
+       composite onto, and rather than fall back to asking the model to place
+       the picture itself — the thing that drew the ghost — this drops to a
+       restore, which reframes nothing and cannot double anything. */
+    const frameSize = plan.mode === "expand" ? parseEnhanceSize(plan.size) : null;
+    const place = frameSize
+      ? planExpandPlacement(
+          tmp.width, tmp.height, frameSize.w, frameSize.h, plan.amount, plan.subject,
+          /* Inside what the card will show, not inside what the model will
+             return — the two differ by a quarter of the width on a 9:16
+             poster, and the difference used to come off the photograph
+             rather than off the margin drawn for it. */
+          posterVisibleRect(frameSize.w, frameSize.h),
+        )
+      : null;
+
+    setEnhanceStatus(place
+      ? `Expanding — drawing the scene outward from the photo${plan.reason ? ` (${plan.reason})` : ""} (30–90s)…`
+      : "Restoring and upscaling — recovering detail (30–90s)…");
+
+    /* ── Stage 2: the paid call ──
+       Multipart, because an expand sends two files: the composited frame and
+       the mask that pins the picture inside it. The plan travels back as
+       fields so the vision stage is not paid for twice. */
+    const form = new FormData();
+    /* Kept, not discarded after upload. The frame this builds is a complete,
+       usable expanded picture on its own — sharp photograph, blurred bleed
+       margin — and it is layer 1 of the result as well as the input. That is
+       what makes the model's contribution additive: whatever it returns is
+       laid over something that already works, so a transparent margin, a
+       refusal or a nonsense return cannot leave a hole or a halo. */
+    let baseFrame = null;
+    if (place) {
+      const built = buildExpandFrame(tmp, place);
+      baseFrame = built.frame;
+      form.append("image", await canvasToPng(built.frame), "frame.png");
+      form.append("mask", await canvasToPng(built.mask), "mask.png");
+      form.append("composited", "1");
+    } else {
+      form.append("image", sourceBlob, "source.png");
+      form.append("composited", "0");
+    }
+    form.append("mode", place ? "expand" : "restore");
+    form.append("amount", plan.amount || "moderate");
+    form.append("subject", plan.subject || "people");
+    form.append("description", plan.description || "");
+    form.append("headline", encodeURIComponent((state.headline || "").slice(0, 200)));
+    form.append("posterRatio", state.aspectRatio || "");
+    form.append("size", plan.size || "auto");
+    form.append("decidedBy", plan.decidedBy || "caller");
+    form.append("reason", plan.reason || "");
+
+    // No Content-Type here on purpose: the browser has to set the multipart
+    // boundary itself, and naming the type strips it.
+    const resp = await fetch("/api/upscale-image", {
+      method: "POST",
+      headers: { "X-Enhance-Stage": "edit" },
+      body: form,
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
     if (!data.image) throw new Error("No image returned.");
 
-    // Swap the background for the enhanced version
-    const enhanced = new Image();
+    const returned = new Image();
     await new Promise((resolve, reject) => {
-      enhanced.onload = resolve;
-      enhanced.onerror = () => reject(new Error("Enhanced image failed to load."));
-      enhanced.src = data.image;
+      returned.onload = resolve;
+      returned.onerror = () => reject(new Error("Enhanced image failed to load."));
+      returned.src = data.image;
     });
+
+    // The unconditional half of the ghost fix — see composeExpandResult().
+    /* The paste-back comes off the ORIGINAL, not off `tmp`.
+
+       `tmp` exists because gpt-image will not accept more than 1536px, and
+       for a while it was doing double duty as the thing pasted back over the
+       result — so the photograph arrived on the card at the resolution the
+       API imposed rather than the one the writer supplied. The model never
+       needed to see these pixels; layer 4 does not ask its permission. So the
+       source is redrawn at the composite's scale straight from `img`, and the
+       upload copy stays what it was built for. */
+    let enhanced = returned;
+    if (data.mode === "expand" && place && baseFrame) {
+      const outScale = expandOutputScale(img, place);
+      const srcHi = document.createElement("canvas");
+      srcHi.width = Math.max(1, Math.round(place.w * outScale));
+      srcHi.height = Math.max(1, Math.round(place.h * outScale));
+      srcHi.getContext("2d").drawImage(img, 0, 0, srcHi.width, srcHi.height);
+      enhanced = await canvasToImage(
+        composeExpandResult(returned, srcHi, baseFrame, place, outScale),
+      );
+    }
+
+    // Claim the result as ours, so imageUndoEntry() reads the page as still
+    // showing an AI picture rather than one the reviewer swapped in.
+    noteAIImage(enhanceOwner, enhanced);
+
+    /* An expanded frame is already aimed, so nothing may re-aim it.
+
+       ensureImageFocalPoint() would otherwise run the face detector over the
+       result and hand drawCoverImage() a face to centre the crop on. On this
+       picture that undoes the whole call: the margin was drawn, and the
+       placement chosen, so that the photograph sits in the middle of what the
+       card shows. Panning off to a face pushes that carefully centred
+       composition sideways and takes the crop back off the edge of the
+       photograph — the same cut the expand was paid to avoid.
+
+       Set rather than skipped, because the field is what drawCoverImage reads
+       and an absent one falls back to the centre anyway; writing it down
+       makes the intent explicit and stops the detector running for nothing. */
+    if (data.mode === "expand") {
+      enhanced.__focalPoint = { x: enhanced.width / 2, y: enhanced.height / 2 };
+    }
     await ensureImageFocalPoint(enhanced);
     /* Onto the page that was selected when Enhance was pressed. This runs
        30-90 seconds after the click and had no page guard at all, so a
@@ -7672,12 +8351,39 @@ async function runImageAI() {
        the writer reframe from there. A restore keeps its framing: same
        picture, same shape, so the numbers still mean what they meant. */
     if (data.mode === "expand") {
+      /* EXPAND_COMMIT_ZOOM, not 100, and it is the same number the placement
+         was planned against — posterVisibleRect() defaults to it. The two
+         have to agree or the guarantee breaks: the picture was fitted inside
+         the rect the card shows AT THIS ZOOM, so committing any other one
+         crops the photograph the expand just finished protecting.
+
+         It is 91% rather than 100% because IMAGE_PAN_HEADROOM's 10% of pan
+         slack is worth having on a photograph the writer is framing by hand
+         and worth nothing on a frame generated to these dimensions. */
       commitFieldToPage(enhanceOwner, "imageOffset", { x: 0, y: 0 });
-      commitFieldToPage(enhanceOwner, "imageZoom", 100);
+      commitFieldToPage(enhanceOwner, "imageZoom", EXPAND_COMMIT_ZOOM);
       if (activePage() === enhanceOwner) {
         syncControl(imgOffsetX, 0);
         syncControl(imgOffsetY, 0);
-        syncControl(imgZoom, 100);
+        syncControl(imgZoom, EXPAND_COMMIT_ZOOM);
+      }
+    } else if (plan.fit) {
+      /* The planner judged the poster about to cut most of this picture away,
+         and on `auto` the answer to that is Fit, not a paid reframe — see the
+         "auto never expands" block in server.mjs. Same arithmetic the zoom
+         readout runs on click (fitZoomFor / toggleFitZoom), applied here so
+         the reviewer sees the whole photograph without a second press.
+
+         Centred, because a fitted picture is smaller than the frame and any
+         inherited offset would push it off-centre against the backdrop for no
+         reason the writer chose. */
+      const fitZoom = fitZoomFor(enhanced);
+      commitFieldToPage(enhanceOwner, "imageOffset", { x: 0, y: 0 });
+      commitFieldToPage(enhanceOwner, "imageZoom", fitZoom);
+      if (activePage() === enhanceOwner) {
+        syncControl(imgOffsetX, 0);
+        syncControl(imgOffsetY, 0);
+        syncControl(imgZoom, fitZoom);
       }
     }
 
@@ -7693,19 +8399,38 @@ async function runImageAI() {
     const label = ENHANCE_LABELS[data.mode] || ENHANCE_LABELS.restore;
     const engineLabel = data.engine || "AI";
     const why = requestedMode === "auto" && data.reason ? ` — ${data.reason}` : "";
-    setEnhanceStatus(`✓ ${label.done} via ${engineLabel}${why}. Re-pick a stock image to undo.`, "success");
+    // Fit changes what the reviewer is looking at as much as the job did, so
+    // it has to be named. Silently shrinking the picture inside the frame
+    // reads as a bug, not as the answer to the crop they never saw coming.
+    const fitted = (data.mode !== "expand" && plan.fit) ? ", fitted to show all of it" : "";
+    /* A cache hit is worth saying out loud. It is the difference between a
+       press that cost money and one that did not, and the reviewer is the
+       only person who can decide whether to keep pressing. */
+    const billed = data.cached ? " (from cache, no charge)" : "";
+    setEnhanceStatus(
+      `✓ ${label.done}${fitted} via ${engineLabel}${billed}${why}. Re-pick a stock image to undo.`,
+      "success",
+    );
   } catch (err) {
-    // Before the response lands there is no resolved mode, so the failure is
+    // Before the plan lands there is no resolved mode, so the failure is
     // named after what was asked for. On auto that is neither job yet.
     const failed = ENHANCE_LABELS[requestedMode]?.failed || "Enhance failed";
     setEnhanceStatus(`${failed}: ${err.message}`, "error");
   } finally {
     btn.classList.remove("working");
     btn.disabled = !state.mainImage;
+    // Re-read after "working" comes off: syncImageUndoUI() greys the undo out
+    // for the duration of a call, and nothing else would put it back on the
+    // failure path.
+    syncImageUndoUI();
   }
 }
 
 if (aiEnhanceBtn) aiEnhanceBtn.addEventListener("click", () => runImageAI());
+
+const imageUndoBtn = document.getElementById("image-undo-btn");
+if (imageUndoBtn) imageUndoBtn.addEventListener("click", () => revertImageToOriginal());
+syncImageUndoUI();
 
 /* ── Theme toggle (dark default; persisted in localStorage) ── */
 (function initThemeToggle() {

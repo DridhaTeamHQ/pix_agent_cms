@@ -6426,3 +6426,11 @@ select option[value=""] {
     max-width: none;
   }
 }
+
+/* The undo beside AI Enhance. btn-ghost is an inline chip everywhere else in
+   the app; here it sits directly under a full-width .btn-ai, so it matches
+   that width rather than floating half a box wide beneath it. */
+.btn-undo-image {
+  width: 100%;
+  margin-top: 8px;
+}

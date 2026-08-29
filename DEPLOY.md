@@ -2,17 +2,18 @@
 
 ## Architecture
 
-Two Railway services:
+One Railway service:
 
 | Service | Root Directory | What it is |
 |---|---|---|
-| **app** | `.` | `server.mjs` — frontend, every `/api/*` route, **and the video pipeline** |
-| **upscaler** | `upscaler` | AI Enhance (CodeFormer + Real-ESRGAN) |
+| **app** | `.` | `server.mjs` — frontend, every `/api/*` route, the video pipeline, and AI Enhance |
 
 `server.mjs` serves the static frontend and all API routes, and shells out to
-`ffmpeg` and `yt-dlp` for Slide 2 video. The upscaler stays separate because
-PyTorch plus model weights is a genuinely different runtime, not a binary you
-shell out to.
+`ffmpeg` and `yt-dlp` for Slide 2 video. There used to be a second service
+running a self-hosted upscaler (CodeFormer + Real-ESRGAN) that did AI Enhance
+for free; it was deleted in 4376ef6, and AI Enhance is now a paid OpenAI call
+on every press. If the bill matters more than the quality, that is the
+decision to revisit.
 
 The app builds from the root `Dockerfile` (node:20-slim + ffmpeg + the yt-dlp
 binary). **It cannot use Nixpacks** — that gives you Node without ffmpeg and
@@ -34,18 +35,15 @@ Set on the **app** service:
 | `SUPABASE_POOLER_URL` | **yes** | Supabase **Session pooler** URI. Accounts, sessions and saved posts all live in Postgres — without it nobody can sign in |
 | `YTDLP_COOKIES` | for YouTube | base64 `cookies.txt` from a **throwaway** account. Free, but expires in weeks–months |
 | `YTDLP_PROXY` | for YouTube | residential proxy URL, e.g. `http://user:pass@host:port`. Costs money, but never expires and risks no account |
-| `UPSCALER_URL` | for AI Enhance | upscaler domain, no trailing slash. Unset = falls back to paid gpt-image |
-| `UPSCALER_SECRET` | for AI Enhance | must match the upscaler service |
 | `SUPABASE_DIRECT_CONNECTION_URL` | fallback | Direct connection URI. Only used when the pooler URL is unset — `db.<ref>.supabase.co` is IPv6-only, so it fails unless the host has IPv6 or the IPv4 add-on |
 | `PEXELS_API_KEY` | optional | stock images. Unset = that source is skipped |
 | `FAL_KEY` | optional | Flux image generation (last-resort, paid) |
-| `IMAGE_QUALITY` | optional | `medium` (default). low ≈ $0.016, medium ≈ $0.06, high ≈ $0.25 per image |
+| `IMAGE_QUALITY` | optional | `medium` (default). low ≈ $0.013, medium ≈ $0.05, high ≈ $0.20 per image. The main cost lever — `high` is 4× medium |
+| `ENHANCE_RATE_MAX` | optional | `40`. Billed AI Enhances allowed per user per hour before a 429 |
+| `DISABLE_GPT_IMAGE` | optional | `1` switches AI Enhance off entirely (route returns 503) |
 | `MAX_CLIP_SECONDS` | optional | `90` |
 | `MAX_UPLOAD_BYTES` | optional | `314572800` (300 MB) |
 | `TWITTER_API_KEY` etc. | optional | only for `/api/twitter/post` |
-
-Set on the **upscaler** service: `UPSCALER_SECRET` (plus its own options —
-see [upscaler/README.md](upscaler/README.md)).
 
 **Do not set `PORT`.** Railway injects it; hard-coding it makes the container
 unreachable behind their proxy.
@@ -98,7 +96,6 @@ weeks to months — re-export when downloads start failing with a login error.
    (Dockerfile build, healthcheck `/health`).
 3. Add the variables above.
 4. **Settings → Networking → Generate Domain**
-5. Repeat as a second service with Root Directory `upscaler`.
 
 ## Verify
 
@@ -108,7 +105,7 @@ curl https://YOUR-APP.up.railway.app/health
 
 ```json
 {"ok":true,"uptime":42,
- "features":{"openai":true,"upscaler":true,"ffmpeg":true,
+ "features":{"openai":true,"ffmpeg":true,
              "ytdlp":true,"ytdlpCookies":true,"pexels":true,
              "database":true}}
 ```
@@ -158,7 +155,6 @@ pixAgent/
 │   ├── styles.css
 │   └── assests/
 ├── lib/                    ← shared helpers
-├── upscaler/               ← separate Railway service (AI Enhance)
 ├── api/                    ← DEAD: old Vercel serverless functions
 ├── netlify/                ← DEAD: stale Netlify mirror
 └── vercel.json             ← DEAD

@@ -20,7 +20,7 @@ import {
 import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
   login, logout, sessionUser, purgeExpiredSessions,
-  throttleCheck, throttleRecordFailure, throttleClear,
+  throttleCheck, throttleRecordFailure, throttleClear, createRateLimiter,
   ROLES, canReview, createUser, listUsers, setPassword, setUserActive, normaliseUsername, isAdmin, updateUser, deleteUser,
 } from "./lib/auth.js";
 import { handlePixRequest } from "./lib/pix-api.js";
@@ -160,9 +160,11 @@ if (twitterClient) {
 }
 
 /* ── OpenAI (for AI tweet captions) ── */
-// Enhance routing. The self-hosted upscaler is free; gpt-image is not, and
-// it is only ever a fallback. DISABLE_GPT_IMAGE turns that fallback into a
-// hard error so a broken upscaler cannot quietly become a bill.
+// Enhance routing. There is no free path: the self-hosted upscaler and the
+// local resampler were both deleted in 4376ef6, so gpt-image is the only
+// engine and every press is billed. DISABLE_GPT_IMAGE is now the only way to
+// stop the route spending money — it makes the route a hard 503 rather than
+// a silent fallback.
 const gptImageDisabled = /^(1|true|yes)$/i.test(env("DISABLE_GPT_IMAGE"));
 
 /* Read the quality actually in force rather than hardcoding a figure. It is
@@ -170,14 +172,39 @@ const gptImageDisabled = /^(1|true|yes)$/i.test(env("DISABLE_GPT_IMAGE"));
    log line goes stale the moment someone edits the variable — which is how
    you end up reassured by a message that is quietly wrong. */
 function enhanceCostLabel() {
-  const q = (process.env.IMAGE_QUALITY || "high").toLowerCase();
-  const per = { low: "~$0.011", medium: "~$0.042", high: "~$0.25" }[q] || "cost unknown";
+  const q = (process.env.IMAGE_QUALITY || "medium").toLowerCase();
+  // gpt-image-1.5 list price at the portrait/landscape shapes this route asks
+  // for (1024x1536 / 1536x1024). Square is cheaper; these are the figures that
+  // matter because sizeForRatio() follows the source and rarely returns square.
+  const per = { low: "~$0.013", medium: "~$0.05", high: "~$0.20" }[q] || "cost unknown";
   return `quality=${q}, ${per} each`;
 }
+/* ── The model ladder ──────────────────────────────────────────────────────
+
+   Both rungs are deprecated. Per OpenAI's deprecations page, `gpt-image-1.5`,
+   `gpt-image-1-mini` and `chatgpt-image-latest` shut down on 1 Dec 2026, and
+   every one of them names `gpt-image-2` as the replacement. Today is inside
+   that window, so the route works — but it stops working on a date, and until
+   now that date could only be answered with a deploy.
+
+   So the ladder is configuration. Set IMAGE_MODEL on the host and the
+   migration is a variable edit and a restart.
+
+   The DEFAULT stays on what is live and proven on this account today rather
+   than jumping to gpt-image-2 unprompted: a model this account has never
+   called is not the thing to discover in production, and the 400 branch below
+   cannot tell "no such model" from "bad parameter". Flip it deliberately,
+   and check the `engine` field of the response says what you set — see
+   §2.9 of IMAGES.md. */
+const IMAGE_MODEL_PRIMARY  = process.env.IMAGE_MODEL          || "gpt-image-1.5";
+const IMAGE_MODEL_FALLBACK = process.env.IMAGE_MODEL_FALLBACK || "gpt-image-1";
+
+const isGptImage2 = (model) => /^gpt-image-2/.test(String(model));
+
 if (gptImageDisabled) {
   console.log("Restore & Upscale is switched off (DISABLE_GPT_IMAGE).");
 } else {
-  console.log("Restore & Upscale: gpt-image (" + enhanceCostLabel() + ").");
+  console.log(`Restore & Upscale: ${IMAGE_MODEL_PRIMARY} (` + enhanceCostLabel() + `), falling back to ${IMAGE_MODEL_FALLBACK}.`);
 }
 
 const openaiApiKey = env("OPENAI_API_KEY");
@@ -4443,6 +4470,39 @@ const EXPAND_SUBJECTS = {
   ],
 };
 
+/* The failure this whole route has, stated to the model as a prohibition.
+
+   Every other rule in the expand prompt is about what the margin should
+   CONTAIN. This one is about what the result must not BE. The model's
+   preferred reading of "widen this picture" is not "show more of the scene",
+   it is "make a picture that has this picture in it" — and it will happily
+   satisfy every other constraint while doing so: no new people, no lettering,
+   perfect fidelity to the source, all of it true of a photograph sitting on a
+   table. The reported ghost was exactly that: the source shrunk into a
+   hard-edged rectangle in the middle of an invented landscape, reading as a
+   second image pasted over the first.
+
+   So it is named, in the terms it gets rendered in — a print, a screen, a
+   frame, a shadow, a second copy — rather than as the abstraction "do not
+   composite", which binds nothing. The composited path below makes this
+   structurally difficult too; this is what covers the case where the model
+   decides to draw a picture frame around a region it was told not to touch. */
+const EXPAND_NO_GHOST = [
+  "THE ONE THING THIS MUST NOT BE:",
+  "- The supplied image is not an OBJECT in the result. It is not a photo, a",
+  "  print, a poster, a billboard, a canvas, a card, a screen, a phone, a",
+  "  monitor or a television standing somewhere in a scene. It IS the scene,",
+  "  seen closer. The margin is more of that same physical space, at the same",
+  "  scale, in the same light.",
+  "- Draw NO border, frame, mount, mat, edge, outline, drop shadow, glow,",
+  "  rounded corner, bevel or vignette anywhere around it or across it.",
+  "- Draw the subject ONCE. No second copy of it, no smaller repeat, no",
+  "  reflection of it, no thumbnail, no version of it hanging on a wall or",
+  "  lying on a surface in the margin.",
+  "- Nothing in the margin may imply that the middle of the picture is a",
+  "  separate image. One photograph, one continuous space, one subject.",
+];
+
 /* ── Expand: the same picture, seen from further back ──
    The prompt is assembled per subject because the three want different things
    in the margin — see EXPAND_SUBJECTS above. What they share is the part that
@@ -4450,11 +4510,61 @@ const EXPAND_SUBJECTS = {
    Asked to widen a picture, the model will happily redraw the middle of it too
    and come back with a handsome stranger wearing the right shirt, or a
    wordmark whose letters are subtly not the brand's. input_fidelity=high is
-   the real control; the wording exists so the prompt does not argue with it. */
-function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject = "people") {
+   the real control; the wording exists so the prompt does not argue with it.
+
+   `composited` is the difference between asking and telling, and it is the
+   fix for the ghost.
+
+   FALSE is the old shape of this prompt: the model is handed the bare source
+   and told, in English, to "place the supplied photograph smaller within the
+   output frame". That sentence is a generation instruction and gets obeyed as
+   one — the model renders a scene and puts a picture in the middle of it. It
+   is kept only for the legacy single-shot path, which has no way to build a
+   frame, and that path now degrades to restore rather than run this. See the
+   note above handleUpscaleImage().
+
+   TRUE means the caller has already done the placing: the source is composited
+   onto a transparent canvas of exactly the output size, centred where it
+   should sit, with the margin left empty, and an alpha mask marks that margin
+   as the only paintable region. There is no placement left to ask for, so the
+   prompt does not ask — it describes the empty area and what belongs in it.
+   The geometry is a fact before the model sees it, which is the only way it
+   has ever been reliable. */
+function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject = "people", composited = false) {
   const pullBack = EXPAND_AMOUNTS[amount] || EXPAND_AMOUNTS.moderate;
   const kind = EXPAND_SUBJECTS[subject] ? subject : "people";
   const isGraphic = kind === "graphic";
+
+  /* What the model is being handed, and it is not the same thing in the two
+     cases. Composited, the input is already the output frame with a hole in
+     it; the job is to fill the hole. Uncomposited, the input is the picture
+     and the frame does not exist yet. Getting this sentence wrong is worse
+     than leaving it out — a model told to fill an empty margin on an image
+     that has none will invent one. */
+  const task = composited
+    ? [
+        "TASK:",
+        "The image you have been given is ALREADY the final frame. The sharp",
+        "picture in the middle of it sits at exactly the size and position it",
+        "must keep. The area around it is a BLURRED, LOW-DETAIL PLACEHOLDER —",
+        "the same photograph smeared out to fill the frame. It is scaffolding,",
+        "not content. Replace it.",
+        isGraphic
+          ? "Replace the blurred area with the background the subject actually sits on, continuing outward to every edge at its real tone and texture."
+          : "Replace the blurred area with the scene continuing outward from the sharp picture's edges, so that more of the subject and more of the setting are visible than the sharp picture shows — drawn at the same focus and detail as the sharp picture, not left soft.",
+        "Cover it completely, right to every edge and into every corner. Return",
+        "a fully opaque image: no transparency anywhere, at any point.",
+      ]
+    : [
+        "TASK:",
+        isGraphic
+          ? "Place the supplied image smaller within the output frame, centred, and fill everything around it by continuing the background it already sits on."
+          : "Place the supplied photograph smaller within the output frame and draw the scene continuing outward from its edges, so that more of the subject and more of the setting are visible than the photograph shows.",
+        pullBack,
+        ratioLabel
+          ? `The output frame is ${ratioLabel}. Fill it completely — the subject stays fully visible and central, never cropped, stretched or distorted.`
+          : null,
+      ];
 
   return [
     isGraphic
@@ -4464,16 +4574,7 @@ function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject
     "",
     description ? `CONTEXT — the image shows: ${description}` : null,
     "",
-    "TASK:",
-    isGraphic
-      ? "Place the supplied image smaller within the output frame, centred, and fill everything around it by continuing the background it already sits on."
-      : "Place the supplied photograph smaller within the output frame and draw",
-    isGraphic ? null : "the scene continuing outward from its edges, so that more of the subject",
-    isGraphic ? null : "and more of the setting are visible than the photograph shows.",
-    pullBack,
-    ratioLabel
-      ? `The output frame is ${ratioLabel}. Fill it completely — the subject stays fully visible and central, never cropped, stretched or distorted.`
-      : null,
+    ...task,
     "",
     "THE SUPPLIED IMAGE IS UNCHANGED:",
     isGraphic
@@ -4490,10 +4591,12 @@ function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject
     "- No visible seam, border, frame, vignette or change in sharpness where",
     "  the supplied image ends and the drawn margin begins.",
     "",
+    ...EXPAND_NO_GHOST,
+    "",
     isGraphic
       ? "The result is the same mark on a larger field of its own background. Nothing added, nothing written, nothing invented."
       : "The result is one clean, believable press photograph of the same moment,",
-    isGraphic ? null : "shot wider. No lettering, no collage, no illustration.",
+    isGraphic ? null : "shot wider. No lettering, no collage, no picture-in-picture, no illustration.",
   ].filter((line) => line !== null).join("\n");
 }
 
@@ -4510,7 +4613,37 @@ function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject
 
    Framing belongs to the poster canvas, which crops and pans under the
    writer's control using real pixels. The model's only job here is detail. */
-function sizeForRatio(_posterRatioNoLongerUsed, orientationHint) {
+function sizeForRatio(_posterRatioNoLongerUsed, orientationHint, sourceW = 0, sourceH = 0) {
+  /* A square source belongs at 1024x1024, and it is also the cheapest shape
+     OpenAI sells — $0.034 against $0.05 at medium. The browser only ever
+     reports "landscape" or "portrait" (`rawW >= rawH`, app.js), so without
+     this a square logo was billed at 1536x1024 AND asked to grow sideways.
+     Read from the real pixel dimensions, not the poster: the poster's ratio
+     driving size is the overlay bug this whole function exists to prevent. */
+  if (sourceW > 0 && sourceH > 0) {
+    const aspect = sourceW / sourceH;
+    if (aspect > 0.95 && aspect < 1.05) return "1024x1024";
+
+    /* On gpt-image-2, the source's OWN shape — not the nearest of three.
+
+       Restore is the job that is supposed to invent nothing, and bucketing
+       every landscape to 3:2 broke that on its most common input: a 16:9
+       press photo asked back at 1536x1024 has to grow about 15% of vertical
+       content it never had, on the one call whose entire prompt forbids
+       inventing anything. This function's own preamble claims to prevent
+       exactly that and could only do it for squares, because three shapes
+       were all there were.
+
+       It is also a real upscale rather than a reshape: 1920 on the long edge
+       against the 1536 the older rungs cap at. */
+    if (isGptImage2(IMAGE_MODEL_PRIMARY)) {
+      const long = 1920;
+      const built = aspect >= 1
+        ? gptImage2Size(long, long / aspect)
+        : gptImage2Size(long * aspect, long);
+      if (built) return built;
+    }
+  }
   if (orientationHint === "landscape") return "1536x1024";
   if (orientationHint === "portrait")  return "1024x1536";
   // Unknown: let the model match the input rather than guess from the poster.
@@ -4562,6 +4695,31 @@ function coverCropLoss(sourceW, sourceH, posterRatio) {
    off a frame that now has margin to spare, which is the point of the
    exercise. */
 function sizeForExpand(ratio, orientationHint) {
+  /* On gpt-image-2 the poster's ratio is not approximated, it is ASKED FOR.
+
+     The three fixed shapes are why a 9:16 card gets a 2:3 frame and then
+     trims a fifth of its width away — the mismatch posterVisibleRect() on the
+     client exists to absorb, at the cost of placing the photograph smaller
+     than it needed to be. gpt-image-2 takes arbitrary dimensions, so on that
+     rung the frame is simply built at the shape the poster actually is and
+     almost nothing is trimmed.
+
+     Falls through to the standard shapes if the arithmetic cannot produce a
+     legal size, and callEdit() degrades it again for the older rungs, so a
+     failed flip is a worse frame rather than a broken call. */
+  if (isGptImage2(IMAGE_MODEL_PRIMARY)) {
+    const target = RATIO_VALUES[ratio];
+    if (target) {
+      // Long edge 1920 keeps a 9:16 frame at 1088x1920 — inside every
+      // documented bound, and a real upscale over the 1536 the old rungs cap
+      // at rather than a differently-shaped version of the same pixels.
+      const long = 1920;
+      const built = target < 1
+        ? gptImage2Size(long * target, long)
+        : gptImage2Size(long, long / target);
+      if (built) return built;
+    }
+  }
   switch (ratio) {
     case "9:16":
     case "4:5":  return "1024x1536";
@@ -4787,291 +4945,759 @@ async function planEnhance(buffer, mime, { posterRatio = "", sourceW = 0, source
   }
 }
 
-// Primary engine: the self-hosted CodeFormer + Real-ESRGAN service on Railway
-// (pixel-faithful, never regenerates faces). Returns a PNG data URL, or null
-// if the service isn't configured / errors / times out — caller then falls
-async function handleUpscaleImage(req, res) {
-  /* No OpenAI key needed to sharpen a picture. The local path below is
-     arithmetic, and gating the whole route on a key it may never use turned a
-     missing credential into "enhance is broken". */
+/* ── AI Enhance ──────────────────────────────────────────────────────────
+   One route, three entry points, picked by X-Enhance-Stage.
 
-  try {
-    // Read raw image body (10 MB cap)
-    const MAX_BYTES = 10 * 1024 * 1024;
-    const chunks = [];
-    let total = 0;
-    for await (const chunk of req) {
-      total += chunk.length;
-      if (total > MAX_BYTES) {
-        sendJson(res, 413, { error: "Image exceeds 10 MB." });
+     plan   Look at the picture and answer what it needs: restore or expand,
+            how far to pull back, what kind of subject it is, and — the part
+            that matters below — the exact output size the caller must build
+            for. Cheap (gpt-4o-mini), spends no image credits, returns no
+            picture. All of the deciding happens here; the edit stage only
+            executes what it was told.
+
+     edit   Do the job. Multipart: `image`, an optional alpha `mask`, and the
+            plan echoed back as fields so stage 1 is not paid for twice.
+
+     (none) Legacy single-shot — plan and edit in one call, raw image body.
+            It cannot composite a frame or supply a mask, so an expand verdict
+            degrades to restore rather than outpainting blind.
+
+   WHY THE SPLIT — this is the ghost.
+
+   An expand has to place the photograph inside a larger frame, and until now
+   the placing was ASKED FOR, in English: "place the supplied photograph
+   smaller within the output frame and draw the scene continuing outward".
+   gpt-image reads that as what it says. It generates a scene and puts a
+   picture in the middle of it. What came back was a photograph of a
+   photograph — the real subject shrunk into a hard-edged rectangle floating
+   in an invented landscape, with the invented landscape reading as the "real"
+   image and the source reading as a second, ghostly one pasted on top. No
+   amount of "no visible seam, border or frame" survives an instruction that
+   literally asks for an inset.
+
+   Geometry is not a thing to ask a model for. It is arithmetic, and it should
+   be true before the model is called at all. It cannot be done here — there
+   is no image library on this server — but the browser already has the
+   picture decoded in a canvas, so it composites the source onto a frame of
+   exactly `size`, leaves the margin transparent, and sends an alpha mask that
+   is opaque over the source. The model is handed a fact instead of a request:
+   it cannot move, rescale or re-render what it was given, and the prompt
+   stops negotiating about placement and only describes what fills the margin.
+   See buildExpandPrompt(). */
+
+// gpt-image-1/1.5's output shapes. A size arriving from a browser is checked
+// against this rather than trusted — it is what OpenAI gets billed for.
+const ENHANCE_SIZES = new Set(["1024x1024", "1024x1536", "1536x1024", "auto"]);
+
+/* gpt-image-2 takes arbitrary dimensions, and the constraints are quoted from
+   the image-generation guide: "Maximum edge length must be less than or equal
+   to 3840px", "Both edges must be multiples of 16px", "Long edge to short edge
+   ratio must not exceed 3:1", "Total pixels must be at least 655,360 and no
+   more than 8,294,400".
+
+   That is the door to asking for a REAL 9:16 instead of the 2:3 the older
+   models force, which is the mismatch posterVisibleRect() exists to absorb.
+   The builder is here and correct so that the migration is one decision
+   rather than a second round of arithmetic. */
+function gptImage2Size(w, h) {
+  const round16 = (n) => Math.max(16, Math.round(n / 16) * 16);
+  let W = round16(w);
+  let H = round16(h);
+  if (Math.max(W, H) > 3840) {
+    const k = 3840 / Math.max(W, H);
+    W = round16(W * k);
+    H = round16(H * k);
+  }
+  const ratio = Math.max(W, H) / Math.min(W, H);
+  if (ratio > 3) return null;                       // 3:1 is the documented cap
+  const px = W * H;
+  if (px < 655_360 || px > 8_294_400) return null;
+  return `${W}x${H}`;
+}
+
+/* The nearest shape gpt-image-1/1.5 will actually accept.
+
+   The fallback rung is the reason this exists. `size` is resolved once, before
+   the model is known, and the retry ladder re-sends it — so an arbitrary
+   1088x1920 chosen for gpt-image-2 would be handed verbatim to gpt-image-1.5,
+   which 400s, then the mask-drop retry 400s, and a route that was merely
+   degraded becomes a hard 502. Every rung must be able to answer the request
+   it is given. */
+function nearestStandardSize(size) {
+  const m = /^(\d{3,5})x(\d{3,5})$/.exec(String(size || ""));
+  if (!m) return ENHANCE_SIZES.has(size) ? size : "auto";
+  const aspect = Number(m[1]) / Number(m[2]);
+  if (aspect > 1.15) return "1536x1024";
+  if (aspect < 0.87) return "1024x1536";
+  return "1024x1024";
+}
+
+/* What stage 2 will accept back from the browser. A plain Set could not
+   express "any legal gpt-image-2 shape", and coercing an unrecognised size to
+   "auto" is not harmless here: the client has already composited its frame at
+   that exact size, and "auto" lets the model rescale the composite, which is
+   the whole thing compositing exists to prevent. */
+function validEnhanceSize(size) {
+  if (ENHANCE_SIZES.has(size)) return size;
+  const m = /^(\d{3,5})x(\d{3,5})$/.exec(String(size || ""));
+  if (m && gptImage2Size(Number(m[1]), Number(m[2])) === size) return size;
+  return "auto";
+}
+
+/* ── Result cache ──────────────────────────────────────────────────────────
+   Every press of AI Enhance is a fresh charge — there is no free path since
+   the self-hosted upscaler was deleted. The UI actively invites re-pressing
+   ("Re-pick a stock image to undo"), and a reviewer comparing two results, a
+   stale second tab, or a reload all re-bill at full price for a byte-identical
+   input. Nothing here changes what the model returns; it only stops paying
+   twice for the same question.
+
+   Keyed on the input bytes AND every parameter that changes the answer or the
+   price — quality included, so lowering IMAGE_QUALITY does not keep serving
+   the expensive result that was cached under the old tier.
+
+   In-process and deliberately so: a restart costing one repeat call is a fair
+   trade against a cache that can serve a stale image across a deploy. The
+   entries are base64 PNGs, so the cap is on total bytes, not on count. */
+/* A spend cap, not a security control — the role gate above is that. This is
+   what stands between the account and a stuck tab, a retry loop, or a
+   reviewer working through a backlog faster than anyone intended. It counts
+   calls that were actually BILLED: a cache hit costs nothing and must not
+   consume anyone's allowance, so recording happens after the paid call
+   returns rather than at the door.
+
+   ENHANCE_RATE_MAX is generous on purpose. A reviewer doing real work will
+   not reach it; something looping will reach it in seconds. */
+const ENHANCE_RATE_MAX = Number(process.env.ENHANCE_RATE_MAX) || 40;
+const ENHANCE_RATE_WINDOW_MS = 60 * 60_000;
+const enhanceLimiter = createRateLimiter({
+  windowMs: ENHANCE_RATE_WINDOW_MS,
+  max: ENHANCE_RATE_MAX,
+});
+
+const ENHANCE_CACHE_MAX_BYTES = 96 * 1024 * 1024;
+const ENHANCE_CACHE_TTL_MS = 60 * 60_000;
+const enhanceCache = new Map();
+let enhanceCacheBytes = 0;
+
+/* `mask` is BYTES here, not the { buffer, mime } wrapper readEnhanceEdit()
+   resolves. Handed the wrapper, hash.update() throws
+   ERR_INVALID_ARG_TYPE — "must be of type string or an instance of Buffer,
+   TypedArray, or DataView. Received an instance of Object" — and because this
+   runs before the OpenAI call, EVERY masked expand died here with a 500 whose
+   body was the raw TypeError. The route's own feature was unreachable.
+
+   Unwrapped at the call site, and defended here as well: the split where the
+   image was unwrapped and the mask was not is exactly what invited it.
+   `Buffer.isBuffer` rather than `mask.buffer || mask` — a real Buffer's
+   `.buffer` is the 64KB pooled ArrayBuffer it was allocated from, which
+   hash.update() rejects too, so the tempting one-liner reintroduces the crash
+   by another route AND would key on the wrong bytes if it did not. */
+function enhanceCacheKey(buffer, mask, parts) {
+  const h = createHash("sha256").update(buffer);
+  // The mask changes the output as much as the prompt does, so it has to be
+  // part of the identity — two expands of one photo at different amounts
+  // carry different masks and must not collide.
+  if (mask) h.update(Buffer.isBuffer(mask) ? mask : mask.buffer);
+  return h.update(JSON.stringify(parts)).digest("hex");
+}
+
+function enhanceCacheGet(key) {
+  const hit = enhanceCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > ENHANCE_CACHE_TTL_MS) {
+    enhanceCache.delete(key);
+    enhanceCacheBytes -= hit.bytes;
+    return null;
+  }
+  // Refresh insertion order so a repeatedly-used result is the last evicted.
+  enhanceCache.delete(key);
+  enhanceCache.set(key, hit);
+  return hit.payload;
+}
+
+function enhanceCacheSet(key, payload) {
+  const bytes = payload.image ? payload.image.length : 0;
+  if (bytes === 0 || bytes > ENHANCE_CACHE_MAX_BYTES) return;
+  enhanceCache.set(key, { payload, bytes, at: Date.now() });
+  enhanceCacheBytes += bytes;
+  // Map preserves insertion order, so the first key is the least recently used.
+  while (enhanceCacheBytes > ENHANCE_CACHE_MAX_BYTES && enhanceCache.size > 1) {
+    const oldest = enhanceCache.keys().next().value;
+    enhanceCacheBytes -= enhanceCache.get(oldest).bytes;
+    enhanceCache.delete(oldest);
+  }
+}
+
+// The composited expand frame is a full-size RGBA PNG and runs larger than
+// the source did, so this sits above the old 10 MB raw-body cap.
+const MAX_ENHANCE_BYTES = 12 * 1024 * 1024;
+
+function enhanceMime(contentType) {
+  return String(contentType || "").includes("jpeg") ? "image/jpeg" : "image/png";
+}
+
+/* Raw image body — the plan stage and the legacy single-shot path. */
+async function readEnhanceBody(req) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_ENHANCE_BYTES) {
+      const err = new Error(`Image exceeds ${Math.round(MAX_ENHANCE_BYTES / 1048576)} MB.`);
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(chunk);
+  }
+  const buffer = Buffer.concat(chunks);
+  if (buffer.length < 1000) {
+    const err = new Error("Empty or invalid image body.");
+    err.status = 400;
+    throw err;
+  }
+  return buffer;
+}
+
+/* Multipart body — the edit stage. At most two files: the picture, and on an
+   expand the alpha mask that pins it in place. Everything else is a field
+   carrying the plan stage's answer back, so the vision call is not repeated. */
+function readEnhanceEdit(req) {
+  return new Promise((resolve, reject) => {
+    let bb;
+    try {
+      bb = Busboy({ headers: req.headers, limits: { files: 2, fileSize: MAX_ENHANCE_BYTES } });
+    } catch (err) {
+      reject(new Error("Malformed enhance upload: " + err.message));
+      return;
+    }
+
+    /* Chunks are accumulated per part and joined at close rather than on each
+       stream's own end event. Busboy only guarantees ordering between "close"
+       and the file streams it has been allowed to drain, and a mask that
+       arrives half-assembled is worse than one that never arrives: it would
+       pin the picture to the wrong rectangle. */
+    const parts = { image: [], mask: [] };
+    const mimes = {};
+    const fields = {};
+    let tooBig = false;
+
+    bb.on("field", (name, value) => { fields[name] = value; });
+    bb.on("file", (name, stream, info) => {
+      if (name !== "image" && name !== "mask") { stream.resume(); return; }
+      mimes[name] = info.mimeType || "image/png";
+      stream.on("data", (d) => parts[name].push(d));
+      stream.on("limit", () => { tooBig = true; });
+    });
+
+    bb.on("error", reject);
+    bb.on("close", () => {
+      if (tooBig) {
+        reject(new Error(`Image exceeds ${Math.round(MAX_ENHANCE_BYTES / 1048576)} MB.`));
         return;
       }
-      chunks.push(chunk);
-    }
-    const buffer = Buffer.concat(chunks);
-    if (buffer.length < 1000) {
-      sendJson(res, 400, { error: "Empty or invalid image body." });
-      return;
-    }
-    const mime = req.headers["content-type"]?.includes("jpeg") ? "image/jpeg" : "image/png";
-    const headline = decodeURIComponent(req.headers["x-headline"] || "").trim().slice(0, 200);
-
-    /* Two jobs behind one route, and a third value that picks between them.
-
-         restore  keep the framing, recover detail.
-         expand   keep the photograph, widen the frame, draw the rest of the
-                  subject and setting outward into it.
-         auto     let stage 1 look at the photograph and choose. What the UI
-                  sends unless a reviewer has overridden it.
-
-       restore and expand differ in three places below — the vision prompt,
-       the requested size and the edit prompt — and in nothing else, so they
-       share the transport, the model fallback, the quality rule and the error
-       handling. auto is not a fourth path: it resolves to one of the two
-       before any of that runs.
-
-       The DEFAULT here is restore, not auto, and deliberately so. This header
-       is the only thing standing between a caller that knows nothing about
-       any of this and a reframe it never asked for; a request that says
-       nothing should get the job that invents nothing. The UI asks for auto
-       explicitly, in one place, where the choice is visible.
-
-       An unrecognised value falls back to restore rather than 400ing, for the
-       same reason: this is a header on a route that already works, and a
-       client sending something odd should get the conservative behaviour, not
-       a failure. */
-    const rawMode = (req.headers["x-enhance-mode"] || "restore").toString().toLowerCase();
-    const requestedMode = ["auto", "expand", "restore"].includes(rawMode) ? rawMode : "restore";
-    // How far to pull back, when a reviewer has forced expand. Prompt-level,
-    // so it is a request rather than a measurement — the model lands near it,
-    // not on it. On the auto path stage 1 sets this instead.
-    const rawAmount = (req.headers["x-expand-amount"] || "moderate").toString().toLowerCase();
-    const requestedAmount = ["slight", "moderate", "wide"].includes(rawAmount) ? rawAmount : "moderate";
-    /* The source's real pixel dimensions, for the planner. Aspect alone is not
-       enough to answer "can this picture afford to be made smaller inside the
-       output" — a 400px crop and a 3000px one have the same shape and opposite
-       answers. Sent by the browser, which has the decoded image in hand. */
-    const srcDims = (req.headers["x-source-size"] || "").toString().match(/^(\d{1,5})x(\d{1,5})$/);
-    const sourceW = srcDims ? Number(srcDims[1]) : 0;
-    const sourceH = srcDims ? Number(srcDims[2]) : 0;
-
-    /* One engine: gpt-image restores the photograph.
-
-       There used to be three paths here — a self-hosted Real-ESRGAN service,
-       a local lanczos resampler, and the model — tried in order. That is what
-       "two layers" looked like from the outside: the same button could return
-       three different kinds of picture depending on what happened to be
-       reachable, and the resampler had quietly become the default, so clicking
-       Enhance ran arithmetic and never called the model at all. The service is
-       deleted and the resampler is gone. This route does one thing. */
-
-    // The paid fallback is opt-out. Without this guard a momentary failure of
-    // the self-hosted upscaler silently spends OpenAI credits — the caller
-    // still gets an enhanced image, so nothing looks wrong until the bill
-    // arrives. Set DISABLE_GPT_IMAGE=true to make that spend impossible and
-    // surface the real problem instead.
-    if (!openaiApiKey) {
-      sendJson(res, 503, { error: "Generative restore needs OPENAI_API_KEY on the server." });
-      return;
-    }
-    if (gptImageDisabled) {
-      console.warn("⚠ upscaler unavailable and DISABLE_GPT_IMAGE is set — refusing to spend OpenAI credits");
-      sendJson(res, 503, {
-        error: "Restore & Upscale is switched off on this server (DISABLE_GPT_IMAGE).",
+      const image = Buffer.concat(parts.image);
+      const mask = Buffer.concat(parts.mask);
+      if (image.length < 1000) {
+        reject(new Error("No usable `image` part in the upload."));
+        return;
+      }
+      resolve({
+        image: { buffer: image, mime: mimes.image || "image/png" },
+        // A truncated or absent mask is simply no mask. The expand still runs
+        // — the frame is composited either way — it just loses the guarantee
+        // that the model cannot paint inside the picture.
+        mask: mask.length > 100 ? { buffer: mask, mime: mimes.mask || "image/png" } : null,
+        fields,
       });
-      return;
+    });
+
+    req.pipe(bb);
+  });
+}
+
+/* The two ways this route can be unavailable without anything being broken.
+   Checked before the vision call as well as before the image call: planning a
+   job that cannot then be run is a call nobody gets anything for. */
+function enhanceBlocked() {
+  if (!openaiApiKey) {
+    return { status: 503, error: "Generative restore needs OPENAI_API_KEY on the server." };
+  }
+  if (gptImageDisabled) {
+    console.warn("⚠ DISABLE_GPT_IMAGE is set — refusing to spend OpenAI credits");
+    return { status: 503, error: "Restore & Upscale is switched off on this server (DISABLE_GPT_IMAGE)." };
+  }
+  return null;
+}
+
+/* Stage 2 — the paid call, and nothing else. Every choice it acts on was made
+   in the plan stage; this reads them, builds the prompt, and posts.
+
+   `composited` is the caller saying "the frame is already built": the source
+   drawn into a transparent canvas of exactly `size`, margin left empty. It is
+   what lets buildExpandPrompt() drop the placement sentence, and it is what
+   makes the mask meaningful — a mask over an un-composited source would pin
+   the picture to a frame it does not fill. */
+async function runEnhanceEdit({
+  buffer,
+  mime,
+  mask = null,
+  composited = false,
+  mode,
+  amount = "moderate",
+  subject = "people",
+  description = "",
+  headline = "",
+  posterRatio = "",
+  size = "auto",
+  decidedBy = "caller",
+  reason = "",
+  // Called once, only when OpenAI was actually paid. A cache hit returns
+  // before this and so never consumes the caller's hourly allowance.
+  onCharge = null,
+}) {
+  /* MEDIUM, deliberately. This is the setting that decides both what a face
+     comes back looking like and what the call costs.
+
+     `quality` is how much compute the model spends rendering detail —
+     OpenAI's own default is high, and this route used to force low to save
+     money (~$0.013 low against ~$0.05 medium). Starved of that budget the
+     model returns smooth, waxy, under-detailed surfaces, which on a face
+     reads as modelling clay. No prompt can undo it: you cannot instruct a
+     model to render texture it has no budget to render.
+
+     The default is `medium`, not `high`. High is four times the price at the
+     shapes this route asks for (~$0.20 against ~$0.05) and the poster draws
+     the photograph behind a dark gradient with copy over it, so the extra
+     rendering budget is spent on detail the reader never sees. It went to
+     `high` in dbcdb0f on the same day the free self-hosted upscaler was
+     deleted, and the two together are what turned a near-zero bill into a
+     real one.
+
+     IMAGE_QUALITY still overrides per deployment, in both directions, and the
+     boot log states the tier actually in force. */
+  const quality = (process.env.IMAGE_QUALITY || "medium").toLowerCase();
+  if (quality === "low") {
+    console.warn("⚠ IMAGE_QUALITY=low — faces come back smooth and clay-like. medium is the intended floor.");
+  } else if (quality === "high") {
+    console.warn("⚠ IMAGE_QUALITY=high — roughly 4× the price of medium (~$0.20 vs ~$0.05 per enhance).");
+  }
+
+  /* An expand whose frame was not built by the caller cannot be done here.
+     There is no image library on this server to build it with, and asking for
+     it in prose is exactly the instruction that returned a photograph inside a
+     photograph. Fall back to the job that invents nothing, and say so in the
+     response rather than quietly handing back a differently-shaped picture. */
+  let job = mode === "expand" ? "expand" : "restore";
+  let jobReason = reason;
+  if (job === "expand" && !composited) {
+    console.warn("⚠ expand asked for without a composited frame — restoring instead");
+    job = "restore";
+    jobReason = "expand needs a pre-composited frame from the browser; restored instead";
+  }
+
+  /* Ask the cache before OpenAI. `description` is in the key because it is
+     built into the prompt, so two plans that read the same photograph
+     differently are genuinely different requests. `decidedBy`, `reason` and
+     `masked` are not — they are reporting, and a hit rebuilds them from the
+     stored payload below. */
+  const cacheKey = enhanceCacheKey(buffer, mask?.buffer ?? null, {
+    job, amount: job === "expand" ? amount : null, subject,
+    description, headline, posterRatio, size, quality, composited,
+  });
+  const cached = enhanceCacheGet(cacheKey);
+  if (cached) {
+    console.log(`✓ AI ${job} served from cache (${size}, quality=${quality}) — no charge`);
+    // The reporting fields belong to THIS request, not the one that paid.
+    return { ...cached, decidedBy, reason: jobReason, cached: true };
+  }
+
+  const prompt = job === "expand"
+    ? buildExpandPrompt(description, posterRatio, amount, subject, composited)
+    : buildEnhancePrompt(description, headline, posterRatio);
+
+  const t0 = Date.now();
+
+  /* Every parameter that is not portable across the ladder is derived from
+     the model HERE, not captured once above.
+
+     `size` is resolved in handleEnhancePlan, before anything knows which rung
+     will serve, and `input_fidelity` used to be appended unconditionally. Both
+     are model-specific, and getting that wrong is silent in the worst way: the
+     guide says of gpt-image-2, "omit this parameter; the API doesn't allow
+     changing it because the model processes every image input at high fidelity
+     automatically". So a one-line swap of the model id 400s on every single
+     press, falls through to the deprecated rung, and keeps working — at which
+     point the migration looks done and has not started. */
+  const callEdit = async (model, withMask) => {
+    const g2 = isGptImage2(model);
+    const form = new FormData();
+    form.append("model", model);
+    form.append("prompt", prompt);
+    form.append("size", g2 ? size : nearestStandardSize(size));
+    form.append("quality", quality);
+    // gpt-image-2 is unconditionally high-fidelity and REJECTS the parameter;
+    // on the older rungs it is the identity-preservation control and the thing
+    // standing between a restore and a handsome stranger in the right shirt.
+    if (!g2) form.append("input_fidelity", "high");
+    /* NEVER "auto", which is the default.
+
+       Handed an input that carries an alpha channel, gpt-image is entitled to
+       answer with one, and it does. A returned PNG whose margin is still
+       transparent is drawn by drawCoverImage() with no backing fill, so the
+       card's own pale backdrop shows through it with a hairline where the
+       alpha edge was antialiased — the washed-out field with a thin white
+       rectangle around the photograph that was reported the second time.
+       There is no case on this route where a transparent result is wanted:
+       the output is a background photograph. */
+    form.append("background", "opaque");
+    form.append("output_format", "png");
+    form.append("image", new Blob([buffer], { type: mime }), mime === "image/jpeg" ? "input.jpg" : "input.png");
+    /* The mask's transparent pixels are the only ones the model may paint.
+       On an expand that is the margin and nothing else, which is what makes
+       "keep the supplied image unchanged" a constraint rather than a wish. */
+    if (withMask && mask) {
+      form.append("mask", new Blob([mask.buffer], { type: "image/png" }), "mask.png");
     }
+    return fetch("https://api.openai.com/v1/images/edits", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${openaiApiKey}` },
+      body: form,
+    });
+  };
 
-    // else fall through to gpt-image-1.5 ↓
+  let modelUsed = IMAGE_MODEL_PRIMARY;
+  let usedMask = Boolean(mask) && job === "expand";
+  let aiRes = await callEdit(modelUsed, usedMask);
 
-    const posterRatio = (req.headers["x-poster-ratio"] || "").toString();
-    const sizeHint = (req.headers["x-image-orientation"] || "").toString();
+  /* Two different retries, and they must not be confused with each other.
 
-    /* HIGH, deliberately. This is the setting that decides whether skin comes
-       back as skin or as clay.
+     A 400/403/404 on the FIRST call usually means the account has no
+     gpt-image-1.5, so the same request is repeated on gpt-image-1. If that
+     also refuses and a mask was attached, the mask is the next most likely
+     thing the account or model will not take, so it is dropped and the call
+     is repeated once more. Dropping it is survivable precisely because the
+     frame is already composited: the geometry stays correct, only the
+     guarantee that the source pixels are untouched is lost — and the caller
+     pastes them back over the result anyway. */
+  if (!aiRes.ok && [400, 403, 404].includes(aiRes.status)) {
+    const firstErr = await aiRes.text().catch(() => "");
+    console.warn(`⚠ ${IMAGE_MODEL_PRIMARY} unavailable (${aiRes.status}) — falling back to ${IMAGE_MODEL_FALLBACK}:`, firstErr.slice(0, 160));
+    modelUsed = IMAGE_MODEL_FALLBACK;
+    aiRes = await callEdit(modelUsed, usedMask);
+  }
+  if (!aiRes.ok && usedMask && [400, 422].includes(aiRes.status)) {
+    const maskErr = await aiRes.text().catch(() => "");
+    console.warn(`⚠ masked edit refused (${aiRes.status}) — retrying without the mask:`, maskErr.slice(0, 160));
+    usedMask = false;
+    aiRes = await callEdit(modelUsed, false);
+  }
 
-       `quality` is how much compute the model spends rendering detail —
-       OpenAI's own default is high, and this route used to force low to save
-       money (~$0.011 low against ~$0.042 medium). Starved of that budget the
-       model returns smooth, waxy, under-detailed surfaces, which on a face
-       reads as modelling clay. No prompt can undo it: you cannot instruct a
-       model to render texture it has no budget to render. The old comment
-       here argued the detail was thrown away by DailyMattr's re-encode
-       anyway; the clay proved otherwise.
+  if (!aiRes.ok) {
+    const errText = await aiRes.text().catch(() => "");
+    console.error(`✗ ${modelUsed} ${aiRes.status}:`, errText.slice(0, 400));
+    const err = new Error(`OpenAI image ${aiRes.status}`);
+    err.status = 502;
+    err.detail = errText.slice(0, 300);
+    throw err;
+  }
 
-       IMAGE_QUALITY still overrides per deployment, and if it is set to `low`
-       in the environment the clay comes straight back — the boot log says so
-       explicitly when that happens. */
-    const quality = (process.env.IMAGE_QUALITY || "high").toLowerCase();
-    if (quality === "low") {
-      console.warn("⚠ IMAGE_QUALITY=low — faces will come back smooth and clay-like. Unset it or use high.");
-    }
+  const data = await aiRes.json();
+  const b64 = data?.data?.[0]?.b64_json;
+  if (!b64) {
+    const err = new Error("OpenAI returned no image data.");
+    err.status = 502;
+    throw err;
+  }
 
-    const t0 = Date.now();
+  console.log(
+    `✓ AI ${job} done in ${Date.now() - t0}ms (${modelUsed}, ${size}, quality=${quality}` +
+    `${job === "expand" ? `, ${amount}, ${usedMask ? "masked" : "unmasked"}` : ""}, chosen by ${decidedBy})`
+  );
 
-    /* Stage 1 — look at the picture (cheap, fails soft).
-
-       The planner runs on EVERY path, not only on auto. It used to be one of
-       two describe prompts, picked by the mode the caller asked for, and that
-       left the forced-expand path with no idea what it was widening — the
-       margin around a logo and the margin around a seated politician are not
-       the same job, and the prompt that draws one wrecks the other. The
-       planner is the thing that knows which, so it answers first and the
-       caller's choice is applied to its answer.
-
-       On auto its verdict stands. On a forced mode the verdict is discarded
-       and the description and subject are kept. Same call either way, same
-       cost either way — a forced mode is not cheaper, it is just less
-       advised. */
-    const plan = await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
-    const wantedMode = requestedMode === "auto" ? plan.mode : requestedMode;
-
-    /* ── Expand is off, and this is the gate ──────────────────────────────
-       Expand shipped today and went straight out with a picture-in-picture
-       in it: two published posters came back with the source photograph
-       rendered as a framed print — a hard white border and all — sitting in
-       the middle of a scene the model invented around it.
-
-       It is not a wording bug. Three things make it structural:
-
-         1. buildExpandPrompt's TASK line asks the model to "place the
-            supplied photograph smaller within the output frame". With no
-            mask, the most literal reading of that is to draw the photograph
-            as an object inside the picture, and that is what came back. The
-            only thing arguing otherwise is a NEGATIVE line thirty lines
-            below ("no visible seam, border, frame, vignette"), and naming a
-            frame is as likely to cue one as forbid it.
-         2. No mask and no padded canvas is sent, so images/edits is not
-            filling a margin — it regenerates the whole canvas conditioned on
-            the input. Nothing pins the original's pixels in place.
-         3. Expand asks for the POSTER's ratio, which is the exact condition
-            sizeForRatio's own comment below already identifies as "what
-            produced the overlay" the last time this happened.
-
-       The fix for (2) is real outpainting: pad the source onto a transparent
-       canvas at the target size in the browser, where the decoded image
-       already is, and send image + mask so the model can only paint the
-       margin. That is the follow-up, and it needs verifying against real
-       gpt-image calls before it goes anywhere near a published card — which
-       is the step expand skipped.
-
-       Until then the route resolves every request to restore. The planner
-       still runs: it is where `description` and `subject` come from, and the
-       restore prompt is built on them. Only its verdict is dropped. */
-    const mode = "restore";
-    const expandSuppressed = wantedMode === "expand";
-    const expandAmount = requestedMode === "auto" ? plan.amount : requestedAmount;
-    const decidedBy = expandSuppressed ? "expand-disabled" : (requestedMode === "auto" ? plan.decidedBy : "caller");
-    /* Written for the reviewer, not the log. They pressed one button on a
-       photograph the planner judged too wide for the poster, and they are
-       owed the reason it came back at the same framing anyway. */
-    const reason = expandSuppressed
-      ? "kept the framing — zoom-out is switched off while it is rebuilt"
-      : (requestedMode === "auto" ? plan.reason : "");
-    const { subject, description } = plan;
-
-    console.log(
-      `✓ plan (${Date.now() - t0}ms): ${subject} → ${mode}` +
-      // Say when a verdict was overruled, so the logs do not read as though
-      // the planner chose restore on the merits.
-      `${expandSuppressed ? ` (wanted expand / ${expandAmount} — suppressed)` : ` (${decidedBy})`}` +
-      `${reason ? ` — ${reason}` : ""}`
-    );
-    if (description) console.log(`✓ vision context: ${description.slice(0, 140)}…`);
-
-    /* Which shape to ask for is the resolved mode's decision, and the two want
-       opposite things — see sizeForRatio() and sizeForExpand().
-
-       Restore follows the SOURCE: any other shape forces the model to invent
-       margin it was not asked for. Expand follows the POSTER: the margin is
-       the point, and a 9:16 poster is where a landscape photograph most needs
-       the room.
-
-       Chosen here rather than beside the headers, because until stage 1 has
-       run the mode may still be "auto" and there is nothing to choose from. */
-    const size = mode === "expand"
-      ? sizeForExpand(posterRatio, sizeHint)
-      : sizeForRatio(posterRatio, sizeHint);
-
-    // Stage 2 — context-aware enhancement.
-    // gpt-image-1.5 first; automatic fallback to gpt-image-1 if the account
-    // doesn't have the newer model.
-    const prompt = mode === "expand"
-      ? buildExpandPrompt(description, posterRatio, expandAmount, subject)
-      : buildEnhancePrompt(description, headline, posterRatio);
-    const callEdit = async (model) => {
-      const form = new FormData();
-      form.append("model", model);
-      form.append("prompt", prompt);
-      form.append("size", size);
-      form.append("quality", quality);
-      form.append("input_fidelity", "high");   // OpenAI's face/identity preservation control
-      form.append("image", new Blob([buffer], { type: mime }), mime === "image/jpeg" ? "input.jpg" : "input.png");
-      return fetch("https://api.openai.com/v1/images/edits", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${openaiApiKey}` },
-        body: form,
-      });
-    };
-
-    let modelUsed = "gpt-image-1.5";
-    let aiRes = await callEdit(modelUsed);
-    if (!aiRes.ok && [400, 403, 404].includes(aiRes.status)) {
-      const firstErr = await aiRes.text().catch(() => "");
-      console.warn(`⚠ gpt-image-1.5 unavailable (${aiRes.status}) — falling back to gpt-image-1:`, firstErr.slice(0, 160));
-      modelUsed = "gpt-image-1";
-      aiRes = await callEdit(modelUsed);
-    }
-
-    if (!aiRes.ok) {
-      const errText = await aiRes.text().catch(() => "");
-      console.error(`✗ ${modelUsed} ${aiRes.status}:`, errText.slice(0, 400));
-      sendJson(res, 502, { error: `OpenAI image ${aiRes.status}`, detail: errText.slice(0, 300) });
-      return;
-    }
-
-    const data = await aiRes.json();
-    const b64 = data?.data?.[0]?.b64_json;
-    if (!b64) {
-      sendJson(res, 502, { error: "OpenAI returned no image data." });
-      return;
-    }
-
-    console.log(`✓ AI ${mode} done in ${Date.now() - t0}ms (${modelUsed}, ${size}, quality=${quality}${mode === "expand" ? `, ${expandAmount}` : ""}, chosen by ${decidedBy})`);
+  const payload = {
+    image: `data:image/png;base64,${b64}`,
+    context: description,
+    engine: modelUsed,
     /* `quality` and `size` come back with the image so the setting can be
        checked from outside the box. IMAGE_QUALITY is an environment variable
        and an override in Railway silently reinstates the clay — without this
        the only way to know was to read a log line on the host. */
-    sendJson(res, 200, {
-      image: `data:image/png;base64,${b64}`,
-      context: description,
-      engine: modelUsed,
-      quality,
-      size,
-      // Which job ran. The two return pictures that differ in framing, not
-      // just in sharpness, so the caller has to know which one it got before
-      // it decides whether the writer's existing zoom and pan still apply.
-      // On the auto path the caller asked a question rather than gave an
-      // order, so this is also the answer to it.
-      mode,
-      // How far it pulled back, when it expanded.
-      amount: mode === "expand" ? expandAmount : null,
-      // What stage 1 took the picture to be. Reported because it changes what
-      // the margin was allowed to contain, and a wrong call here is the one
-      // worth being able to see from the outside — a logo read as a scene
-      // gets a margin of invented room rather than more of its own field.
-      subject,
-      /* Who chose, and why. A reviewer watching a paid call reframe a
-         photograph is owed both: "expand" alone reads as the software having
-         opinions, while "expand — he is cropped at the chest with no room
-         below" is a judgement they can agree or disagree with, and override
-         on the next press. "fallback" says the planner never answered and the
-         safe job ran, which must not be mistaken for the planner choosing it. */
-      decidedBy,
-      reason,
+    quality,
+    size,
+    // Which job actually ran. The two return pictures that differ in framing,
+    // not just in sharpness, so the caller has to know which one it got
+    // before it decides whether the writer's zoom and pan still apply — and
+    // an expand that degraded to a restore has to be visible, not silent.
+    mode: job,
+    amount: job === "expand" ? amount : null,
+    // Whether the source pixels were actually pinned. The caller re-pastes
+    // them either way; this is here so a mask being refused shows up in a
+    // response rather than only in a server log.
+    masked: usedMask,
+    // What stage 1 took the picture to be. Reported because it changes what
+    // the margin was allowed to contain, and a wrong call here is the one
+    // worth being able to see from the outside — a logo read as a scene gets
+    // a margin of invented room rather than more of its own field.
+    subject,
+    /* Who chose, and why. A reviewer watching a paid call reframe a
+       photograph is owed both: "expand" alone reads as the software having
+       opinions, while "expand — he is cropped at the chest with no room
+       below" is a judgement they can agree or disagree with, and override on
+       the next press. "fallback" says the planner never answered and the safe
+       job ran, which must not be mistaken for the planner choosing it. */
+    decidedBy,
+    reason: jobReason,
+  };
+
+  // Store only what a repeat of this exact request would get. The per-request
+  // reporting fields are re-attached on a hit rather than replayed.
+  enhanceCacheSet(cacheKey, payload);
+  if (onCharge) onCharge();
+  return payload;
+}
+
+/* Stage 1 as its own response. Everything the caller needs to build the frame
+   for stage 2 and nothing it has to compute for itself — including `size`,
+   which the browser must match exactly or the model will rescale the
+   composite and undo the whole point of compositing it. */
+async function handleEnhancePlan(req, res) {
+  const blocked = enhanceBlocked();
+  if (blocked) { sendJson(res, blocked.status, { error: blocked.error }); return; }
+
+  const buffer = await readEnhanceBody(req);
+  const mime = enhanceMime(req.headers["content-type"]);
+  const posterRatio = (req.headers["x-poster-ratio"] || "").toString();
+  const sizeHint = (req.headers["x-image-orientation"] || "").toString();
+
+  /* The caller's choice, applied to the planner's answer rather than instead
+     of it. On `auto` the verdict stands; on a forced mode the verdict is
+     discarded and the description and subject are kept, because the margin
+     around a logo and the margin around a seated politician are not the same
+     job and only stage 1 knows which this is. Same call, same cost either
+     way — a forced mode is not cheaper, it is just less advised.
+
+     The DEFAULT is restore, not auto: this header is the only thing standing
+     between a caller that knows nothing about any of this and a reframe it
+     never asked for. An unrecognised value falls back the same way. */
+  const rawMode = (req.headers["x-enhance-mode"] || "restore").toString().toLowerCase();
+  const requestedMode = ["auto", "expand", "restore"].includes(rawMode) ? rawMode : "restore";
+  const rawAmount = (req.headers["x-expand-amount"] || "moderate").toString().toLowerCase();
+  const requestedAmount = ["slight", "moderate", "wide"].includes(rawAmount) ? rawAmount : "moderate";
+
+  /* The source's real pixel dimensions, for the planner. Aspect alone is not
+     enough to answer "can this picture afford to be made smaller inside the
+     output" — a 400px crop and a 3000px one have the same shape and opposite
+     answers. Sent by the browser, which has the decoded image in hand. */
+  const srcDims = (req.headers["x-source-size"] || "").toString().match(/^(\d{1,5})x(\d{1,5})$/);
+  const sourceW = srcDims ? Number(srcDims[1]) : 0;
+  const sourceH = srcDims ? Number(srcDims[2]) : 0;
+
+  const t0 = Date.now();
+  const plan = await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
+
+  /* ── auto expands when the caller composites ──────────────────────────────
+     `auto` used to answer an expand verdict with Fit — the whole photograph,
+     letterboxed, by arithmetic — and never with outpainting. The reason was
+     sound at the time: expand had twice returned the source as a framed print
+     inside an invented scene, on posters that were published, and a verdict
+     is a good enough reason to letterbox a picture but not a good enough
+     reason to let a model redraw the parts of one that do not exist.
+
+     What has changed is that the model is no longer TRUSTED with any of it.
+     The caller composites the source onto a frame of exactly this size, sends
+     an alpha mask over it, and — the part that is not negotiable — pastes the
+     source back over whatever returns (composeExpandResult in app.js). The
+     model contributes the margin or it contributes nothing; either way the
+     photograph in the middle is the one that went up, pixel for pixel. A
+     ghost would now have to survive a paste-back that does not ask its
+     permission.
+
+     So the verdict is acted on instead of being noted and discarded, and a
+     landscape photograph on a 9:16 poster gets what it always needed: one
+     picture, filling the frame, with the parts that were never photographed
+     drawn rather than cropped or padded with backdrop.
+
+     `X-Expand-Capable` is what gates it, not a flag day. A caller that does
+     not send it — the legacy single-shot path below, anything posting raw
+     bytes — cannot build the frame or the mask, so for that caller an expand
+     verdict still means Fit. The safety lives on the side that can enforce
+     it. */
+  const canComposite = String(req.headers["x-expand-capable"] || "") === "1";
+  const wantedExpand = plan.mode === "expand";
+  /* Real dimensions or nothing. `auto` is the shape gpt-image picks for
+     itself, and the caller cannot composite onto a canvas whose size it was
+     not told — so an unresolvable size falls to Fit rather than to an expand
+     nobody can pin. */
+  const expandSize = wantedExpand ? sizeForExpand(posterRatio, sizeHint) : "";
+  const autoExpand =
+    requestedMode === "auto" && wantedExpand && canComposite && expandSize !== "auto";
+  const autoFit = requestedMode === "auto" && wantedExpand && !autoExpand;
+  const mode = requestedMode === "auto"
+    ? (autoExpand ? "expand" : (wantedExpand ? "restore" : plan.mode))
+    : requestedMode;
+  const amount = requestedMode === "auto" ? plan.amount : requestedAmount;
+  const decidedBy = autoFit ? "auto-fit" : (requestedMode === "auto" ? plan.decidedBy : "caller");
+  /* Written for the reviewer, not the log. They pressed one button, the
+     framing came back unchanged, and the picture then shrank inside the
+     frame — they are owed the reason for both halves of that. */
+  const reason = autoFit
+    ? (plan.reason
+        ? `${plan.reason} — fitted instead of generating margin`
+        : "showing the whole photograph instead of generating margin")
+    : (requestedMode === "auto" ? plan.reason : "");
+
+  /* Which shape to ask for is the resolved mode's decision, and the two want
+     opposite things — see sizeForRatio() and sizeForExpand(). Restore follows
+     the SOURCE: any other shape forces the model to invent margin nobody
+     asked for. Expand follows the POSTER: the margin is the point, and a 9:16
+     poster is where a landscape photograph most needs the room. */
+  const size = mode === "expand"
+    ? sizeForExpand(posterRatio, sizeHint)
+    : sizeForRatio(posterRatio, sizeHint, sourceW, sourceH);
+
+  console.log(
+    `✓ plan (${Date.now() - t0}ms): ${plan.subject} → ${mode}` +
+    `${mode === "expand" ? ` / ${amount}` : ""}${autoFit ? " + fit" : ""} @ ${size} (${decidedBy})` +
+    `${reason ? ` — ${reason}` : ""}`
+  );
+  if (plan.description) console.log(`✓ vision context: ${plan.description.slice(0, 140)}…`);
+
+  sendJson(res, 200, {
+    mode,
+    amount,
+    subject: plan.subject,
+    description: plan.description,
+    decidedBy,
+    reason,
+    /* Ask the browser to letterbox the result rather than leave it cropped.
+       A flag, not a zoom figure: the frame's dimensions live on the client and
+       fitZoomFor() already knows how to read them, so sending a number from
+       here would be a second, staler answer to a question already answered. */
+    fit: autoFit,
+    // The exact canvas the caller must build for an expand. Sent for restore
+    // too so one code path can post it straight back.
+    size,
+    posterRatio,
+  });
+}
+
+/* The spend gate, shared by both paid entry points. Keyed on the signed-in
+   user when there is one and the client IP otherwise, so one reviewer cannot
+   spend another's allowance and an unauthenticated caller (which the route
+   gate should already have refused) still cannot loop. */
+async function enhanceSpendGate(req, res) {
+  const user = await currentUser(req);
+  const key = user?.username ? `u:${user.username}` : `ip:${clientKey(req)}`;
+  const gate = enhanceLimiter.check(key);
+  if (!gate.allowed) {
+    const mins = Math.ceil(gate.retryAfterSeconds / 60);
+    console.warn(`⚠ enhance rate limit hit by ${key} — ${ENHANCE_RATE_MAX}/hour`);
+    sendJson(res, 429, {
+      error: `That is ${ENHANCE_RATE_MAX} AI Enhances in an hour, which is the cap. Try again in ${mins} minute(s).`,
     });
+    return null;
+  }
+  return () => enhanceLimiter.record(key);
+}
+
+/* Stage 2's entry point. Reads the multipart body, sanity-checks the plan the
+   caller is handing back, and runs it. Nothing is decided here — a field that
+   does not parse falls to the conservative value rather than to a 400, for
+   the same reason the mode header does. */
+async function handleEnhanceEditStage(req, res) {
+  const blocked = enhanceBlocked();
+  if (blocked) { sendJson(res, blocked.status, { error: blocked.error }); return; }
+
+  const onCharge = await enhanceSpendGate(req, res);
+  if (!onCharge) return;
+
+  const { image, mask, fields } = await readEnhanceEdit(req);
+  const rawSize = String(fields.size || "auto");
+  const rawAmount = String(fields.amount || "moderate").toLowerCase();
+  const rawSubject = String(fields.subject || "people").toLowerCase();
+
+  const payload = await runEnhanceEdit({
+    buffer: image.buffer,
+    mime: enhanceMime(image.mime),
+    mask,
+    composited: String(fields.composited || "") === "1",
+    mode: String(fields.mode || "restore").toLowerCase() === "expand" ? "expand" : "restore",
+    amount: ["slight", "moderate", "wide"].includes(rawAmount) ? rawAmount : "moderate",
+    subject: ["people", "scene", "graphic"].includes(rawSubject) ? rawSubject : "people",
+    description: String(fields.description || "").slice(0, 4000),
+    headline: decodeURIComponent(String(fields.headline || "")).slice(0, 200),
+    posterRatio: String(fields.posterRatio || ""),
+    size: validEnhanceSize(rawSize),
+    decidedBy: String(fields.decidedBy || "caller"),
+    reason: String(fields.reason || "").slice(0, 200),
+    onCharge,
+  });
+
+  sendJson(res, 200, payload);
+}
+
+/* The legacy single-shot: plan and edit in one call, raw image body, no way
+   to composite a frame. Kept because this route existed before the split and
+   something may still be posting to it that way; an expand verdict here
+   degrades to restore inside runEnhanceEdit() rather than outpainting blind. */
+async function handleEnhanceSingleShot(req, res) {
+  const blocked = enhanceBlocked();
+  if (blocked) { sendJson(res, blocked.status, { error: blocked.error }); return; }
+
+  const onCharge = await enhanceSpendGate(req, res);
+  if (!onCharge) return;
+
+  const buffer = await readEnhanceBody(req);
+  const mime = enhanceMime(req.headers["content-type"]);
+  const headline = decodeURIComponent(req.headers["x-headline"] || "").trim().slice(0, 200);
+  const posterRatio = (req.headers["x-poster-ratio"] || "").toString();
+  const sizeHint = (req.headers["x-image-orientation"] || "").toString();
+  const rawMode = (req.headers["x-enhance-mode"] || "restore").toString().toLowerCase();
+  const requestedMode = ["auto", "expand", "restore"].includes(rawMode) ? rawMode : "restore";
+  const srcDims = (req.headers["x-source-size"] || "").toString().match(/^(\d{1,5})x(\d{1,5})$/);
+  const sourceW = srcDims ? Number(srcDims[1]) : 0;
+  const sourceH = srcDims ? Number(srcDims[2]) : 0;
+
+  const plan = await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
+  const mode = requestedMode === "auto" ? plan.mode : requestedMode;
+
+  const payload = await runEnhanceEdit({
+    buffer,
+    mime,
+    mask: null,
+    composited: false,
+    mode,
+    amount: requestedMode === "auto" ? plan.amount : "moderate",
+    subject: plan.subject,
+    description: plan.description,
+    headline,
+    posterRatio,
+    size: sizeForRatio(posterRatio, sizeHint, sourceW, sourceH),
+    decidedBy: requestedMode === "auto" ? plan.decidedBy : "caller",
+    reason: requestedMode === "auto" ? plan.reason : "",
+    onCharge,
+  });
+
+  sendJson(res, 200, payload);
+}
+
+async function handleUpscaleImage(req, res) {
+  /* No OpenAI key is checked here. The guards live in enhanceBlocked(), which
+     each stage calls first — gating the route itself on a credential turned a
+     missing key into "enhance is broken" with no indication of what was
+     missing. */
+  try {
+    const stage = (req.headers["x-enhance-stage"] || "").toString().toLowerCase();
+    if (stage === "plan") { await handleEnhancePlan(req, res); return; }
+    if (stage === "edit") { await handleEnhanceEditStage(req, res); return; }
+    await handleEnhanceSingleShot(req, res);
   } catch (err) {
     console.error("✗ upscale-image error:", err);
-    sendJson(res, 500, { error: err.message || "Image enhance failed." });
+    const status = Number(err.status) || 500;
+    sendJson(res, status, {
+      error: err.message || "Image enhance failed.",
+      ...(err.detail ? { detail: err.detail } : {}),
+    });
   }
 }

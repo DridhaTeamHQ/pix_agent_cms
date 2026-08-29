@@ -73,6 +73,10 @@
       <path d="M5 2.5v4h5v-4M4.5 14.5v-4h7v4" fill="none" stroke="currentColor"
             stroke-width="1.5" stroke-linejoin="round"/>
     </symbol>
+    <symbol id="i-undo" viewBox="0 0 16 16">
+      <path d="M3 6.5h6.2a3.8 3.8 0 1 1 0 7.6H6" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+      <path d="M5.6 3.4L2.5 6.5l3.1 3.1" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
     <symbol id="i-check" viewBox="0 0 16 16">
       <path d="M3 8.6l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="2"
             stroke-linecap="round" stroke-linejoin="round"/>
@@ -637,27 +641,56 @@
                It is now, in the same call that was already being paid for, so
                the judgement costs nothing and the reviewer presses once.
 
-               There is one job again. Expand is disabled at the route — it
-               was returning the photograph as a framed print inside a scene
-               the model drew around it, because it asks for the reframe in
-               words and sends no mask to hold the original in place. The
-               planner still runs, for the description the restore prompt is
-               built on; only its verdict is dropped. See the gate in
-               server.mjs for what has to be true before it comes back. -->
+               Auto never expands. The planner's verdict is still read, but an
+               "expand" answer now means Fit — the whole photograph shown
+               letterboxed, by arithmetic, with nothing generated past the
+               edges. Expand was returning the photograph as a framed print
+               inside a scene the model drew around it, and the fix for that
+               (a browser-composited frame plus an alpha mask that pins the
+               original) is real but is not something to hand a reviewer who
+               pressed one button. It is reachable from the Job selector
+               below, deliberately. See "auto never expands" in server.mjs. -->
             <button type="button" id="ai-enhance-btn" class="btn-ai" disabled>
               <svg class="ai-spark" width="14" height="14" aria-hidden="true"><use href="#i-spark"/></svg>
               Restore &amp; Upscale
             </button>
-            <!-- Job and Pull back are gone with expand. app.js reads both with
-                 optional chaining and falls back to "auto", which the server
-                 now resolves to restore, so their absence is the safe state.
-                 They come back when expand does — with a mask behind it. -->
+            <!-- The way back. AI Enhance overwrites the picture in place and
+                 costs money to run, so a reviewer who does not like what came
+                 back had, until this, only one option: re-open the post and
+                 lose every other edit made since. This restores the image the
+                 writer posted — and its zoom and pan, because an expand resets
+                 those and the right photograph in the wrong crop is not an
+                 undo. It stays disabled until there is actually something
+                 behind it; see imageUndo in app.js. -->
+            <button type="button" id="image-undo-btn" class="btn-ghost btn-undo-image"
+                    title="Put the image back exactly as the writer posted it" disabled>
+              <svg width="14" height="14" aria-hidden="true"><use href="#i-undo"/></svg>
+              Undo AI Enhance
+            </button>
+            <label class="field" style="margin-top:10px;">
+              <span class="field-label">Job</span>
+              <select id="enhance-mode">
+                <option value="auto" selected>Auto — sharpen, or extend to fill the frame</option>
+                <option value="restore">Restore &amp; Upscale — keep the framing</option>
+                <option value="expand">Expand &amp; Reframe — generate new scene (costs more)</option>
+              </select>
+            </label>
+            <label class="field" id="expand-amount-field" style="margin-top:10px;" hidden>
+              <span class="field-label">Pull back</span>
+              <select id="expand-amount">
+                <option value="slight">A little — about 25% more scene</option>
+                <option value="moderate" selected>Moderate — about 50% more scene</option>
+                <option value="wide">Wide — roughly twice the scene</option>
+              </select>
+            </label>
             <label class="slider-container" style="margin-top:10px;">
               <span class="slider-label">Strength</span>
               <input type="range" id="enhance-strength" min="0" max="100" step="5" value="20" />
             </label>
             <small class="helper-text" id="enhance-strength-hint">20% — raise this only if the image still looks soft.</small>
-            <small class="helper-text" id="enhance-mode-hint">Reads the photograph first, then recovers detail at the framing you set. It does not reframe, zoom out or generate anything past the edges. Uses paid AI credits. Runs only when you click.</small>
+            <!-- Rewritten per job by syncEnhanceModeUI() in app.js; this is
+                 the Auto text, which is what the selector defaults to. -->
+            <small class="helper-text" id="enhance-mode-hint">Reads the photograph and picks the job: recovers detail at your framing, or — when the poster would crop most of the picture away — extends it outward to fill the frame, keeping the original pixels untouched in the middle. Uses paid AI credits.</small>
             <p id="ai-enhance-status" class="status-text" role="status" aria-live="polite"></p>
           </div></div>
         </div>

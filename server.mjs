@@ -145,9 +145,9 @@ if (isStorageConfigured()) {
 
 /* ── Twitter / X (OAuth 1.0a) ── */
 const twitterCfg = {
-  appKey:       env("TWITTER_API_KEY"),
-  appSecret:    env("TWITTER_API_SECRET"),
-  accessToken:  env("TWITTER_ACCESS_TOKEN"),
+  appKey: env("TWITTER_API_KEY"),
+  appSecret: env("TWITTER_API_SECRET"),
+  accessToken: env("TWITTER_ACCESS_TOKEN"),
   accessSecret: env("TWITTER_ACCESS_SECRET"),
 };
 const twitterClient = (twitterCfg.appKey && twitterCfg.accessToken)
@@ -818,12 +818,12 @@ function ytdlpArgs(extra, client = "") {
 function worthRetryingWithAnotherClient(stderr) {
   const low = String(stderr || "").toLowerCase();
   return low.includes("sign in to confirm")
-      || low.includes("not a bot")
-      || low.includes("requested format is not available")
-      || low.includes("failed to extract")
-      || low.includes("unable to extract")
-      || low.includes("http error 403")
-      || low.includes("http error 429");
+    || low.includes("not a bot")
+    || low.includes("requested format is not available")
+    || low.includes("failed to extract")
+    || low.includes("unable to extract")
+    || low.includes("http error 403")
+    || low.includes("http error 429");
 }
 
 /**
@@ -887,8 +887,8 @@ function friendlyYtdlpError(stderr) {
   const low = text.toLowerCase();
   if (low.includes("sign in to confirm") || low.includes("not a bot")) {
     return "YouTube blocked this server as automated — cloud IPs are flagged by default. " +
-           "Fix it with YTDLP_COOKIES (cookies from a throwaway logged-in account) or " +
-           "YTDLP_PROXY (a residential proxy). Uploading a file works either way.";
+      "Fix it with YTDLP_COOKIES (cookies from a throwaway logged-in account) or " +
+      "YTDLP_PROXY (a residential proxy). Uploading a file works either way.";
   }
   if (low.includes("login required") || low.includes("requested content is not available")) {
     return "This content requires a login. Set YTDLP_COOKIES with cookies from an account that can view it.";
@@ -1006,7 +1006,7 @@ async function ensurePreviewFile(url) {
       url,
     ], 180_000);
     if (r.code !== 0 || !existsSync(tmp)) {
-      try { rmSync(tmp, { force: true }); } catch {}
+      try { rmSync(tmp, { force: true }); } catch { }
       throw new Error(friendlyYtdlpError(r.stderr || r.stdout));
     }
     if (statSync(tmp).size > PREVIEW_MAX_BYTES) {
@@ -2073,7 +2073,7 @@ async function runDailyMattrPublish(req, res) {
     payload.files = await Promise.all(payload.files.map(compressForDailyMattr));
   } catch (err) {
     console.warn("⚠ DailyMattr publish failed before sending (media preparation):", err.message);
-    if (claimed) await releasePublishClaim(payload.pixId).catch(() => {});
+    if (claimed) await releasePublishClaim(payload.pixId).catch(() => { });
     sendJson(res, 502, {
       error: `The media could not be prepared: ${err.message || "unknown error"}. Nothing was sent.`,
       indeterminate: false,
@@ -2135,7 +2135,7 @@ async function runDailyMattrPublish(req, res) {
     if (neverSent) {
       // Provably nothing was stored at their end, so hand the claim back and
       // let QA fix the problem and publish again.
-      if (claimed) await releasePublishClaim(payload.pixId).catch(() => {});
+      if (claimed) await releasePublishClaim(payload.pixId).catch(() => { });
       sendJson(res, 502, {
         error: err.message || "Could not publish to DailyMattr.",
         /* The per-field refusals, listed rather than run together into the
@@ -2214,13 +2214,13 @@ async function runDailyMattrPublish(req, res) {
       );
       publishRecord = row
         ? {
-            ok: true,
-            publishedId: row.published_id,
-            publishedAt: row.published_at,
-            // The superseded copies still on the public site, so a republish
-            // can name what is left to delete without waiting for a reload.
-            publishedHistory: row.published_history || [],
-          }
+          ok: true,
+          publishedId: row.published_id,
+          publishedAt: row.published_at,
+          // The superseded copies still on the public site, so a republish
+          // can name what is left to delete without waiting for a reload.
+          publishedHistory: row.published_history || [],
+        }
         : { ok: false, reason: "post not found" };
     } catch (err) {
       console.error(
@@ -3480,11 +3480,11 @@ function openaiErrorMessage(status, body) {
   if (status === 401) {
     if (low.includes("incorrect api key")) {
       return "OpenAI rejected this key as invalid. It was most likely revoked or regenerated — " +
-             "create a fresh one at platform.openai.com/api-keys and update OPENAI_API_KEY.";
+        "create a fresh one at platform.openai.com/api-keys and update OPENAI_API_KEY.";
     }
     if (low.includes("no api key") || low.includes("provide an api key")) {
       return "OpenAI received no key. OPENAI_API_KEY is set but empty or malformed — " +
-             "check for quotes or line breaks in the value.";
+        "check for quotes or line breaks in the value.";
     }
     return `OpenAI rejected the key (401). ${detail}`.trim();
   }
@@ -3722,7 +3722,7 @@ async function handleTwitterPost(req, res) {
     res.end(JSON.stringify({ ok: true, tweetUrl, id: tweetId }));
   } catch (err) {
     const code = err?.code || err?.data?.status || err?.status || 500;
-    const msg  = err?.data?.detail || err?.data?.errors?.[0]?.message || err?.message || "Twitter post failed.";
+    const msg = err?.data?.detail || err?.data?.errors?.[0]?.message || err?.message || "Twitter post failed.";
     console.error("✗ Twitter post error:", code, msg);
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: msg, code }));
@@ -4327,9 +4327,9 @@ function buildEnhancePrompt(description, _headlineNotUsed, _ratioNoLongerUsed) {
      same light — a widened photograph, not a photograph pasted onto a
      painting. */
 const EXPAND_AMOUNTS = {
-  slight:   "Pull back a little: show roughly 25% more of the scene around the subject than the photograph currently holds.",
+  slight: "Pull back a little: show roughly 25% more of the scene around the subject than the photograph currently holds.",
   moderate: "Pull back: show roughly 50% more of the scene around the subject than the photograph currently holds.",
-  wide:     "Pull back substantially: show roughly twice as much of the scene around the subject as the photograph currently holds.",
+  wide: "Pull back substantially: show roughly twice as much of the scene around the subject as the photograph currently holds.",
 };
 
 /* What the new margin should contain, per kind of picture.
@@ -4458,7 +4458,7 @@ function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject
 
   return [
     isGraphic
-      ? "You are extending the background of a REAL brand or product image so it fills a taller frame."
+      ? "You are extending the background of a REAL brand or product image by outpainting beyond its original borders."
       : "You are extending a REAL news photograph — the same photograph, taken",
     isGraphic ? null : "from further back with a wider lens.",
     "",
@@ -4467,8 +4467,8 @@ function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject
     "TASK:",
     isGraphic
       ? "Place the supplied image smaller within the output frame, centred, and fill everything around it by continuing the background it already sits on."
-      : "Place the supplied photograph smaller within the output frame and draw",
-    isGraphic ? null : "the scene continuing outward from its edges, so that more of the subject",
+      : "Place the supplied photograph completely intact and extend the canvas beyond its original borders. draw",
+    isGraphic ? null : "the existing scene naturally beyond the original image boundaries. Do not crop or zoom the supplied photograph.",
     isGraphic ? null : "and more of the setting are visible than the photograph shows.",
     pullBack,
     ratioLabel
@@ -4512,7 +4512,7 @@ function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject
    writer's control using real pixels. The model's only job here is detail. */
 function sizeForRatio(_posterRatioNoLongerUsed, orientationHint) {
   if (orientationHint === "landscape") return "1536x1024";
-  if (orientationHint === "portrait")  return "1024x1536";
+  if (orientationHint === "portrait") return "1024x1536";
   // Unknown: let the model match the input rather than guess from the poster.
   return "auto";
 }
@@ -4564,14 +4564,14 @@ function coverCropLoss(sourceW, sourceH, posterRatio) {
 function sizeForExpand(ratio, orientationHint) {
   switch (ratio) {
     case "9:16":
-    case "4:5":  return "1024x1536";
-    case "1:1":  return "1024x1024";
+    case "4:5": return "1024x1536";
+    case "1:1": return "1024x1024";
     case "16:9": return "1536x1024";
   }
   // No poster ratio supplied: widen within the source's own orientation
   // rather than guess at a shape the writer never chose.
   if (orientationHint === "landscape") return "1536x1024";
-  if (orientationHint === "portrait")  return "1024x1536";
+  if (orientationHint === "portrait") return "1024x1536";
   return "auto";
 }
 
@@ -4627,8 +4627,8 @@ function buildPlanPrompt(posterRatio, sourceW, sourceH, cropLoss) {
   const pct = Math.round(cropLoss * 100);
   const crop = posterRatio
     ? (cropLoss > 0.02
-        ? `It goes on a ${posterRatio} poster. The poster scales the image to COVER the frame and clips the overflow — it does not letterbox — so used as it is, about ${pct}% of this picture will be cut away and never seen.`
-        : `It goes on a ${posterRatio} poster, and its shape already matches, so almost nothing would be cropped.`)
+      ? `It goes on a ${posterRatio} poster. The poster scales the image to COVER the frame and clips the overflow — it does not letterbox — so used as it is, about ${pct}% of this picture will be cut away and never seen.`
+      : `It goes on a ${posterRatio} poster, and its shape already matches, so almost nothing would be cropped.`)
     : "The poster's shape is unknown; assume the image's own shape is kept.";
 
   return [
@@ -5033,7 +5033,7 @@ async function handleUpscaleImage(req, res) {
        Until then the route resolves every request to restore. The planner
        still runs: it is where `description` and `subject` come from, and the
        restore prompt is built on them. Only its verdict is dropped. */
-    const mode = "restore";
+    const mode = wantedMode;
     const expandSuppressed = wantedMode === "expand";
     const expandAmount = requestedMode === "auto" ? plan.amount : requestedAmount;
     const decidedBy = expandSuppressed ? "expand-disabled" : (requestedMode === "auto" ? plan.decidedBy : "caller");

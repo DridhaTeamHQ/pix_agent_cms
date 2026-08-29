@@ -5109,7 +5109,7 @@ const GLASS = (window.GLASS = Object.assign({
      panel later. Brightness stays at the 9 from the picker. */
   hue: 33,
   saturation: 0,    // 0 = neutral black. 0.35 was the brown.
-  brightness: 0.07, // 0.09 was the picker's; darkened on request.
+  brightness: 0.09, // 0.09 was the picker's; darkened on request.
 
   /* One colour on every card, rather than the hue read from each photograph.
 
@@ -5131,7 +5131,7 @@ const GLASS = (window.GLASS = Object.assign({
      The per-image path is gone rather than flagged off: the hue measurement
      it needed went with the fade's own tint, and a flag pointing at deleted
      machinery is worse than no flag. */
-  fillAlpha: 0.88,  // the 85% beside the hex, taken up on request.
+  fillAlpha: 0.85,  // the 85% beside the hex, taken up on request.
 
   /* Blur is quoted in the design's own units — 16 on a 382-wide card — and
      scaled to whatever the poster canvas actually is, so the frost is the
@@ -5150,7 +5150,7 @@ const GLASS = (window.GLASS = Object.assign({
      carried entirely by the darkening. Halving it keeps the surface reading
      as glass while handing the actual transition back to the gradient, which
      is the part the eye cannot catch. */
-  blurAt: 44,
+  blurAt: 16,
 
   /* How far the blur LAGS the darkening, as an exponent on the shared ramp.
 
@@ -5202,7 +5202,7 @@ const GLASS = (window.GLASS = Object.assign({
      Higher is smoother still and walks back towards the superimposed-sharp-
      copy problem this exists to solve: at 2.6 the first line keeps 56% of its
      detail, which is the defect, not a setting. */
-  frostReach: 1.8,
+  frostReach: 0.9,       // must fall with the run-up; see below
 
   /* How many stops each ramp is described with.
 
@@ -5228,8 +5228,8 @@ const GLASS = (window.GLASS = Object.assign({
   blurCardWidth: 382,
   downscale: 4,     // the blur is reached by downsampling; see paintMistGlass
 
-  refract: 0.012,   // how far the glass bends the picture, as a share of width
-  refractStrips: 80,// depth resolution of the bend, and of the blur ramp
+  refract: 0.022,   // how far the glass bends the picture, as a share of width
+  refractStrips: 56,// depth resolution of the bend, and of the blur ramp
   /* ── How far above the first line the glass begins ────────────────────
 
      In the 1700px reference frame, scaled to whatever the card actually is.
@@ -5255,7 +5255,7 @@ const GLASS = (window.GLASS = Object.assign({
 
      Tunable live: window.GLASS.runUpAboveCopy = 272 then redraw restores the
      longer, gentler build. */
-  runUpAboveCopy: 65,
+  runUpAboveCopy: 230,   // marked on the card: start the blend lower
 
   /* The fill does most of the darkening; this is the gradient's share on top.
 
@@ -5265,7 +5265,7 @@ const GLASS = (window.GLASS = Object.assign({
      fraction of the photograph still visible at the foot. At 0.88 and 0.24
      that is 9.1%, against 12% before. Below about 7% the picture stops being
      a picture and the card is a black panel with type on it. */
-  fadeMax: 0.24,
+  fadeMax: 0.20,
 
   /* The text page's floor, under the glass rather than instead of it.
 

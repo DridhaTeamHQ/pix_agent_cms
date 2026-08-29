@@ -474,9 +474,36 @@ console.log("\nEvery page that shows copy over a photograph gets the treatment")
       else if (app[j] === "}") { d--; if (!d) return app.slice(i, j + 1); }
     }
   })();
-  ck("the text page draws its photograph sharp",
-    /drawTextPreviewBackgroundImage\([\s\S]*?"none"\)/.test(text),
-    "a pre-blurred input has no sharp-to-frosted transition to show");
+  /* The text page is UNIFORMLY blurred, and this assertion used to say the
+     opposite — "draws its photograph sharp", on the reasoning that a
+     sharp-to-frosted treatment has nothing to show when its input is already
+     frosted. That holds for the poster and the story page and not for this
+     one: it is a page of body copy filling the card, and the picture behind it
+     is a texture rather than a subject. The spec is explicit — one rectangle
+     over the whole 382x682 frame, Background blur UNIFORM at 16, linear fill
+     at 85%. */
+  ck("the text page blurs its photograph, rather than drawing it sharp",
+    /drawTextPreviewBackgroundImage\([\s\S]*?blur\(/.test(text) &&
+    !/drawTextPreviewBackgroundImage\([\s\S]*?"none"\)/.test(text),
+    "the spec sets Background blur Uniform 16 over the whole frame");
+
+  /* Derived, not restated. 16-at-382 is the same pair the glass itself uses,
+     so a hard-coded 39 here would drift the moment either moved — and would
+     stop matching the spec at any canvas but 920. */
+  ck("at a radius taken from GLASS.blurAt / blurCardWidth, so it scales",
+    /GLASS\.blurAt \* W\) \/ GLASS\.blurCardWidth/.test(text),
+    "a literal radius stops matching the spec at every size except the one it was written at");
+
+  /* Blur ONLY. The old default carried brightness(62%) contrast(108%)
+     saturate(72%) as well, and that is why this page used to be 75-98% black
+     before a word was drawn: dimmed once in the filter and again by
+     everything painted over it. The darkening belongs to the veil and the
+     fill, where it can be reasoned about. */
+  const textFilter = (text.match(/blur\(\$\{textBlur\}px\)[^`]*/) || [""])[0];
+  ck("and softens only — no brightness or saturation baked into the filter",
+    !/brightness|contrast|saturate/.test(textFilter),
+    `filter carries "${textFilter}" — dimming here is invisible to everything downstream`);
+
   ck("and the four-stop full-frame wash is gone",
     !/addColorStop\(0\.34/.test(text) && !/rgba\(0, 0, 0, 0\.98\)/.test(text));
 }

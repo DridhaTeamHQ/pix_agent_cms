@@ -4349,18 +4349,37 @@ function drawPixTextScreen() {
   ctx.fillStyle = "#070707";
   ctx.fillRect(0, 0, W, H);
 
-  /* "none", like the story page — and this is the other half of why the frost
-     could not be seen here.
+  /* ── The text page is UNIFORMLY blurred, and that is the design ────────────
 
-     The default draws the photograph through blur(18px) brightness(62%)
-     across the WHOLE frame, so the picture arrived already soft and already
-     dark. A treatment that goes from sharp to frosted has nothing to show
-     when its input is uniformly frosted to begin with: there was no
-     transition on this page, only a flat blur that happened to look like one.
+     It was drawn sharp here for a while, on the reasoning that a treatment
+     going from sharp to frosted has nothing to show when its input is already
+     frosted — true of the poster and the story page, and wrong about this one.
+     Those two are photographs with a caption at the foot. This one is a page
+     of body copy that fills the card, and the picture behind it is a texture,
+     not a subject. There is no framing to preserve and nothing to be sharp
+     for.
 
-     The picture is drawn sharp now and the glass supplies the softening where
-     the copy is, which is what the other two pages do. */
-  drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s, "none");
+     The spec says so explicitly: one rectangle over the whole 382x682 frame,
+     Background blur set to UNIFORM (not Progressive) at 16, with a linear fill
+     at 85%. Those are this file's own numbers — GLASS.blurAt is 16,
+     GLASS.blurCardWidth is 382, GLASS.fillAlpha is 0.85 — so the radius is
+     taken from them rather than restated, and quoted in the design's units and
+     scaled to whatever the canvas actually is, exactly as paintMistGlass does
+     it. On a 920-wide card that is ~38px.
+
+     Blur ONLY. The old default here also carried brightness(62%)
+     contrast(108%) saturate(72%), which is why the page used to be 75-98%
+     black before a word was drawn: the picture was dimmed twice, once in the
+     filter and again by everything painted over it. The darkening belongs to
+     the veil and the fill below, where it can be reasoned about; this layer
+     just softens.
+
+     Live: window.GLASS.blurAt = 24 then redraw. */
+  const textBlur = Math.round((GLASS.blurAt * W) / GLASS.blurCardWidth);
+  drawTextPreviewBackgroundImage(
+    image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s,
+    `blur(${textBlur}px)`,
+  );
 
   const textX = L.headline.x;
   const minTextY = state.forceTextExport ? H * 0.16 : H * 0.1;

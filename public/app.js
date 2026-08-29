@@ -8567,51 +8567,36 @@ function buildExpandFrame(srcCanvas, place) {
   return { frame, mask };
 }
 
-/* ── How big the composite is rendered ───────────────────────────────────
+/* ── Why the composite is NOT rendered larger ────────────────────────────
 
-   The model's frame is 1024x1536 and the photograph sits in about 830 of that
-   width. That is the resolution the picture used to arrive at, and it was
-   thinner than everything downstream wants:
+   There was an expandOutputScale() here, and removing it is the fix for a
+   poster that came back with a smeared strip across the sky.
 
-     preview      920px wide          needs ~1.1x
-     X export     2x, 1840px          needs ~2.2x
-     full export  4x, 3680px          needs ~4.4x
+   The reasoning that put it there was sound as far as it went. gpt-image caps
+   its output at 1536px, so the photograph arrived at about 830px and the card
+   stretched it to 920 — while the writer's 1280px original was still in hand,
+   and layer 4 pastes it back without asking the model anything. Rendering the
+   composite bigger and pasting from the original gave the photograph real
+   pixels instead of interpolated ones.
 
-   So the photograph was being upscaled by the renderer at every size — the
-   card was showing an 830px picture stretched across a 920px frame, and the
-   4x export was inventing three quarters of its pixels.
+   What that missed is that the composite is ONE canvas. Scaling it up scales
+   every layer on it, and only layer 4 had more pixels to give. The model's
+   margin was upsampled by the same factor — 1.54x on that poster — and then
+   butted directly against a photograph at 1:1, along a horizontal line the
+   full width of the card. The join is feathered by `band`: 11 frame pixels,
+   17 at that scale, 0.72% of the image height.
 
-   None of that was necessary. The source is only downscaled to 1536px because
-   that is gpt-image's maximum INPUT; the writer's original is still in hand at
-   whatever it was, often 2000-3000px, and layer 4 pastes the source back
-   without asking the model anything. So the composite is rendered larger and
-   the paste-back is done from the original rather than from the copy that was
-   shrunk for upload. Only layers 3 and 4 gain by it — the drawn margin is
-   still the model's 1024x1536, scaled up — but layers 3 and 4 are the
-   photograph, which is the part anyone looks at.
+   Soft next to sharp, with 17 pixels to get from one to the other. Above the
+   horizon, where a sunset sky has no detail to hide it, that reads as a
+   smear. Below, blocky landscape covered for it, which is why only the top of
+   the poster looked wrong and why this survived review: the failure was read
+   as the model refusing to paint, and the model had painted.
 
-   Two ceilings, and the lower one wins:
-
-     the source's own pixels   scaling past 1:1 with the original would be the
-                               same invention, moved earlier
-     EXPAND_MAX_EDGE           the composite becomes a PNG data: URL held in
-                               memory and uploaded on Save. 3072 puts a 9:16
-                               result at 2048x3072 — around 9MB, comfortably
-                               inside Storage's default 50MB object limit, and
-                               enough to cover the X export exactly and the 4x
-                               export to within 1.7x. Raising it costs memory
-                               and upload time on every save, not just once */
-const EXPAND_MAX_EDGE = 3072;
-
-function expandOutputScale(sourceImage, place) {
-  const nativeW = sourceImage?.naturalWidth || sourceImage?.width || 0;
-  if (!nativeW || !place?.w) return 1;
-  const fromSource = nativeW / place.w;
-  const fromBudget = EXPAND_MAX_EDGE / Math.max(place.frameW, place.frameH);
-  // Never below 1: the composite is not allowed to come back SMALLER than the
-  // frame the model was given, whatever the original's resolution.
-  return Math.max(1, Math.min(fromSource, fromBudget));
-}
+   Uniform beats sharp-in-places. The photograph is slightly softer than it
+   could be and the whole picture is now equally sharp. Making it sharper
+   again means either a feather wide enough to cross the sharpness step
+   honestly, or a model that returns more than 1536px — not a scale factor
+   applied to a canvas where one layer cannot follow. */
 
 /* ── Assembling the result, in four layers ───────────────────────────────
 
@@ -8641,7 +8626,10 @@ function expandOutputScale(sourceImage, place) {
    nobody knew, and printed a doubled outline for its trouble. Here the
    rectangle is one this file chose, in a frame this file built. */
 /* `scale` renders the whole composite larger, and `srcCanvas` is expected to
-   carry the resolution to match — see expandOutputScale(). Layers 1 and 2 are
+   carry the resolution to match. NOTHING PASSES A SCALE any more, and the
+   block above says why — a scale sharpens layer 4 and cannot sharpen layer 2,
+   which is a seam, not an improvement. The parameter stays because the
+   identity case is what the geometry tests pin. Layers 1 and 2 are
    the model's frame stretched to the new size, which costs nothing real: the
    bleed is blurred by construction and the drawn margin is scenery. Layers 3
    and 4 are drawn from whatever `srcCanvas` actually holds, so handing this a
@@ -8852,20 +8840,35 @@ async function runImageAI() {
 
        `tmp` exists because gpt-image will not accept more than 1536px, and
        for a while it was doing double duty as the thing pasted back over the
-       result — so the photograph arrived on the card at the resolution the
-       API imposed rather than the one the writer supplied. The model never
-       needed to see these pixels; layer 4 does not ask its permission. So the
-       source is redrawn at the composite's scale straight from `img`, and the
-       upload copy stays what it was built for. */
+       result. It was fixed by rendering the composite larger and pasting the
+       source back from `img` at up to its native resolution — and that fix
+       was WRONG, in a way that took a poster to see.
+
+       The composite is one canvas, so scaling it up scales everything on it.
+       The photograph gained real pixels; the model's margin only gained
+       interpolated ones. On a 1280px source that worked out at 1.54x, which
+       means the margin arrived UPSAMPLED 1.54x and butted directly against a
+       photograph at 1:1, along a horizontal line the full width of the card
+       at place.y. The feather meant to hide that join is `band` — 11 frame
+       pixels, 17 at that scale, 0.72% of the image height. It never stood a
+       chance.
+
+       That is the smeared strip along the top of the poster: not the model
+       declining to paint, but our own composite putting soft pixels next to
+       sharp ones with nothing in between. It shows worst above the horizon
+       because a smooth sunset sky has no detail to disguise it, and passes
+       unnoticed below where blocky landscape does.
+
+       So the scale is gone and the composite is uniform again. The
+       photograph is a little softer than it could be; every part of the
+       picture is now equally sharp, which matters more. Sharpening the
+       photograph alone is not available while it shares a canvas with a
+       margin that cannot be sharpened with it — the honest version of that
+       needs a wider feather, or a model that returns more pixels. */
     let enhanced = returned;
     if (data.mode === "expand" && place && baseFrame) {
-      const outScale = expandOutputScale(img, place);
-      const srcHi = document.createElement("canvas");
-      srcHi.width = Math.max(1, Math.round(place.w * outScale));
-      srcHi.height = Math.max(1, Math.round(place.h * outScale));
-      srcHi.getContext("2d").drawImage(img, 0, 0, srcHi.width, srcHi.height);
       enhanced = await canvasToImage(
-        composeExpandResult(returned, srcHi, baseFrame, place, outScale),
+        composeExpandResult(returned, tmp, baseFrame, place),
       );
     }
 

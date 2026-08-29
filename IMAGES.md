@@ -106,9 +106,8 @@ by it.**
 
 **Expand does not care.** The model's output is only ever the *margin* there.
 The photograph itself is composited by the browser and pasted back over the
-result from the writer's original at up to `EXPAND_MAX_EDGE` (§2.8) — real
-pixels at up to 3072px, not a resample of a 1536px return. On the poster that
-lands at 1:1 or better. This is the path a landscape photo on a 9:16 card takes,
+result from the writer's original (§2.8), so the drawn margin is the only part
+of an expand the model actually supplies. This is the path a landscape photo on a 9:16 card takes,
 so it is the path that matters most here.
 
 **Restore is capped at 1536, and it is left capped.** The model's output *is*
@@ -256,44 +255,50 @@ the width, and aiming it at whichever face the detector returned first turned a
 landscape photograph of two people into a portrait of one of them. A single
 face is unchanged — the union of one box is that box.
 
-### 2.8 What resolution an expand comes back at
+### 2.8 What resolution an expand comes back at, and why not more
 
-The 1536px cap in §2.1 is an **upload** limit — gpt-image's maximum input — and
-for a while the paste-back inherited it, because the same downscaled canvas was
-used for both. So the photograph arrived on the card at the resolution the API
-imposed rather than the one the writer supplied: 830px of picture inside a
-1024px frame, stretched over a 920px card and quadrupled again on export.
+The composite is rendered at the model's own frame size — 1024×1536 for a 9:16
+card — and the photograph is pasted into it at that scale. Every layer sits at
+one resolution, and the renderer scales the whole thing together.
 
-Layer 4 does not consult the model, so it has no reason to. It is now redrawn
-from the writer's original at `expandOutputScale()`, and the whole composite is
-rendered at that scale — layers 1 and 2 stretched with it, which costs nothing
-real, since the bleed is blurred by construction and the margin is scenery.
+**There was a version that rendered it larger, and it is what put a smear
+across the sky of a poster.** The reasoning looked sound: the 1536px cap in
+§2.1 is an *upload* limit, the writer's original is still in hand at
+1280–3000px, and layer 4 pastes it back without consulting the model — so
+render bigger and paste from the original. On a 1280px source that resolved to
+1.54×.
 
-The scale is the lower of two ceilings: the original's own pixel width, and
-`EXPAND_MAX_EDGE` (**3072**), which bounds the PNG that is held in memory and
-uploaded on Save.
+What it missed is that **the composite is one canvas.** Scaling it up scales
+every layer, and only layer 4 had more pixels to give:
 
-| Original | Scale | Composite | Photo | 1× card | 2× X export | 4× export |
-|---|---|---|---|---|---|---|
-| *(before)* | — | 1024×1536 | 830px | 1.11× up | 2.22× up | 4.43× up |
-| 1200px | 1.45 | 1480×2221 | 1200px | 0.77× | 1.53× up | 3.07× up |
-| 1600px | 1.93 | 1974×2961 | 1600px | 0.57× | 1.15× up | 2.30× up |
-| 2400px+ | 2.00 | 2048×3072 | 1660px | 0.55× | 1.11× up | 2.22× up |
+| Layer | At 1.54× |
+|---|---|
+| 1 — blurred bleed | upsampled, no new detail |
+| 2 — the model's drawn margin | **upsampled 1.54× from 1024×1536** |
+| 3 — feathered ring | 11 frame px → 17px |
+| 4 — the photograph | **1:1 from the original, genuinely sharper** |
 
-The card and the X export are now effectively 1:1 or better. The 4× export is
-still upscaled, and that is what `EXPAND_MAX_EDGE` is buying: covering it would
-need a 4537×6805 composite — 31M pixels, ~120MB in memory before encoding, on
-every enhance and every save. Raise the constant if the trade looks different
-in practice; it is the only number involved.
+So the drawn margin arrived soft and was butted straight against a sharp
+photograph, along a horizontal line the full width of the card at `place.y`,
+with 17px of feather to cross it — **0.72% of the image height**.
 
-**Two knock-on effects worth knowing.** The composite is now roughly 4× the
-pixels it was, so each enhanced image is around 9MB as a PNG rather than ~2MB —
-inside Storage's 50MB default object limit, but it is uploaded on Save, once
-per image. And `canvasToImage` encodes through `toBlob` rather than
-`toDataURL`, because a synchronous encode of 6M pixels froze the editor at the
-end of the call. It still produces a `data:` URL: `describeMainImage` reads the
-`data:` prefix to tell an enhance from an address, and a `blob:` URL would be
-recorded as the picture's permanent address and die with the tab.
+The shape of that failure is why it survived review. It showed badly along the
+top, where a sunset sky has no detail to disguise a sharpness step, and passed
+unnoticed along the bottom, where blocky landscape covered for it — so the
+symptom read as *"the model refused to paint the top margin"* when the model
+had in fact painted both.
+
+**Uniform beats sharp-in-places.** The photograph is now slightly softer than
+the original could support, and nothing on the card is sharper than what sits
+next to it. Getting that sharpness back is not a scale factor: it needs a
+feather wide enough to cross the step honestly, or a model that returns more
+than 1536px (§2.9).
+
+`canvasToImage` still encodes through `toBlob` rather than `toDataURL` — a
+synchronous encode froze the editor at the end of the call. It produces a
+`data:` URL deliberately: `describeMainImage` reads that prefix to tell an
+enhance from an address, and a `blob:` URL would be recorded as the picture's
+permanent address and die with the tab.
 
 ### 2.9 The model ladder
 

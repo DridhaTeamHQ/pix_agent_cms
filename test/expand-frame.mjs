@@ -117,13 +117,10 @@ const api = new Function(
     ${fnSrc("buildExpandFrame")}
     ${fnSrc("composeExpandResult")}
     ${fnSrc("posterVisibleRect")}
-    ${fnSrc("expandOutputScale")}
     const EXPAND_COMMIT_ZOOM = ${app.match(/^const EXPAND_COMMIT_ZOOM = (.+);$/m)[1]};
-    const EXPAND_MAX_EDGE = ${app.match(/^const EXPAND_MAX_EDGE = (\d+);$/m)[1]};
     return {
       planExpandPlacement, buildExpandFrame, composeExpandResult,
-      posterVisibleRect, expandOutputScale,
-      EXPAND_COMMIT_ZOOM, EXPAND_MAX_EDGE,
+      posterVisibleRect, EXPAND_COMMIT_ZOOM,
     };
   `,
 )(documentStub, MARGIN_AREA, TOP_BIAS, HEADROOM, () => activePreset);
@@ -427,35 +424,42 @@ console.log("\nA person still gets the room below them, inside the visible area"
    and while it did, the card showed an 830px photograph stretched over a
    920px frame and the 4x export invented three quarters of its pixels.
 
-   What has to hold: the scale never invents pixels the original does not
-   have, never blows past the memory and upload budget, and never renders the
-   composite smaller than the frame the model was given. And at scale 1 every
-   rect must round back to exactly the unscaled one, because that is the case
-   every assertion above this point is written against. */
+   That reasoning was right about the photograph and wrong about the canvas,
+   and a poster showed it: the composite is ONE canvas, so a scale that gave
+   layer 4 real pixels gave layer 2 only interpolated ones. The margin arrived
+   1.54x upsampled against a photograph at 1:1, joined along the full width of
+   the card with a 17px feather. A smear across the sky.
 
-console.log("\nThe output scale respects both ceilings and the floor");
+   So nothing passes a scale any more, and this is what holds it that way. The
+   parameter survives only as an identity, because every assertion above this
+   point is written against the unscaled rects. */
+
+console.log("\nNo caller sharpens one layer of the composite and not the other");
 {
-  const place = api.planExpandPlacement(
-    1536, 864, 1024, 1536, "moderate", "people", api.posterVisibleRect(1024, 1536),
-  );
-  const budget = api.EXPAND_MAX_EDGE / 1536;
+  /* Read from the source: a call site that passes a 5th argument to
+     composeExpandResult is the regression coming back. The scale can only
+     ever be right for the layer that has pixels to spare, and on this canvas
+     that is never all of them. */
+  const callSites = [...app.matchAll(/composeExpandResult\(([^)]*)\)/g)]
+    .map((m) => m[1].trim())
+    // Skip the definition, and skip prose references — the comments above
+    // name this function repeatedly as `composeExpandResult()`, and an empty
+    // argument list is a mention, not a call.
+    .filter((args) => args.length > 0 && !/^resultImg/.test(args));
 
-  const small = api.expandOutputScale({ naturalWidth: 600 }, place);
-  ck("a source smaller than the placement is never blown up", small === 1,
-     `scale ${small} from a 600px original into a ${place.w}px slot`);
+  ck("composeExpandResult is actually called somewhere", callSites.length >= 1,
+     "the compose step vanished — layer 4 is the only guarantee in the pipeline");
 
-  const exact = api.expandOutputScale({ naturalWidth: place.w * 2 }, place);
-  ck("a source with 2x to give is used at 2x", Math.abs(exact - 2) < 0.01, `scale ${exact}`);
+  for (const args of callSites) {
+    const arity = args.split(",").length;
+    ck(`called with ${arity} arguments, not a scale`, arity === 4,
+       `\`composeExpandResult(${args})\` — a 5th argument upsamples the drawn ` +
+       `margin against a photograph pasted at 1:1, which is the seam`);
+  }
 
-  const huge = api.expandOutputScale({ naturalWidth: 12000 }, place);
-  ck("a huge original is capped by EXPAND_MAX_EDGE",
-     Math.abs(huge - budget) < 0.01, `scale ${huge}, budget ${budget.toFixed(3)}`);
-  ck(`and the composite stays inside ${api.EXPAND_MAX_EDGE}px`,
-     Math.round(place.frameH * huge) <= api.EXPAND_MAX_EDGE,
-     `${Math.round(place.frameW * huge)}x${Math.round(place.frameH * huge)}`);
-
-  ck("a missing original falls to 1", api.expandOutputScale(null, place) === 1);
-  ck("so does a source with no dimensions", api.expandOutputScale({}, place) === 1);
+  ck("expandOutputScale is gone",
+     !/function expandOutputScale/.test(app),
+     "the helper is back; the seam comes with it");
 }
 
 console.log("\nScaling up moves every layer together, and the source lands last");

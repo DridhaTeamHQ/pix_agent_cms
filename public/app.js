@@ -5202,6 +5202,26 @@ function specAlpha(t) {
    Built once into a table because it is an integral, and read from a loop
    that runs per strip per render. */
 const RAMP_ONSET = 0.18;
+
+/* The same window at the OTHER end, and its absence was a visible edge.
+
+   The onset above rounds off the start: the curve accelerates from a
+   standstill instead of leaving the line at full pace. Nothing did that at the
+   finish, so the ramp arrived at 1 still climbing and was then held flat by
+   the clamp — a slope that goes from its full value to zero in one row, across
+   the whole width of the card, at a fixed height. That is a crease, and it is
+   the "hard stop" that gets reported: not the blur radius stepping, and not
+   the value jumping (the value is continuous), but its FIRST DERIVATIVE.
+
+   The eye resolves a change in slope far more readily than a change in value
+   — the same Mach-banding fact this file already leans on for the gradient
+   sample count. A ramp can be perfectly smooth everywhere and still show the
+   one place it stops being a ramp.
+
+   Symmetric with the onset because there is no reason for it not to be, and
+   the renormalisation below keeps the curve landing at exactly 1 either way. */
+const RAMP_TAPER = 0.18;
+
 const RAMP_SAMPLES_LUT = 512;
 
 const RAMP_TABLE = (() => {
@@ -5213,8 +5233,10 @@ const RAMP_TABLE = (() => {
     const t = i * step;
     // The design's own rate of climb at this depth, differenced off its stops.
     const slope = (specAlpha(t) - specAlpha(t - step)) / step;
-    // ...ramped in from zero over the first RAMP_ONSET of the band.
-    acc += slope * Math.min(1, t / RAMP_ONSET);
+    // ...ramped in from zero over the first RAMP_ONSET of the band, and back
+    // down to zero over the last RAMP_TAPER, so the curve arrives at 1 having
+    // already stopped climbing rather than being stopped by the clamp.
+    acc += slope * Math.min(1, t / RAMP_ONSET) * Math.min(1, (1 - t) / RAMP_TAPER);
     out[i] = acc;
   }
   if (acc > 0) for (let i = 0; i <= n; i++) out[i] /= acc;
@@ -5373,26 +5395,28 @@ const GLASS = (window.GLASS = Object.assign({
      Higher is smoother still and walks back towards the superimposed-sharp-
      copy problem this exists to solve: at 2.6 the first line keeps 56% of its
      detail, which is the defect, not a setting. */
-  /* 1.8, which is what the paragraph above already argued for and what this
-     had drifted below.
+  /* Below 1, and it has to be: the copy must sit on FULLY frosted picture.
 
-     At 0.9 the whole sharp-to-frosted crossfade is squeezed into 207px on a
-     9:16 card and reaches full presence 23px ABOVE the first line of copy —
-     where it is then clamped flat. That clamp is a first-derivative
-     discontinuity running the full width of the card at a fixed height, which
-     is the "hard stop" a reviewer reported seeing: not the blur radius
-     stepping, but the frost's PRESENCE arriving and stopping dead.
+     This was briefly 1.8, on the reasoning in the paragraph above — stretch
+     the crossfade, halve the worst row's share of it. The arithmetic was
+     right and the result was wrong, because the paragraph measures the ramp
+     and not what the ramp is under. frostReach is a multiple of where the
+     copy line falls, so 1.8 puts full presence 184px BELOW the first line and
+     leaves the copy itself sitting on 56% frost. Reported immediately, and
+     correctly, as the glass having gone.
 
-     It is worth being precise that this is the opposite of a smoothness knob
-     turned too far. 0.9 is BELOW the 1.0 the text above measures as the bad
-     case — the compressed one, where detail falls 100% to 7% across the
-     run-up and the worst single row carries 5.6% of the total drop. 1.8
-     halves that to 3.1%, spends 414px on the crossfade instead of 207, and
-     completes 184px past the copy top where the darkening is already deep
-     enough to hide what is left.
+       0.9  frost full at y=1186, copy at y=1209  ->  100% behind the copy
+       1.0  frost full at y=1209, copy at y=1209  ->  100%, with no margin
+       1.8  frost full at y=1393, copy at y=1209  ->   56%
 
-     Live: window.GLASS.frostReach = 1.2 then redraw, for a tighter frost. */
-  frostReach: 1.8,
+     So it goes back to 0.9, and the discontinuity that 1.8 was reaching for
+     is fixed where it actually lives: RAMP_TAPER, which stops the ramp
+     arriving at full presence still climbing. Stretching a ramp does not
+     smooth the corner at the end of it; easing the corner does.
+
+     Live: window.GLASS.frostReach = 1.2 then redraw, for a softer, later
+     frost — at the cost of clarity behind the first line. */
+  frostReach: 0.9,
 
   /* How many stops each ramp is described with.
 

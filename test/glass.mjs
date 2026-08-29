@@ -80,6 +80,9 @@ const specSrc = (() => {
    out of the source rather than restated, same rule as everything else here. */
 const onsetSrc = [
   app.match(/^const RAMP_ONSET = [\d.]+;/m)[0],
+  // The window at the far end. Its absence was the visible edge: the ramp
+  // arrived at full presence still climbing and was held flat by the clamp.
+  app.match(/^const RAMP_TAPER = [\d.]+;/m)[0],
   app.match(/^const RAMP_SAMPLES_LUT = \d+;/m)[0],
   (() => {
     const a = app.indexOf("const RAMP_TABLE = (");
@@ -688,6 +691,64 @@ console.log("\nThe blur is dithered, or it bands");
    destinations has to span the whole glass canvas. That survives someone
    retuning refractStrips, downscale, bleed or the bend, which a test written
    against "720 vs 721" would not.                                          */
+/* ── The ramp has to STOP climbing before it stops ───────────────────────────
+
+   Nothing measured this, and it was the reported edge.
+
+   The slope is windowed in over the first RAMP_ONSET so the curve accelerates
+   from a standstill instead of leaving the line at full pace. There was no
+   window at the other end, so it arrived at 1 still climbing at 43% of its
+   peak rate and was then held flat by the clamp. The VALUE is continuous
+   there; its first derivative is not, and the eye resolves a change in slope
+   far more readily than a change in value — the same Mach-banding fact this
+   file already leans on for gradientSamples. A full-width slope break at a
+   fixed height is what gets reported as a hard stop.
+
+   The trap this avoids: "smooth" tested as monotonic-and-continuous passes a
+   ramp that slams into a wall. What has to be asserted is the derivative at
+   the END, which is why measuring the peak alone never caught it.
+
+   Not asserted against a magic number: the arrival is compared to the ramp's
+   OWN peak, so it survives anyone reshaping SPEC_STOPS.                     */
+console.log("\nThe frost ramp arrives flat, rather than being clamped mid-climb");
+{
+  const { api, log, target } = build();
+  api.paintMistGlass(target, { width: W, height: H, copyTop: COPY });
+  const { presence } = ramps(log, target);
+
+  ck("the presence ramp was built", presence.length > 60, presence.length + " stops");
+
+  if (presence.length > 60) {
+    // Per-stop rise, normalised by stop spacing, so it is a slope and not a
+    // step count.
+    const slope = presence.slice(1).map((s, i) =>
+      (s.a - presence[i].a) / Math.max(1e-9, s.p - presence[i].p));
+    const peak = Math.max(...slope);
+
+    /* The tail of the CLIMB, not of the whole gradient: once the ramp reaches
+       1 it holds, and those flat stops would dilute the average to nothing and
+       make this pass regardless. Measure the last stretch before it tops out. */
+    const fullAt = presence.findIndex((s) => s.a >= 0.999);
+    const climb = fullAt > 0 ? slope.slice(0, fullAt) : slope;
+    const arrival = climb.slice(-Math.max(2, Math.round(climb.length * 0.06)));
+    const arrivalMean = arrival.reduce((a, b) => a + b, 0) / arrival.length;
+    const ratio = arrivalMean / peak;
+
+    ck("it decelerates into full presence, not into a wall",
+       ratio < 0.15,
+       `arrives at ${(ratio * 100).toFixed(1)}% of its peak slope — ` +
+       `above ~15% the clamp at the top is a visible full-width crease ` +
+       `(it was 43% before RAMP_TAPER)`);
+
+    /* And the taper must not have bought that by steepening the middle. The
+       source's own comment budgets the peak at about 1.43x average; the taper
+       redistributes a little weight inward and takes it to ~1.52x. */
+    const mean = climb.reduce((a, b) => a + b, 0) / climb.length;
+    ck("without steepening the middle to pay for it", peak / mean < 1.9,
+       `peak is ${(peak / mean).toFixed(2)}x the average climb`);
+  }
+}
+
 console.log("\nThe blurred strips cover the whole band, foot included");
 {
   const { api, log, target } = build();

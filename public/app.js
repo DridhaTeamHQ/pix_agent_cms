@@ -4300,25 +4300,60 @@ function drawPixTextScreen() {
   ctx.fillStyle = "#070707";
   ctx.fillRect(0, 0, W, H);
 
-  drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s);
+  /* "none", like the story page — and this is the other half of why the frost
+     could not be seen here.
 
-  const dim = ctx.createLinearGradient(0, 0, 0, H);
-  dim.addColorStop(0, "rgba(0, 0, 0, 0.68)");
-  dim.addColorStop(0.34, "rgba(0, 0, 0, 0.52)");
-  dim.addColorStop(0.62, "rgba(0, 0, 0, 0.68)");
-  dim.addColorStop(1, "rgba(0, 0, 0, 0.98)");
-  ctx.fillStyle = dim;
-  ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = "rgba(0, 0, 0, 0.22)";
-  ctx.fillRect(0, 0, W, H);
+     The default draws the photograph through blur(18px) brightness(62%)
+     across the WHOLE frame, so the picture arrived already soft and already
+     dark. A treatment that goes from sharp to frosted has nothing to show
+     when its input is uniformly frosted to begin with: there was no
+     transition on this page, only a flat blur that happened to look like one.
 
-  drawFixedLogos();
+     The picture is drawn sharp now and the glass supplies the softening where
+     the copy is, which is what the other two pages do. */
+  drawTextPreviewBackgroundImage(image, 0, 0, W, H, state.imageOffset, (state.imageZoom || 100) / 100, s, "none");
 
   const textX = L.headline.x;
   const minTextY = state.forceTextExport ? H * 0.16 : H * 0.1;
   const bottomTextPadding = state.forceTextExport ? L.headline.bottomPadding : 335;
   const lastLineY = H - bottomTextPadding * (H / 1700);
-  drawWrappedPreviewText(getDetailTextForPreview(), textX, minTextY, L.headline.maxWidth, lastLineY, 39 * s, 61 * s);
+  /* Measured before anything is painted over the photograph, because the glass
+     and the fade below are anchored to the top of this block. */
+  const textLayout = layoutWrappedPreviewText(
+    getDetailTextForPreview(), minTextY, L.headline.maxWidth, lastLineY, 39 * s, 61 * s);
+
+  /* ── The same treatment the poster and the story page get ──────────────
+
+     This page used to be the exception: a four-stop wash over the whole frame
+     — 0.68 at the top, 0.52, 0.68, 0.98 at the foot — with a flat 0.22 on top
+     of that. Between 75% and 98% black everywhere, which is why the frosted
+     glass could not be seen on this page. There was nothing to see: the
+     photograph was already gone before the copy was drawn.
+
+     It is the same glass and the same fade as the other two pages now,
+     anchored to the copy the same way.
+
+     The veil is what the wash leaves behind, and it is here for a real reason
+     rather than as a leftover. The other two pages put their copy in a known
+     place near the foot, so the ramp always has run-up above it. This page's
+     copy GROWS UPWARD from the foot and is clamped at minTextY, so a long
+     enough post starts its first line a tenth of the way down the card, where
+     the ramp has barely begun. The veil is the floor that keeps that first
+     line legible; the glass supplies the build and the frost on top of it. */
+  ctx.fillStyle = `rgba(0, 0, 0, ${GLASS.textPageVeil})`;
+  ctx.fillRect(0, 0, W, H);
+
+  paintMistGlass(ctx, { width: W, height: H, copyTop: textLayout.startY });
+  paintBottomFade(ctx, {
+    width: W,
+    height: H,
+    copyTop: textLayout.startY,
+    fadeHeight: L.gradient.fadeHeight,
+  });
+
+  drawFixedLogos();
+
+  drawWrappedPreviewTextLayout(textLayout, textX, L.headline.maxWidth);
 
   if (!state.forceTextExport) {
     drawEngagementBar();
@@ -4527,7 +4562,6 @@ function drawStoryScreen() {
     width: W,
     height: H,
     copyTop: top,
-    fadeHeight: blurReach(L.gradient.fadeHeight),
     opacity: clamp(numberOr(state.storyOverlayOpacity, 100) / 100, 0, 1),
   });
   paintBottomFade(ctx, {
@@ -4828,15 +4862,14 @@ function drawPixStatusBar(scaleX, scaleY, s) {
   ctx.restore();
 }
 
-function drawWrappedPreviewText(text, x, minY, maxWidth, maxY, fontSize, lineHeight) {
-  ctx.save();
-  ctx.fillStyle = "#ffffff";
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  ctx.shadowColor = "rgba(0, 0, 0, 0.48)";
-  ctx.shadowBlur = 14;
-  ctx.shadowOffsetY = 5;
+/* Where the text page's copy lands, worked out without drawing it.
 
+   Split from the drawing for the same reason the story page measures its block
+   first: the glass and the fade are anchored to the top of the copy, so the
+   treatment underneath cannot be painted until the copy's position is known.
+   Painting first is exactly what forced this page to use a fixed full-frame
+   wash — at that point nothing here knew where the words were going to sit. */
+function layoutWrappedPreviewText(text, minY, maxWidth, maxY, fontSize, lineHeight) {
   const preserveOpenBullet = !state.isDownloading && state.previewMode === "text";
   const fit = fitPreviewTextLines(text, maxWidth, minY, maxY, fontSize, lineHeight, { preserveOpenBullet });
   const { lines, visibleLines } = fit;
@@ -4848,9 +4881,24 @@ function drawWrappedPreviewText(text, x, minY, maxWidth, maxY, fontSize, lineHei
     visibleLines[ellipsisIndex] = `${visibleLines[ellipsisIndex]}...`;
   }
 
+  ctx.save();
   ctx.font = `${PREVIEW_TEXT_WEIGHT} ${Math.round(fit.fontSize)}px ${PREVIEW_TEXT_FONT}`;
   const visibleHeight = visibleLines.reduce((sum, line) => sum + getPreviewTextStep(line, fit.lineHeight), 0);
+  ctx.restore();
   const startY = Math.max(minY, maxY - Math.max(0, visibleHeight - fit.lineHeight));
+  return { fit, visibleLines, ellipsisIndex, startY };
+}
+
+function drawWrappedPreviewTextLayout(layout, x, maxWidth) {
+  const { fit, visibleLines, ellipsisIndex, startY } = layout;
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.48)";
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 5;
+  ctx.font = `${PREVIEW_TEXT_WEIGHT} ${Math.round(fit.fontSize)}px ${PREVIEW_TEXT_FONT}`;
   let cy = startY;
   visibleLines.forEach((visibleLine, index) => {
     if (visibleLine) {
@@ -4863,6 +4911,11 @@ function drawWrappedPreviewText(text, x, minY, maxWidth, maxY, fontSize, lineHei
     cy += getPreviewTextStep(visibleLine, fit.lineHeight);
   });
   ctx.restore();
+}
+
+function drawWrappedPreviewText(text, x, minY, maxWidth, maxY, fontSize, lineHeight) {
+  drawWrappedPreviewTextLayout(
+    layoutWrappedPreviewText(text, minY, maxWidth, maxY, fontSize, lineHeight), x, maxWidth);
 }
 
 function fitPreviewTextLines(text, maxWidth, minY, maxY, fontSize, lineHeight, options = {}) {
@@ -5032,28 +5085,96 @@ function drawBackground() {
    that work now, and does it better, so the colour no longer needs the runway:
    at 0.6 it begins just above the copy, around 59%, and the picture above is
    left alone. */
-const FADE_STRETCH = 0.6;
+/* 2.0, from the gradient spec. Measured off the mock, its stops run from 21%
+   of the card down to 61%, completing at the first line — about 680px on a
+   1700px frame, against the 198px this used to run in. The shape below only
+   reads as that shape if it is given that distance. */
+const FADE_STRETCH = 2.0;
 
-/* The blur gets its own, shorter reach.
-
-   Sharing one number with the colour was wrong in a way the numbers hid: the
-   mask ramps 0 to 1 across the reach, so at 0.6 the picture is already
-   half-blurred a third of the way up the frame from the copy. Softening starts
-   being visible long before it is complete, which is why it read as blurring
-   from halfway up the image when the colour was correctly placed.
-
-   At 0.25 the mist begins just above the first line and is done by it. The
-   colour still wants the longer run — it has to arrive gradually or it bands —
-   but the blur does not: going from sharp to frosted quickly is what makes it
-   look like a pane of glass sitting there rather than a lens going soft. */
-const FADE_BLUR_STRETCH = 0.45;
 
 function fadeReach(layoutFade) {
   return layoutFade * FADE_STRETCH;
 }
 
-function blurReach(layoutFade) {
-  return layoutFade * FADE_BLUR_STRETCH;
+
+/* ── The one darkening profile ───────────────────────────────────────────────
+
+   The shape from the design tool, as three stops: transparent at the top,
+   80% at 63% of the way down, solid at the foot.
+
+   It lives out here because BOTH ramps have to follow it. They did not, and
+   that is the whole of what "not at all smooth" was: the fade ran this curve
+   over 660px while the glass ran a smoothstep over 123px inside it, so the
+   card darkened gently, then fell off a 123px cliff, then sat flat. Two
+   profiles disagreeing in the same band cannot be tuned into one — the
+   steeper one is what the eye finds, whatever the other is doing.
+
+   Linear between stops, which is what a gradient tool does; the callers
+   sample it densely enough that the joins do not read as slope changes. */
+const SPEC_STOPS = [
+  [0, 0],
+  [0.63, 0.8],
+  [1, 1],
+];
+
+function specAlpha(t) {
+  for (let k = 1; k < SPEC_STOPS.length; k++) {
+    const [p0, a0] = SPEC_STOPS[k - 1];
+    const [p1, a1] = SPEC_STOPS[k];
+    if (t <= p1) return a0 + ((a1 - a0) * (t - p0)) / (p1 - p0);
+  }
+  return 1;
+}
+
+/* ── The onset, eased ────────────────────────────────────────────────────────
+
+   specAlpha is the design's profile exactly, and the design's profile is
+   piecewise linear: it goes from not climbing at all to climbing at its full
+   rate over no distance whatsoever. A step in SLOPE is what the eye is
+   actually good at - it is why a gradient built from a handful of stops shows
+   a line at every join though its values are continuous - and this one would
+   sit at the top of the band, which is exactly where a line was reported in
+   this treatment before.
+
+   The obvious fix is to multiply the curve by a smoothstep over its first
+   stretch. That was tried and measured on the rendered card and it is worse
+   than it looks: multiplying a ramp by a curve that reaches 1 means the
+   product's slope reaches 1.69x the ramp's own, so easing the onset bought a
+   68% steeper patch a fifth of the way down. Measured 0.28 levels per pixel
+   against an average of 0.13.
+
+   So the window is applied to the SLOPE and the result renormalised. The
+   curve accelerates from a standstill, never climbs faster than it has to,
+   and still lands at 1 - the design's shape with its first corner rounded off
+   rather than its middle steepened. Peak comes down to about 1.43x average.
+
+   Built once into a table because it is an integral, and read from a loop
+   that runs per strip per render. */
+const RAMP_ONSET = 0.18;
+const RAMP_SAMPLES_LUT = 512;
+
+const RAMP_TABLE = (() => {
+  const n = RAMP_SAMPLES_LUT;
+  const out = new Float64Array(n + 1);
+  const step = 1 / n;
+  let acc = 0;
+  for (let i = 1; i <= n; i++) {
+    const t = i * step;
+    // The design's own rate of climb at this depth, differenced off its stops.
+    const slope = (specAlpha(t) - specAlpha(t - step)) / step;
+    // ...ramped in from zero over the first RAMP_ONSET of the band.
+    acc += slope * Math.min(1, t / RAMP_ONSET);
+    out[i] = acc;
+  }
+  if (acc > 0) for (let i = 0; i <= n; i++) out[i] /= acc;
+  return out;
+})();
+
+function rampAlpha(t) {
+  const n = RAMP_SAMPLES_LUT;
+  const x = Math.min(1, Math.max(0, t)) * n;
+  const i = Math.min(n - 1, Math.floor(x));
+  return RAMP_TABLE[i] + (RAMP_TABLE[i + 1] - RAMP_TABLE[i]) * (x - i);
 }
 
 
@@ -5108,7 +5229,7 @@ const GLASS = (window.GLASS = Object.assign({
      panel later. Brightness stays at the 9 from the picker. */
   hue: 33,
   saturation: 0,    // 0 = neutral black. 0.35 was the brown.
-  brightness: 0.09, // FIXED. From the picker.
+  brightness: 0.09, // 0.09 was the picker's; darkened on request.
 
   /* One colour on every card, rather than the hue read from each photograph.
 
@@ -5130,23 +5251,153 @@ const GLASS = (window.GLASS = Object.assign({
      The per-image path is gone rather than flagged off: the hue measurement
      it needed went with the fade's own tint, and a flag pointing at deleted
      machinery is worse than no flag. */
-  fillAlpha: 0.85,  // FIXED. The 85% beside the hex.
+  fillAlpha: 0.85,  // the 85% beside the hex, taken up on request.
 
   /* Blur is quoted in the design's own units — 16 on a 382-wide card — and
      scaled to whatever the poster canvas actually is, so the frost is the
      same thickness relative to the card at any export size. */
+  /* 14 on a 382-wide card — 34px on the 920 poster.
+
+     It was 26 (63px) while the ramp was 123px long, which is half a pixel of
+     radius gained per pixel descended. Sharpness is the one property of a
+     photograph the eye can check without a reference — it knows what a
+     building in focus looks like — so a gradient that steep in RADIUS is
+     findable even when the alpha under it is perfectly smooth. That is what
+     survived every previous round of tuning.
+
+     Over the full-height ramp the same 26 would still work, but the design
+     this is matching has no blur in it at all: the transition there is
+     carried entirely by the darkening. Halving it keeps the surface reading
+     as glass while handing the actual transition back to the gradient, which
+     is the part the eye cannot catch. */
   blurAt: 16,
+
+  /* How far the blur LAGS the darkening, as an exponent on the shared ramp.
+
+     1 is the two moving together. It was 2 while the band started 272px above
+     the copy: the lag existed to keep the radius climbing BELOW the type, and
+     with that much run-up the type sat a third of the way down the band with
+     plenty of ramp above it to hold back.
+
+     The run-up is 65 now, so the copy line falls about a tenth of the way into
+     the band and almost the whole ramp is already below it - the lag has
+     nothing left to protect and only starves the first two lines of the frost
+     that was asked for. At 2 the first line measured sigma 1.6; at 1 it is
+     9.4, with the steepest climb still landing well below the copy.
+
+     Above 1 holds the frost back towards the foot again. */
+  blurCurve: 1,
+
+  /* How many pre-blurred copies of the downscaled band to build.
+
+     The blur is applied in the small canvas's own space and multiplied by the
+     upscale on the way out, which is what makes a large radius affordable —
+     but it means the radius has to be baked into a copy rather than set per
+     strip. Twelve levels across the ramp is about a fifth of a pixel of sigma
+     between neighbours on the card; the per-strip version it replaced already
+     rounded to a quarter. */
+  blurLevels: 12,
+
+  /* How far into the band the blurred picture is fully present, as a fraction.
+
+     Not the same thing as the darkening's ramp, and that is the point. Below
+     this the blurred layer is being faded in over the sharp original and the
+     eye reads focus from the sharp half; above it there is no sharp copy left
+     and the radius can grow as far as it likes without any crossfade to
+     notice. 0.35 puts it at about the first line of copy.
+
+     A MULTIPLE of where the copy line falls in the band, not a fraction of
+     the band: 1 means fully present exactly when the copy starts, whatever
+     runUpAboveCopy is set to.
+
+     1.8 puts it at about the second line, and that is a balance rather than a
+     preference. The run-up is 65px, so at 1 the whole sharp-to-frosted
+     crossfade is compressed into those 65px: measured on a fine-textured
+     source, detail falls from 100% to 7% of clear across them and the worst
+     single row carries 5.6% of the total. Stretching it to the second line
+     halves that to 3.1% while still leaving only 32% of the detail standing
+     where the first line sits — weak enough, under the darkening, not to read
+     as a sharp copy.
+
+     Higher is smoother still and walks back towards the superimposed-sharp-
+     copy problem this exists to solve: at 2.6 the first line keeps 56% of its
+     detail, which is the defect, not a setting. */
+  frostReach: 0.9,       // must fall with the run-up; see below
+
+  /* How many stops each ramp is described with.
+
+     addColorStop interpolates LINEARLY, so a gradient is a chain of straight
+     segments with a slope change at every join, and the eye resolves a change
+     in slope far more readily than a change in value. 64 across a 763px band
+     is a join every 12px, which was under the threshold while ONE gradient
+     carried the whole treatment. Splitting frost from darkening put two
+     gradients over the same span with their joins at the same offsets, and the
+     slope changes add: measured 1.55 levels of 255 on a smooth source against
+     0.97 before the split, with 55 rows showing a step.
+
+     Measured, not guessed: 96 is the knee (55 rows -> 2), and 256 takes the
+     worst row back to 0.94 with none stepping at all, which is where it was
+     before the split. About 1ms a page for the last of that. */
+  gradientSamples: 256,
+
+  /* How much noise goes back over the blurred picture, breaking up the 8-bit
+     staircase the blur creates by averaging the photograph's own away. Scales
+     the noise tile's spread; see glassNoise. 0 turns it off and the contour
+     bands come back. */
+  dither: 0.12,
   blurCardWidth: 382,
   downscale: 4,     // the blur is reached by downsampling; see paintMistGlass
 
   refract: 0.022,   // how far the glass bends the picture, as a share of width
-  refractStrips: 56,// depth resolution of the bend
-  reach: 2.2,       // multiplies the caller's fadeHeight; the dissolve length
+  refractStrips: 56,// depth resolution of the bend, and of the blur ramp
+  /* ── How far above the first line the glass begins ────────────────────
 
-  /* The fill is 85% of a near-black, so it does the darkening the gradient
-     used to. Left at 0.85 the two would stack to near-opaque and the
-     photograph would be gone entirely. */
+     In the 1700px reference frame, scaled to whatever the card actually is.
+     272 is about four and a half lines at the poster's 62px line height.
+
+     This replaces `reach` and `startBelowCopy`, which between them decided
+     that the band started AT the copy and ran 123px. Both were tuned
+     repeatedly and neither could work: a ramp that short has to be steep, and
+     one that starts on the type puts its steepest part where the eye is
+     already looking. The run-up moves the onset into empty picture and the
+     band's own height supplies the length.
+
+     65 is about one line-height at the poster's 62px, and it is where the
+     treatment was asked to begin - marked on a card, a little above the first
+     row of copy. It was 272, roughly two lines further up.
+
+     The shorter run-up is not free: the darkening has 556px to build across
+     instead of 763, so its steepest run goes from 0.30 to about 0.41 levels
+     per pixel. That is still five times gentler than the 2.0 cliff this
+     treatment started from, and well inside the design's own slope, but it is
+     the direction that made the edge findable before - so it is worth knowing
+     which way this knob trades.
+
+     Tunable live: window.GLASS.runUpAboveCopy = 272 then redraw restores the
+     longer, gentler build. */
+  runUpAboveCopy: 230,   // marked on the card: start the blend lower
+
+  /* The fill does most of the darkening; this is the gradient's share on top.
+
+     The two compose MULTIPLICATIVELY - the fade darkens what the fill left,
+     it does not add to it - so what has to stay bounded is the product of
+     what each one passes through: (1 - fillAlpha) x (1 - fadeMax), the
+     fraction of the photograph still visible at the foot. At 0.88 and 0.24
+     that is 9.1%, against 12% before. Below about 7% the picture stops being
+     a picture and the card is a black panel with type on it. */
   fadeMax: 0.20,
+
+  /* The text page's floor, under the glass rather than instead of it.
+
+     The poster and the story page put their copy in a known place near the
+     foot, so the ramp always has run-up above it. The text page's copy grows
+     UPWARD from the foot and is clamped at a tenth of the card, so a long
+     enough post starts its first line where the ramp has hardly begun. This is
+     the floor that keeps that line legible; the glass builds on top of it.
+
+     Set by measurement, not taste: white body copy on a bright photograph has
+     to clear 4.5:1 at the first line in that worst case. */
+  textPageVeil: 0.42,
 }, window.GLASS));
 
 /* ── Scratch canvases, kept rather than remade ───────────────────────────────
@@ -5181,17 +5432,84 @@ function glassScratch(role, width, height) {
   return cv;
 }
 
-function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 1 }) {
-  /* The glass gets a longer run-up than the caller's fadeHeight gives it.
-     blurReach() hands over 149px on a 1700px card, and 149px is enough to
-     ARRIVE in but not enough to DISSOLVE in: the picture goes from sharp to
-     frosted inside a ninth of the card and the boundary is findable even
-     when the alpha curve under it is perfectly smooth. */
-  const reach = fadeHeight * GLASS.reach;
-  const start = Math.max(0, copyTop - reach);
+/* ── Dither, because the blur is too good ─────────────────────────────────────
+
+   A photograph carries sensor noise, and that noise is what keeps a smooth
+   sky from banding: it dithers the 8-bit quantisation so the steps between
+   adjacent values fall in different places on each row. Blurring averages it
+   away. What is left is a mathematically smooth gradient, and a smooth
+   gradient in 8 bits is a staircase — flat for as many rows as it takes the
+   true value to cross the next 1/255, then a step.
+
+   Measured on a photo-like ramp with the glass on: 33 runs where the row mean
+   held the SAME value for four or more rows, the longest for thirty. With the
+   glass off and only the darkening applied, zero. That is the "layered lines",
+   and it is not the strips, the levels or the ramps — all of those measure
+   clean. It is the blur doing its job.
+
+   So a little noise goes back in. One tile, built once and repeated, laid over
+   the finished glass in "overlay" so mid-grey is a no-op and the deviations
+   lighten and darken symmetrically. It only has to be about a level to break
+   the staircase up. */
+let glassNoiseTile = null;
+
+function glassNoise() {
+  if (glassNoiseTile) return glassNoiseTile;
+  const tile = document.createElement("canvas");
+  tile.width = 128;
+  tile.height = 128;
+  const tctx = tile.getContext("2d");
+  if (!tctx) return null;
+  const id = tctx.createImageData(128, 128);
+  for (let i = 0; i < id.data.length; i += 4) {
+    /* Centred on 128 so "overlay" leaves the average untouched. The spread is
+       what becomes the dither amplitude once GLASS.dither scales it down. */
+    const v = 128 + Math.round((Math.random() * 2 - 1) * 90);
+    id.data[i] = v;
+    id.data[i + 1] = v;
+    id.data[i + 2] = v;
+    id.data[i + 3] = 255;
+  }
+  tctx.putImageData(id, 0, 0);
+  glassNoiseTile = tile;
+  return tile;
+}
+
+function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
+  /* The glass takes its geometry from GLASS.runUpAboveCopy and the height of
+     its own band, not from the caller's fadeHeight - which it used to be
+     handed through blurReach() and which could only ever be a fraction of a
+     ramp that was too short to begin with. It handed over 149px on a 1700px
+     card, and 149px is enough to ARRIVE in but not enough to DISSOLVE in. */
+  /* ── Where the glass begins, and how long it has to get there ─────────
+
+     Both of these were wrong, and no amount of curve-shaping could cover it.
+
+     It began AT the first line (startBelowCopy = 0) and reached full strength
+     123px later, a quarter of the way into a 491px band. Measured off the
+     rendered card that is 92 of the 95 available levels of darkening inside
+     120px — from line one to line three — against three levels across the
+     whole run-up above it. A ramp that does nothing and then does everything
+     is an edge with a soft top, and the eye finds it exactly where the type
+     is, because that is where it lands.
+
+     Peak slope tells the story: 1.22% per px against the design tool's 0.21%.
+     Six times steeper. The curve was never the problem — smoothstep,
+     smootherstep, 64 samples, per-strip radii all argued over the shape of a
+     ramp too short to matter.
+
+     So: start it a good way ABOVE the copy, where there is nothing for the
+     onset to be measured against, and let it run the full height of the band.
+     GLASS.runUpAboveCopy is in 1700-space and scales with the frame; the
+     clamp keeps a tall setting from starting above the top of the card. */
+  const runUp = Math.min(copyTop, GLASS.runUpAboveCopy * (height / 1700));
+  const start = Math.max(0, copyTop - runUp);
   const span = height - start;
   if (span <= 0) return;
-  const copyFrac = Math.min(1, Math.max(0, (copyTop - start) / span));
+  /* The ramp IS the band now. It follows specAlpha across all of it, the same
+     profile the bottom fade runs, so the two darkenings are one build rather
+     than a cliff hidden inside a slope. */
+  const copyFrac = 1;
   const glassTint = glassPanelColour();
 
   const canvas = target.canvas;
@@ -5271,17 +5589,86 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
      it at an angle, and it also puts the distortion where the photograph is
      still legible — by the time the copy starts, the picture is far enough
      gone that bending it further would only cost contrast. */
-  /* The 16px blur is specified against a 382-wide card, so it scales with the
-     canvas. Most of it is delivered by the downsample itself — drawing the
-     band at 1/4 size and scaling back up IS a blur of roughly that factor —
-     and the ctx.filter below only has to supply the remainder. Asking
-     ctx.filter for the whole 38px directly is the single most expensive call
-     in a loop that runs on every drag; this way it costs a fraction. */
+  /* The blur is specified against a 382-wide card, so it scales with the
+     canvas.
+
+     It used to be divided by GLASS.downscale before being handed to
+     ctx.filter, on the reasoning that "most of it is delivered by the
+     downsample itself - drawing the band at 1/4 size and scaling back up IS a
+     blur of roughly that factor - and ctx.filter only has to supply the
+     remainder".
+
+     That is wrong, and it cost three quarters of the effect. The filter is set
+     on `g`, the FULL-SIZE context, so it resolves in destination pixels; the
+     division would only be recovered if the blur happened in the small
+     canvas's own space, before the 4x upscale. It does not, so the divide is
+     simply lost. And the premise is wrong too: downsampling by four discards
+     detail finer than about four pixels, it does not multiply a later blur by
+     four.
+
+     Measured on the rendered card at blurAt 34: the foot asked for 77px and
+     received a Gaussian of sigma 16.4 - read off the 10-90% width of a hard
+     edge, which is 2.563 sigma. Line three asked 31 and got 3.9.
+
+     So the radius goes to ctx.filter as-is. blurAt is retuned to match, since
+     the number now means what it says. */
   const blurTarget = (GLASS.blurAt * devW) / GLASS.blurCardWidth;
-  const smallBlur = `blur(${Math.max(1, Math.round(blurTarget / GLASS.downscale))}px)`;
+  const smallBlur = `blur(${Math.max(1, Math.round(blurTarget))}px)`;
+
+  /* ── The blur, done where it is cheap ─────────────────────────────────
+
+     Setting ctx.filter on the full-size context and letting each strip carry
+     its own radius is the obvious way and it is unaffordable: at the radii
+     this now asks for, a paint measured 140ms against 3ms. Fifty-six blurs of
+     a 920-wide band, at sigma up to 60, on every drag.
+
+     The band is already held at 1/GLASS.downscale for the read-back, and a
+     blur applied THERE is multiplied by the upscale on the way out — sigma 15
+     on the quarter-size copy lands as sigma 60 on the card, over a sixteenth
+     of the pixels. So the levels are built once, in small space, and the
+     strips just draw from whichever one matches their depth.
+
+     Quantising to GLASS.blurLevels steps rather than a radius per strip is
+     what makes that a fixed cost instead of a per-strip one. Twelve levels
+     across the ramp is a fifth of a pixel of sigma between neighbours on the
+     card, well under the quarter-pixel the per-strip version already rounded
+     to.
+
+     Padded and edge-extended before blurring, because a blur samples outward
+     and there is nothing past the edge of the small canvas: those samples come
+     back transparent, and at the foot that reads as the glass thinning out and
+     the sharp photograph coming back through at the very bottom of the card. */
+  const maxSigmaSmall = blurTarget / GLASS.downscale;
+  const levels = Math.max(2, Math.round(GLASS.blurLevels));
+  const pad = Math.max(2, Math.ceil(maxSigmaSmall * 3));
+  const padH = sh + pad * 2;
+  const padded = glassScratch("padded", sw, padH);
+  const pctx = padded && padded.getContext("2d");
+  const blurLevel = [];
+  if (pctx) {
+    pctx.setTransform(1, 0, 0, 1, 0, 0);
+    pctx.filter = "none";
+    pctx.clearRect(0, 0, sw, padH);
+    pctx.drawImage(small, 0, pad);
+    // Edge rows stretched into the padding, so the blur has something to read.
+    pctx.drawImage(small, 0, 0, sw, 1, 0, 0, sw, pad);
+    pctx.drawImage(small, 0, sh - 1, sw, 1, 0, sh + pad, sw, pad);
+    for (let k = 0; k < levels; k++) {
+      const sigma = (maxSigmaSmall * k) / (levels - 1);
+      const lv = glassScratch("blur" + k, sw, padH);
+      const lctx = lv && lv.getContext("2d");
+      if (!lctx) break;
+      lctx.setTransform(1, 0, 0, 1, 0, 0);
+      lctx.clearRect(0, 0, sw, padH);
+      lctx.filter = sigma >= 0.3 ? `blur(${Math.round(sigma * 4) / 4}px)` : "none";
+      lctx.drawImage(padded, 0, 0);
+      lctx.filter = "none";
+      blurLevel.push(lv);
+    }
+  }
 
   const bendMax = devW * GLASS.refract;
-  if (bendMax >= 0.5) {
+  if (bendMax >= 0.5 && blurLevel.length) {
     const strips = Math.max(8, Math.round(GLASS.refractStrips));
     const stripH = glass.height / strips;
     // Sampled a strip taller than it is drawn, so a bent strip never exposes
@@ -5289,27 +5676,126 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
     const bleed = Math.max(1, stripH * 0.6);
     for (let i = 0; i < strips; i++) {
       const t = i / (strips - 1);
-      const wave = Math.sin(t * 7.6) * 0.62 + Math.sin(t * 17.3 + 1.7) * 0.38;
+      /* Two slow waves, not two fast ones.
+
+         The step in displacement between neighbouring strips is
+         bendMax * |dwave/dt| / strips, and at 7.6 and 17.3 that derivative
+         peaks near 11 — which over 56 strips put adjacent ten-pixel slabs up
+         to four pixels apart sideways. Measured on the rendered card: a 7px
+         lateral jump across 3px of height. That is not a bend, it is tearing,
+         and it is what the layered lines were.
+
+         At 2.3 and 3.9 the derivative peaks near 2.9, and the strip count
+         below carries the rest. The bend still never repeats visibly — that is
+         what two unrelated frequencies buy — it just happens over the depth of
+         the band rather than within a few strips of it. */
+      const wave = Math.sin(t * 2.3) * 0.62 + Math.sin(t * 3.9 + 1.7) * 0.38;
       // Falls from full bend at the leading edge to a third of it at the foot.
       const depth = 1 - 0.66 * t;
       const dx = wave * bendMax * depth;
-      // A little vertical give as well, or the bend reads as a shear.
-      const dy = Math.cos(t * 11.1) * bendMax * 0.35 * depth;
+      /* A little vertical give as well, or the bend reads as a shear.
+
+         Slowed from 11.1 to match the sideways wave, so the surface undulates
+         as one thing rather than wobbling vertically at four times the rate it
+         bends horizontally.
+
+         NOT because 11.1 put the strips out of order, which is what this
+         comment claimed at first and is wrong: the step between neighbours is
+         amplitude * |dcos/dt| / strips, which even at 11.1 is 0.54px against a
+         strip height of 7 — nowhere near enough to reorder them. The test that
+         appeared to show reordering was in fact reading the cross-fade's two
+         draws per strip as two strips. Checked by reverting: the suite passes
+         either way, so this is a look, not a fix. */
+      const dy = Math.cos(t * 2.7) * bendMax * 0.35 * depth;
       /* Named for what it is, and NOT `sy` — that is the transform's scale-y,
          declared above and load-bearing for export correctness. Shadowing it
          inside the one loop that also does coordinate maths is how the
          design-space/device-pixel bug this function exists to avoid gets
          reintroduced by someone reading quickly. */
-      const stripSrcY = (i * stripH - bleed) / GLASS.downscale;
-      const stripSrcH = (stripH + bleed * 2) / GLASS.downscale;
-      g.filter = smallBlur;
-      g.drawImage(
-        small,
-        0, Math.max(0, stripSrcY), sw, Math.min(sh, stripSrcH),
-        dx, i * stripH - bleed + dy, glass.width, stripH + bleed * 2,
-      );
+      /* Clamped as an INTERVAL, not as two independent numbers. Taking
+         min(sh, stripSrcH) bounds the height but not srcY + srcH, so the last
+         strips ask for pixels past the bottom of the small canvas; the read is
+         short and the strip is drawn stretched. Harmless at fifty-six strips
+         where the overhang is a fraction of one, live at refractStrips <= 8. */
+      const stripSrcY0 = Math.max(0, (i * stripH - bleed) / GLASS.downscale);
+      const stripSrcY1 = Math.min(sh, (i * stripH + stripH + bleed) / GLASS.downscale);
+      const stripSrcH = Math.max(1, stripSrcY1 - stripSrcY0);
+
+      /* ── The blur RAMPS, rather than being faded in at full strength ──────
+
+         Until now one fully-blurred layer was alpha-faded over the sharp
+         picture. Halfway through that ramp you are looking at both at once —
+         a sharp image and a 63px-blurred one superimposed at half strength —
+         and the eye reads the sharp copy still sitting in it. That is what
+         makes the transition findable however smooth the alpha curve is: the
+         curve is smooth, but what it is fading between is two different
+         pictures rather than two amounts of the same effect.
+
+         Ramping the radius instead means every depth is a single, genuinely
+         blurred image at its own strength. Nothing is superimposed and there
+         is no sharp copy left to notice.
+
+         It costs nothing here because the refraction already redraws the band
+         as strips: the radius simply varies per strip.
+
+         The step between neighbours is blurTarget / strips, so it is the RAMP
+         that has to cover the strips, not the band. This comment used to claim
+         all fifty-six carried it, and that was wrong when it was written: the
+         ramp then ended at copyFrac = 0.26, so fourteen strips carried the
+         whole thing at 1.75px apart. It is true now only because the ramp runs
+         the full band - about a fifth of a pixel between neighbours, which a
+         diff against a constant-radius render puts at under 0.01 of 255 levels
+         on the finished card. If copyFrac is ever shortened again, this
+         divides by fourteen, not fifty-six. */
+      /* The blur follows the darkening's curve RAISED TO A POWER, so it lags
+         it: barely there where the band begins, and piling up towards the
+         foot. Asked for as "more blurry as you go down".
+
+         Raising blurAt alone would not do it. That scales every depth by the
+         same factor, so the leading edge gets blurrier in step with the foot
+         — and the leading edge is the one place a radius gradient is easy to
+         catch, because it is the only part of the band with enough luminance
+         left to show what sharpness was lost. Back-loading it instead adds
+         the blur where the card is nearly black and the eye has almost no
+         reference for focus, which is why blurAt can go up a long way while
+         the top of the band actually gets SOFTER in its rate of change. */
+      const rampT = Math.min(1, Math.max(0, t / copyFrac));
+      const ease = Math.pow(rampAlpha(rampT), GLASS.blurCurve);
+      /* Between two levels, not snapped to the nearest one.
+
+         Snapping quantises the radius to blurLevels steps, and across a range
+         that now reaches sigma 99 that is a step of nine pixels of blur from
+         one strip to the next — which is a band of visibly different sharpness
+         about ten pixels tall, reported as "layered lines". Drawing the lower
+         level and then the upper at the fractional weight blends them, and a
+         blend of two Gaussians of nearby sigma is close enough to the one in
+         between that the seam goes away entirely. */
+      const lp = ease * (blurLevel.length - 1);
+      const k0 = Math.min(blurLevel.length - 1, Math.max(0, Math.floor(lp)));
+      const k1 = Math.min(blurLevel.length - 1, k0 + 1);
+      const frac = lp - k0;
+      /* Destination follows the clamped source, so the mapping stays uniform.
+         Drawing a fixed-height destination from a clamped source is what
+         stretched the first and last strips: strip 0 asked for pixels above
+         the canvas, got the read clipped to the top, and then scaled that
+         short read over the full destination height. */
+      // + pad, because the levels carry the edge-extended padding.
+      const put = (canvasIn, alpha) => {
+        if (alpha <= 0.001) return;
+        g.globalAlpha = alpha;
+        g.drawImage(
+          canvasIn,
+          0, stripSrcY0 + pad, sw, stripSrcH,
+          dx, stripSrcY0 * GLASS.downscale + dy, glass.width, stripSrcH * GLASS.downscale,
+        );
+      };
+      put(blurLevel[k0], 1);
+      if (k1 !== k0) put(blurLevel[k1], frac);
+      g.globalAlpha = 1;
     }
     g.filter = "none";
+  } else if (blurLevel.length) {
+    g.drawImage(blurLevel[blurLevel.length - 1], 0, pad, sw, sh, 0, 0, glass.width, glass.height);
   } else {
     g.filter = smallBlur;
     g.drawImage(small, 0, 0, sw, sh, 0, 0, glass.width, glass.height);
@@ -5333,45 +5819,61 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
      makes this read as tinted frost instead of a sheet of colour. A picture
      with no usable hue (imageFadeTint returns null on greyscale and on any
      cross-origin image) simply skips this and keeps the neutral glass. */
-  /* One flat fill, source-over — which is what a fill in the design tool is.
+  /* ── Two ramps, because they are two different things ─────────────────
 
-     The two-pass soft-light + "color" blend this replaces was solving a
-     problem that does not exist under this spec. That approach varied how
-     MUCH colour landed, which meant saturation drifted per photograph; here
-     saturation and brightness are pinned at 35 and 9 and only the hue moves,
-     so a flat fill is not a simplification, it is the requirement. */
-  if (glassTint) {
-    g.globalAlpha = GLASS.fillAlpha;
-    g.fillStyle = `rgb(${glassTint.r},${glassTint.g},${glassTint.b})`;
-    g.fillRect(0, 0, glass.width, glass.height);
-    g.globalAlpha = 1;
+     The frost and the darkening used to share one mask: the blurred picture
+     and the dark fill were stacked into this canvas, and a single ramp faded
+     the whole stack in. That is why the card still read as sharp anywhere
+     near the copy however large the radius got.
+
+     At half mask alpha you are not looking at a half-blurred picture. You are
+     looking at a blurred picture at half strength laid over the SHARP
+     original at half strength, and the eye takes its reading of focus from
+     the sharp component every time. Measured on the rendered card at blurAt
+     34: the strip loop asked for sigma 52 at line three and the composite
+     showed a 10-90 edge width of 1px - sharp - because the mask was only 60%
+     on there. Raising the radius cannot fix that; it only blurs the half you
+     were not looking at.
+
+     So the blurred picture gets its own, faster ramp and is fully present by
+     the copy line, and the dark fill keeps the long gentle one. Past that point there is no sharp copy left anywhere, and the rest
+     of the transition is carried by brightness, which the eye cannot check.
+     The radius then goes on growing under a solid layer - which is what makes
+     "blurrier as you go down" visible rather than theoretical. */
+  /* The dither, over the finished blur and under the mask, so it is shaped by
+     the same ramp as everything else and never appears where the glass is not. */
+  if (GLASS.dither > 0 && typeof g.createPattern === "function") {
+    const tile = glassNoise();
+    const pattern = tile && g.createPattern(tile, "repeat");
+    if (pattern) {
+      g.globalCompositeOperation = "overlay";
+      g.globalAlpha = GLASS.dither;
+      g.fillStyle = pattern;
+      g.fillRect(0, 0, glass.width, glass.height);
+      g.globalAlpha = 1;
+      g.globalCompositeOperation = "source-over";
+    }
   }
 
-  /* The ramp, applied to the finished stack. It reaches full strength at the
-     copy line and holds, so every line of type sits on the same glass — a
-     ramp that kept climbing under the words would leave the last line on a
-     different surface from the first. */
   g.globalCompositeOperation = "destination-in";
-  const mask = g.createLinearGradient(0, 0, 0, glass.height);
-  const at = (p, a) => mask.addColorStop(Math.min(1, Math.max(0, p)), `rgba(0,0,0,${a})`);
-  /* Sampled at sixty-four points, not thirteen.
+  const presence = g.createLinearGradient(0, 0, 0, glass.height);
+  const PRESENCE_SAMPLES = Math.max(8, Math.round(GLASS.gradientSamples));
+  /* Where the copy line falls inside the band, which is what the frost is
+     anchored to rather than a fixed fraction.
 
-     addColorStop interpolates LINEARLY between stops, so a curve described by
-     thirteen of them is thirteen straight segments with a change of slope at
-     every join — and the eye resolves a change in slope far more readily than
-     a change in value. That is Mach banding, and it is why the bottom fade in
-     this same file samples its curve forty-eight times rather than placing
-     four stops by hand. The glass had the same defect and showed it as a
-     findable horizontal edge where the frost begins. */
-  const MASK_SAMPLES = 64;
-  for (let i = 0; i <= MASK_SAMPLES; i++) {
-    const t = i / MASK_SAMPLES;
-    // Smoothstep: zero slope at both ends, so it has no top and no shoulder.
-    at(t * copyFrac, t * t * (3 - 2 * t));
+     GLASS.frostReach is a MULTIPLE of that: 1 means the blurred layer is
+     fully present exactly when the copy starts. Written this way so it
+     survives runUpAboveCopy being moved - a fixed fraction silently pushes
+     the frost below the first line when the run-up is shortened, which puts
+     the sharp original back under the very lines it was split out to clear. */
+  const copyFracInBand = Math.min(1, Math.max(0.02, runUp / span));
+  const frost = Math.min(1, Math.max(0.02, copyFracInBand * GLASS.frostReach));
+  for (let i = 0; i <= PRESENCE_SAMPLES; i++) {
+    const t = i / PRESENCE_SAMPLES;
+    // Same eased curve, compressed into the first GLASS.frostReach of the band.
+    presence.addColorStop(t, `rgba(0,0,0,${rampAlpha(Math.min(1, t / frost))})`);
   }
-  at(copyFrac, 1);
-  at(1, 1);
-  g.fillStyle = mask;
+  g.fillStyle = presence;
   g.fillRect(0, 0, glass.width, glass.height);
   g.globalCompositeOperation = "source-over";
 
@@ -5379,6 +5881,29 @@ function paintMistGlass(target, { width, height, copyTop, fadeHeight, opacity = 
   target.globalAlpha = opacity;
   target.drawImage(glass, 0, 0, glass.width, glass.height, 0, start, width, span);
   target.globalAlpha = prevAlpha;
+
+  /* The darkening, as its own gradient straight onto the target.
+
+     It used to be a flat fill inside the glass canvas that the one mask then
+     shaped. Painting it here instead is the same arithmetic - fillAlpha times
+     the ramp - and it is what lets the two ramps differ at all. It is also one
+     less full-size fill on the offscreen canvas.
+
+     Sampled densely for the reason the mask is: addColorStop interpolates
+     LINEARLY, so a curve described by a few stops is a few straight segments
+     with a slope change at every join, and the eye resolves a change in slope
+     far more readily than a change in value. */
+  if (glassTint) {
+    const ink = target.createLinearGradient(0, start, 0, height);
+    const INK_SAMPLES = Math.max(8, Math.round(GLASS.gradientSamples));
+    for (let i = 0; i <= INK_SAMPLES; i++) {
+      const t = i / INK_SAMPLES;
+      ink.addColorStop(t,
+        `rgba(${glassTint.r},${glassTint.g},${glassTint.b},${(GLASS.fillAlpha * rampAlpha(t) * opacity).toFixed(4)})`);
+    }
+    target.fillStyle = ink;
+    target.fillRect(0, start, width, span);
+  }
 
   /* The sheen that used to sit here is gone. It drew a white band across the
      full width at the copy line to suggest the thickness of a glass edge, and
@@ -5476,11 +6001,44 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
 
      The value AT the copy line, and every value below it, is unchanged: that
      is what the text is read against, and it was already right. */
-  const RAMP_SAMPLES = 48;
+  /* ── The ramp, to the gradient spec ──────────────────────────────────────
+
+     Three stops, from the design: transparent at the top, 80% at 63% of the
+     way down, full at the copy line. Interpolated linearly between them,
+     which is what the design tool does — so this IS that gradient rather
+     than an approximation of it.
+
+     It is the opposite shape to the quadratic it replaces. A quadratic holds
+     near nothing for most of its length and does the work at the end; this
+     spends most of its strength early and eases off into the copy. On a card
+     that means the picture starts giving way high and gently rather than
+     staying sharp and then dropping.
+
+     The two segments meet at 63% with a slope change of about 2.3x — 1.27
+     against 0.54 per unit of ramp. That is a real corner, and it is under the
+     ~2.5x that has previously been invisible here, which is the only reason
+     it is left as the design drew it rather than rounded off.
+
+     Sampled at GLASS.gradientSamples for the same reason everything else here
+     is: canvas interpolates linearly between stops, so a curve given few of
+     them becomes a few straight lines with a visible corner at every join.
+     These two segments are straight by intent; the sampling is what keeps the
+     ends and the join from acquiring any others.
+
+     It was a fixed 48 while the glass beside it went to 256. 48 stops across a
+     660px ramp is a join every 14px, and because this ramp starts 660px above
+     the copy it covers a stretch of the card the glass never reaches — so
+     those joins sit on bare photograph with nothing over them.
+
+     Measured on a source that is constant down the card, so that anything
+     row-to-row is the treatment's own: over that stretch the worst join is 1.1
+     levels of 255 with 25 rows past 0.7, against 0.7 and one row at 256. The
+     whole fade costs 0.19ms at 48 and 0.56ms here. */
+  const RAMP_SAMPLES = Math.max(8, Math.round(GLASS.gradientSamples));
   stopAt(0, 0);
   for (let i = 1; i <= RAMP_SAMPLES; i++) {
     const t = i / RAMP_SAMPLES;
-    above(t, COPY_LINE_ALPHA * t ** 2);
+    above(t, COPY_LINE_ALPHA * rampAlpha(t));
   }
 
   /* ── Below the copy: keep some photograph ──
@@ -5505,7 +6063,8 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
      below the seventeen- to twenty-two-fold change the original had, and the
      line that was actually being reported turned out to be a zoomed-out photo
      failing to cover the frame, not this join at all. */
-  const TAIL_SAMPLES = 24;
+  // Half the ramp's, since this segment is straight and twice as long.
+  const TAIL_SAMPLES = Math.max(8, Math.round(GLASS.gradientSamples / 2));
   for (let i = 1; i <= TAIL_SAMPLES; i++) {
     const t = i / TAIL_SAMPLES;
     below(t, COPY_LINE_ALPHA + (1 - COPY_LINE_ALPHA) * t);
@@ -5530,7 +6089,6 @@ function drawHero() {
     width: canvas.width,
     height: canvas.height,
     copyTop: headlineTop,
-    fadeHeight: blurReach(L.gradient.fadeHeight),
   });
   paintBottomFade(ctx, {
     width: canvas.width,

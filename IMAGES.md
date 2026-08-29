@@ -32,7 +32,7 @@ so the canvas is not tainted and can be exported.
 
 `POST /api/upscale-image` — QA and admin only. One engine: OpenAI's
 `images/edits`. There is no self-hosted upscaler and no local resampler; both
-were removed deliberately (see §2.6).
+were removed deliberately (see §2.7).
 
 ### 2.1 What the browser sends
 
@@ -84,7 +84,7 @@ told what it must not change.
 |---|---|---|
 | `model` | `gpt-image-1.5`, falling back to `gpt-image-1` on 400/403/404 | The fallback is for accounts without the newer model |
 | `size` | `1536x1024` landscape · `1024x1536` portrait · `auto` if orientation unknown | **Follows the SOURCE, not the poster** |
-| `quality` | `IMAGE_QUALITY`, default `high` | This is the clay-face setting. `low` starves the model of rendering compute and skin comes back waxy — no prompt can undo it. A boot warning fires if it is set to `low` |
+| `quality` | `IMAGE_QUALITY`, default `medium` | This is the clay-face setting. `low` starves the model of rendering compute and skin comes back waxy — no prompt can undo it. A boot warning fires if it is set to `low` |
 | `input_fidelity` | `high` | OpenAI's identity-preservation control |
 | `image` | the PNG | |
 
@@ -94,15 +94,49 @@ told what it must not change.
 > the source's own shape is what fixed it. To fit a landscape photo into a
 > portrait frame, use **Fit** (§4.2), which is arithmetic and involves no model.
 
-### 2.4 Response
+### 2.4 The 1536px ceiling, and which path it actually hurts
+
+gpt-image-1.5 caps its output at **1536px on the long edge**, and the browser
+caps the upload to match. This is an API limit, not a setting, so the model
+cannot be asked to upscale: a 3000×2000 press photo goes up as 1536×1024 and
+comes back 1536×1024 — restored, and no larger than it was sent.
+
+**The two jobs meet that ceiling very differently, and only one of them is hurt
+by it.**
+
+**Expand does not care.** The model's output is only ever the *margin* there.
+The photograph itself is composited by the browser and pasted back over the
+result from the writer's original at up to `EXPAND_MAX_EDGE` (§2.8) — real
+pixels at up to 3072px, not a resample of a 1536px return. On the poster that
+lands at 1:1 or better. This is the path a landscape photo on a 9:16 card takes,
+so it is the path that matters most here.
+
+**Restore is capped at 1536, and it is left capped.** The model's output *is*
+the picture there, so there is nothing to paste back — recovering the detail is
+the entire job, and overwriting it with the original would undo it.
+
+An enlargement step in the browser was considered and rejected as theatre.
+Canvas resampling is the same interpolation the renderer already applies when
+it draws the image to the card, so upscaling a 1536px return to 3000px before
+storing it produces a *byte-heavier file and a pixel-identical poster*. The only
+enlargement worth having is a better kernel than the renderer's — lanczos with a
+contrast-adaptive sharpen — and that means a real image pipeline, which this
+route deliberately no longer carries (§2.7).
+
+> **If restore must exceed 1536**, the honest route is a model that outputs
+> larger natively rather than a resampler bolted behind this one. `gpt-image-2`
+> goes to 3840. It was assessed and declined on cost — see §2.9.
+
+### 2.5 Response
 
 ```json
 {
   "image":   "data:image/png;base64,…",
   "engine":  "gpt-image-1.5",
-  "quality": "high",
+  "quality": "medium",
   "size":    "1536x1024",
   "mode":    "restore",
+  "masked":  false,
   "amount":  null,
   "context": "…what stage 1 saw…",
   "subject": "people",
@@ -114,7 +148,7 @@ told what it must not change.
 sharpness, so the client has to know which it got before deciding whether the
 writer's existing zoom and pan still apply.
 
-### 2.5 Cost and latency
+### 2.6 Cost and latency
 
 Billed per call, no free path. Prices are gpt-image-1.5 list, at the
 portrait/landscape shapes this route asks for (1024x1536 / 1536x1024); a square
@@ -370,14 +404,230 @@ with it. Tunable live via `window.GLASS`.
 | `on` | `true` | Master switch |
 | `hue` | 33 | Only meaningful when `saturation > 0` |
 | `saturation` | **0** | 0 = neutral black. 0.35 was the brown wash |
-| `brightness` | 0.09 | From the picker. Fixed |
-| `fillAlpha` | 0.85 | The 85% beside the hex. Fixed |
-| `fadeMax` | 0.20 | Cap on the gradient. The fill does the darkening now; both at full strength leave no photograph |
-| `blurAt` / `blurCardWidth` | 16 / 382 | Blur quoted in the design's units and scaled to the canvas |
+| `brightness` | 0.07 | The picker's was 0.09; darkened on request |
+| `fillAlpha` | 0.88 | The 85% beside the hex, taken up on request |
+| `fadeMax` | 0.24 | Cap on the gradient. The fill does most of the darkening; what must stay bounded is the *product* — see below |
+| `blurAt` / `blurCardWidth` | 44 / 382 | Blur in the design's units, scaled to the canvas. Now a real destination radius — it used to be divided by `downscale` and set on the full-size context, which threw three quarters of it away |
+| `blurCurve` | 1 | How far the blur LAGS the darkening, as an exponent on the shared ramp |
+| `blurLevels` | 12 | Pre-blurred copies of the downscaled band. The blur is applied there, where the upscale multiplies it and the pixels are a sixteenth |
+| `frostReach` | 1 | Where the blurred picture is fully present, as a MULTIPLE of where the copy line falls in the band. 1 = full exactly at the first line, whatever the run-up is |
+| `gradientSamples` | 256 | Stops per ramp, the bottom fade included. Two gradients over one span means their joins add |
+| `dither` | 0.12 | Noise put back over the blurred picture. The blur averages the photograph's own away, and what is left bands |
 | `downscale` | 4 | Most of the blur comes free from downsampling; `ctx.filter` supplies the remainder |
-| `refract` | 0.022 | How far the glass bends the picture, as a share of width |
-| `refractStrips` | 56 | Depth resolution of the bend |
-| `reach` | 2.2 | Multiplies the caller's fadeHeight — the dissolve length |
+| `refract` | 0.012 | How far the glass bends the picture, as a share of width |
+| `refractStrips` | 80 | Depth resolution of the bend, and of the blur ramp — each strip carries its own radius |
+| `runUpAboveCopy` | 65 | How far above the first line the glass begins, in the 1700px reference frame. The ramp then runs the whole band, so this sets both where the onset lands and how gentle the build is. Replaced `reach` and `startBelowCopy` — see below |
+
+**All three pages that put copy over a photograph use it** — the poster, the
+story page and the text page. The text page did not until recently, and the
+reason it looked untreated is worth keeping: it painted a four-stop wash over
+the whole frame (0.68 / 0.52 / 0.68 / 0.98, plus a flat 0.22) *and* drew its
+photograph through `blur(18px) brightness(62%)`. Between 75% and 98% black
+everywhere, over an input that was already uniformly soft. A treatment that
+goes from sharp to frosted has nothing to show when its input starts frosted:
+there was no transition on that page, only a flat blur that resembled one.
+
+It draws the picture sharp now and anchors the same glass and fade to its copy.
+`GLASS.textPageVeil` (0.42) is the one thing the wash left behind, and it earns
+its place: the other two pages put their copy near the foot so the ramp always
+has run-up above it, while the text page's copy grows upward and is clamped a
+tenth of the way down the card, where the ramp has barely begun. Measured on a
+bright photograph, white body copy at that worst-case first line is 5.28:1 with
+the veil and 1.97:1 without it.
+
+### Why a blur bands, and the dither that fixes it
+
+A photograph carries sensor noise, and that noise is what stops a smooth sky
+banding: it dithers the 8-bit quantisation so the step between adjacent values
+lands somewhere different on each row. **The blur averages it away.** What is
+left is a mathematically smooth gradient, and a smooth gradient in 8 bits is a
+staircase — flat for as many rows as the true value needs to cross the next
+1/255, then a step.
+
+Measured on a photo-like ramp: with the glass on, **32 runs where the row mean
+held the same value for four rows or more, the longest for thirty**. With the
+glass off and only the darkening applied, **zero**. So the bands are not the
+strips, the levels, the ramps or the gradients — all of those measure at the
+8-bit floor. They are the blur doing its job.
+
+`GLASS.dither` puts about a level of noise back: one 128px tile, built once and
+repeated, laid over the finished glass in `overlay` so mid-grey is a no-op and
+the deviations lighten and darken symmetrically. At 0.12 the flat runs go to
+**zero** for **1.47 levels** of per-pixel noise — which is what a dither is
+supposed to be, enough to break the staircase and below what reads as grain.
+
+**A note on measuring this.** Every other check in `test/glass.mjs` and every
+metric used to tune this treatment reports it as clean while the banding is on
+screen, because they look at the row *mean* of 920 pixels, or at sources with
+no smooth ramp in them. Two of the sources used during tuning were themselves
+the problem: a vertical gradient quantises to ~1 level every 15px, so it
+reports its own staircase as the treatment's. Use a source that is constant
+down the card when looking for horizontal artefacts, and a smooth vertical ramp
+only when looking for contouring — with a glass-off control.
+
+### The layered lines
+
+Reported on a card as horizontal slabs across the band. Two causes, and the
+metric in use at the time could see neither — it measured the row MEAN on a
+horizontal gradient, where a change in blur does not move the mean at all and a
+sideways shift barely does.
+
+**The bend was tearing, not bending.** The refraction pulls each strip sideways
+by a function of its depth, and the step between neighbours is
+`bendMax × |dwave/dt| / strips`. At the original frequencies of 7.6 and 17.3
+that derivative peaks near 11, which put adjacent ten-pixel strips **four
+pixels apart sideways**. Slowed to 2.3 and 3.9, with more strips and a smaller
+amplitude, that is now **0.13px** — below the point where neighbouring slabs
+are resolvable as separate.
+
+**The blur was quantised.** Each strip snapped to the nearest of 12 pre-blurred
+levels, and across a range reaching σ 99 that is a step of nine pixels of blur
+from one strip to the next — a band of visibly different sharpness about ten
+pixels tall. Strips now draw the lower level opaque and the upper at the
+fractional weight; a blend of two Gaussians of nearby σ is close enough to the
+one between them that the seam goes. Once blended, the level *count* stops
+mattering for quality (3.6% worst step at 12 levels and at 16), so it is set by
+cost.
+
+Worst single-row change in sharpness, on a fine-textured source, as a share of
+the unblurred detail: **5.6% → 3.0%**. What remains is the frost cross-fade
+itself, not the strips.
+
+`test/glass.mjs` asserts the per-neighbour slide directly, because nothing else
+does: the darkening is unaffected by a sideways shift, and the radius ramp is
+measured per strip rather than between them, so both stay green while the
+picture visibly tears.
+
+### Where the band starts
+
+`runUpAboveCopy` is 65 — about one line-height — because that is where the
+treatment was asked to begin, marked on a card just above the first row of
+copy. It was 272, roughly two lines further up.
+
+The shorter run-up is a real trade and it goes the wrong way on the thing this
+treatment exists to avoid: the darkening now has 556px to build across instead
+of 763, so its steepest run goes from 0.30 to 0.35 levels/px and lands just
+below the first line rather than above it. It is still five times gentler than
+the 2.0 cliff this started from, and measured on a smooth source no row departs
+from its local slope by more than 0.96 of 255 with none stepping at all — so
+there is no edge to find. But `window.GLASS.runUpAboveCopy = 272` is the way
+back if one ever appears.
+
+Two knobs moved with it. `frostReach` is now a multiple of where the copy line
+falls rather than a fraction of the band, so the blurred layer is fully present
+exactly at the first line whatever the run-up is — a fixed fraction silently
+pushes the frost *below* the copy when the run-up shortens, which puts the
+sharp original back under the very lines the split was made to clear. And
+`blurCurve` goes 2 → 1: the lag existed to keep the radius climbing below the
+type, and with the copy line now a tenth of the way into the band, nearly all
+of the ramp is below it already. The lag had nothing left to protect and was
+starving the first lines — σ 1.6 at line one with it, 10.1 without.
+
+### Two ramps, and why the blur was invisible
+
+The frost and the darkening used to share one mask: the blurred picture and the
+dark fill were stacked into one canvas and a single ramp faded the whole stack
+in. That is why the card read as sharp near the copy however large the radius
+got — **at half mask alpha you are not looking at a half-blurred picture, you
+are looking at a blurred one at half strength over the sharp original at half
+strength, and the eye takes its reading of focus from the sharp component.**
+Measured: the strip loop asked for σ 52 at line three and the composite showed
+a 1px edge, because presence there was 60%.
+
+So the blurred layer has its own faster ramp (`frostReach`, 0.35 — about the
+first line) and the dark fill keeps the long gentle one. Below that point there
+is no sharp copy left anywhere, and the radius can grow under a solid layer.
+
+There was a second bug underneath it. `stripBlur` was computed as
+`blurTarget / downscale` and then set on the **full-size** context, so the
+division landed in the wrong coordinate space and was simply lost — the card
+received about a quarter of the radius the code asked for. The comment
+defending it ("most of the blur comes free from the downsample") had the
+premise wrong too: downsampling by four discards detail finer than four pixels,
+it does not multiply a later blur by four.
+
+Applying the radius honestly on the full-size context is correct and
+unaffordable — **140ms a paint against 3ms**. The band is already held at
+1/`downscale` for the read-back, and a blur applied *there* is multiplied by
+the upscale on the way out: σ 15 on the quarter-size copy lands as σ 60 on the
+card over a sixteenth of the pixels. So `blurLevels` pre-blurred copies are
+built once and each strip draws from the one matching its depth.
+
+Delivered σ on a 920 card, measured off the 10–90% width of a hard edge
+(= 2.563 σ):
+
+| | at the line | line 1 | line 2 | line 3 | line 5 | foot |
+|---|---|---|---|---|---|---|
+| originally delivered | 0.4 | 0.4 | — | 3.9 | 5.9 | 16.4 |
+| now | **0.4** | 10.1 | 29.3 | 39.8 | 67.5 | **99.1** |
+
+The picture above the band stays sharp, the darkening is untouched (peak slope
+0.30 levels/px, still above the first line), and the worst row departs from its
+local slope by 0.94 of 255 with none stepping at all. About 3ms a page.
+
+**Both ramps follow one profile.** `specAlpha` is the design's gradient — three
+stops, transparent, 80% at 63% of the way down, full at the foot — interpolated
+linearly, which is what the design tool does. `rampAlpha` is that profile with
+its onset eased, and it is what the glass mask, the blur radius and the bottom
+fade all sample.
+
+The fade is then scaled by `GLASS.fadeMax` (0.24), because the glass fill does
+most of the darkening: it contributes the *shape* at a quarter of full strength.
+
+**The fill and the fade multiply, they do not add.** The fade darkens what the
+fill let through, so what has to stay bounded is `(1 - fillAlpha) x (1 - fadeMax)`
+— the fraction of the photograph still visible at the foot. At 0.88 and 0.24
+that is 9.1%; below about 7% the picture stops reading as one and the card is a
+black panel with type on it. `test/glass.mjs` used to check `fillAlpha + fadeMax
+<= 1.06`, which is the wrong arithmetic in both directions.
+
+Darkening also bought back legibility that had quietly gone thin. White headline
+type on a bright photograph measured **3.28:1** at the first line before this —
+passing AA for large text by a hair, failing AA body. It is **3.70:1** now, and
+lines two and below clear 4.5:1.
+
+### Why the transition used to be findable, and what fixed it
+
+Reported repeatedly as a visible edge above the first line, and survived about
+ten rounds of tuning the *curve* — smoothstep vs smootherstep, 13 stops vs 64,
+per-strip radii. None of it helped, because the curve was never the problem.
+
+Measured off the rendered card, the old geometry put **92 of the 95 available
+levels of darkening inside 120px**, from line one to line three, against three
+levels across the whole run-up above it. The glass band started *at* `copyTop`
+and reached full strength 123px later, a quarter of the way into a 491px band,
+then sat flat. Peak slope **1.22% of the total per pixel against the design's
+0.21%** — six times steeper, and landing exactly where the type is.
+
+Three changes, in order of how much each was worth:
+
+1. **A run-up.** The band starts `runUpAboveCopy` (272px) above the first line
+   instead of on it, so the onset lands in open picture with no type beside it
+   to measure the change against. 48% of the build now happens above line one;
+   it was 3%.
+2. **The ramp runs the whole band** rather than finishing in its first quarter
+   onto a flat panel. Every level not spent over the full height had to be
+   spent in that 123px.
+3. **Half the blur.** The transition is carried by the darkening, which the eye
+   cannot check, rather than by sharpness, which it can.
+
+Measured after: peak slope **0.25 levels/px against 2.0**, eight times gentler,
+and it now falls 160px *above* the first line. Against a source with no
+horizontal structure, no row anywhere departs from its local slope by more than
+1.04 of 255 levels — the 8-bit quantisation floor. Render cost went *down*,
+3.7ms from 9.2ms, because the smaller radius lets more strips share a filter.
+
+**Easing the onset is not free, and the obvious way is wrong.** The design's
+profile is piecewise linear: it goes from not climbing to climbing at full rate
+over no distance, and a step in *slope* is what the eye is good at — it is why a
+gradient built from a few stops shows a line at every join though its values are
+continuous. Multiplying the curve by a smoothstep does start it from zero and
+pays for it with a patch **1.69× steeper** a fifth of the way down (measured:
+0.28 levels/px against an average of 0.13). So `rampAlpha` applies the window to
+the *slope* and renormalises — it accelerates from a standstill, never climbs
+faster than it must, and still lands at 1. Peak comes down to 1.43× average.
+`test/glass.mjs` asserts both halves, because checking only the onset is how the
+multiply version passed.
 
 **Two rules worth knowing before touching either:**
 
@@ -386,6 +636,11 @@ with it. Tunable live via `window.GLASS`.
   each join. The eye resolves a change in slope far more readily than a change
   in value — that is Mach banding, and it appears as a hard line where the
   frost begins. The fade samples 48 times, the glass mask 64.
+- **The blur ramps its radius, not its opacity.** Fading one fully-blurred
+  layer in leaves a sharp copy of the picture superimposed mid-transition,
+  which the eye finds however smooth the alpha curve is. Each refraction strip
+  carries its own radius instead, so every depth is a single genuinely blurred
+  image.
 - **Blur needs padding.** A blur samples outward, and past the canvas edge there
   is nothing; those samples return transparent and the sharp original shows
   through as an unblurred strip at the foot. The frame is padded and edge-
@@ -416,7 +671,7 @@ Current cost: ~5ms median per render, 0 dropped frames while typing.
 | Variable | Default | Effect |
 |---|---|---|
 | `OPENAI_API_KEY` | — | Required for Restore & Upscale. Without it the route returns 503 |
-| `IMAGE_QUALITY` | `high` | `low` \| `medium` \| `high` — see §2.5 |
+| `IMAGE_QUALITY` | **`medium`** | `low` \| `medium` \| `high`. The code default is `medium` (`server.mjs:175`, `:5176`) — this table said `high` for a while, which is wrong and four times the price. `low` is the clay-face setting and fires a boot warning; `medium` is the intended floor. See §2.6 |
 | `IMAGE_MODEL` | `gpt-image-1.5` | Which model the route calls. **Shuts down 1 Dec 2026** — see §2.9 |
 | `IMAGE_MODEL_FALLBACK` | `gpt-image-1` | Tried on 400/403/404, for an account without the above. Same shutdown date |
 | `DISABLE_GPT_IMAGE` | unset | `true` switches the route off and returns 503 |

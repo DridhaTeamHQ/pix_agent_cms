@@ -684,9 +684,17 @@
                      come back "recognisably the same, not identically the
                      same". That is a fair option to offer and the wrong one
                      to reach by not choosing, on a newsroom card. -->
-                <option value="restore" selected>Restore &amp; Upscale — keep the picture as photographed</option>
-                <option value="auto">Auto — sharpen, or reframe to fill the poster</option>
-                <option value="reframe">Reframe — redraw the whole picture to fit the poster</option>
+                <!-- Reframe is the default because it is the job that actually
+                     does what the button says: one call to gpt-image, out comes
+                     the picture at the poster's own shape with its detail
+                     recovered. Restore cannot upscale — gpt-image caps at
+                     1536px and the upload is capped to match, so on any source
+                     already above that it returns the same picture or smaller.
+                     Keeping Restore as the default is what made the button look
+                     like it did nothing. -->
+                <option value="reframe" selected>Reframe &amp; Upscale — fill the poster, recover detail</option>
+                <option value="restore">Restore — keep the framing exactly as photographed</option>
+                <option value="auto">Auto — let the AI pick between the two</option>
                 <option value="expand">Expand &amp; Reframe — generate new scene (costs more)</option>
               </select>
             </label>
@@ -705,7 +713,7 @@
             <small class="helper-text" id="enhance-strength-hint">20% — raise this only if the image still looks soft.</small>
             <!-- Rewritten per job by syncEnhanceModeUI() in app.js; this is
                  the Auto text, which is what the selector defaults to. -->
-            <small class="helper-text" id="enhance-mode-hint">Reads the photograph first and does the cheapest thing that helps. Most wire photos are already larger than the AI can return, so it corrects exposure and contrast here instead and spends nothing. It only uses paid credits when the picture is genuinely short of pixels — and it tells you which it did.</small>
+            <small class="helper-text" id="enhance-mode-hint">One call to gpt-image-1.5: the picture comes back at the poster's shape with its detail recovered. Uses paid AI credits and tells you what it cost. Pick Restore instead to keep the framing exactly as shot — that one skips the call entirely when the photo is already larger than the AI can return.</small>
             <p id="ai-enhance-status" class="status-text" role="status" aria-live="polite"></p>
           </div></div>
         </div>

@@ -5441,7 +5441,29 @@ async function handleEnhancePlan(req, res) {
   const sourceH = srcDims ? Number(srcDims[2]) : 0;
 
   const t0 = Date.now();
-  const plan = await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
+
+  /* ── A forced restore does not need the planner, and is safer without it ──
+     The planner answers two questions: which job the picture needs, and what
+     the picture contains. A caller that has already SAID "restore" is not
+     asking the first, and the second is actively harmful here.
+
+     Stage 1 is told to describe, for a scene, "what would plausibly continue
+     past it, the perspective, and the light and weather". That is the right
+     brief for reframe and expand, which have to draw what continues. Its
+     answer is then injected into the restore prompt as "CONTEXT — the photo
+     shows: ...", three lines under "This is NOT an image generation task."
+     A sentence like "an overcast sky continues above the treeline" is not
+     context to a generative image model, it is an instruction, and it is the
+     second reason this route kept returning clouds. The first was the output
+     shape, fixed on the client.
+
+     So a forced restore skips stage 1 entirely: one paid call instead of two,
+     several seconds faster, and nothing in the prompt describing weather that
+     is not in the frame. Auto still runs it — it cannot choose a job without
+     it — and so do reframe and expand, which need the continuation prose. */
+  const plan = requestedMode === "restore"
+    ? { mode: "restore", amount: "moderate", subject: "people", description: "", reason: "", decidedBy: "caller" }
+    : await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
 
   /* ── auto expands when the caller composites ──────────────────────────────
      `auto` used to answer an expand verdict with Fit — the whole photograph,

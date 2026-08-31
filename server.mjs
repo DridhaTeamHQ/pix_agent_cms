@@ -226,13 +226,21 @@ function enhanceCostLabel() {
    a variable edit on the host and an emergency deploy. Set IMAGE_MODEL to
    change what runs; the boot log states what it resolved to, and the `engine`
    field of every response says which rung actually served. */
-const IMAGE_MODEL_PRIMARY  = process.env.IMAGE_MODEL          || "gpt-image-1.5";
-const IMAGE_MODEL_FALLBACK = process.env.IMAGE_MODEL_FALLBACK || "gpt-image-1";
+/* One model, and only this one.
+
+   gpt-image-1.5 — default snapshot gpt-image-1.5-2025-12-16. OpenAI's model
+   page lists v1/images/edits as supported and exactly three output sizes,
+   1024x1024 / 1024x1536 / 1536x1024, so 1536 on the long edge is the MODEL's
+   ceiling and not a choice made here.
+
+   No second rung. A fallback meant a press could be served by a different
+   model and reported as this one. */
+const IMAGE_MODEL_PRIMARY = process.env.IMAGE_MODEL || "gpt-image-1.5";
 
 if (gptImageDisabled) {
   console.log("Restore & Upscale is switched off (DISABLE_GPT_IMAGE).");
 } else {
-  console.log(`Restore & Upscale: ${IMAGE_MODEL_PRIMARY} (` + enhanceCostLabel() + `), falling back to ${IMAGE_MODEL_FALLBACK}.`);
+  console.log(`Restore & Upscale: ${IMAGE_MODEL_PRIMARY} only (` + enhanceCostLabel() + `). No other model is called.`);
 }
 
 const openaiApiKey = env("OPENAI_API_KEY");
@@ -5372,16 +5380,8 @@ async function runEnhanceEdit({
        account not having the newer model. 403 and 404 always mean that; a
        400 only does when the body says so. Anything else fails on the first
        attempt, which is both faster and more honest. */
-    const modelMissing =
-      aiRes.status !== 400 ||
-      /model|not.*(exist|found|available)|unsupported|does not have access/i.test(firstErr);
-
-    if (modelMissing) {
-      console.warn(`⚠ ${IMAGE_MODEL_PRIMARY} unavailable (${aiRes.status}) — falling back to ${IMAGE_MODEL_FALLBACK}:`, firstErr.slice(0, 160));
-      modelUsed = IMAGE_MODEL_FALLBACK;
-      aiRes = await callEdit(modelUsed, usedMask);
-    } else {
-      console.warn(`⚠ ${IMAGE_MODEL_PRIMARY} refused the request (${aiRes.status}) — not a missing model, so not retried:`, firstErr.slice(0, 300));
+    {
+      console.warn(`⚠ ${IMAGE_MODEL_PRIMARY} refused the request (${aiRes.status}):`, firstErr.slice(0, 300));
 
       /* Say WHICH kind of no.
 
@@ -5581,9 +5581,21 @@ async function handleEnhancePlan(req, res) {
      several seconds faster, and nothing in the prompt describing weather that
      is not in the frame. Auto still runs it — it cannot choose a job without
      it — and so do reframe and expand, which need the continuation prose. */
-  const plan = requestedMode === "restore"
-    ? { mode: "restore", amount: "moderate", subject: "people", description: "", reason: "", decidedBy: "caller" }
-    : await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
+  /* No planner. gpt-image-1.5 is the only model this route calls.
+
+     Stage 1 was a gpt-4o-mini vision call that chose between the jobs. The
+     reviewer chooses on the Job selector, so it answered a question nobody
+     was asking — and it was a second provider billed on every press of a
+     button whose cost was the complaint. Its description was also, on the
+     restore prompt, the thing writing clouds into the output.
+
+     Both prompts stand without it: buildReframePrompt takes `description`
+     behind a null check and reads `subject` only to pick between its graphic
+     line and its people line, and people is the stricter of the two. */
+  const plan = {
+    mode: requestedMode === "auto" ? "reframe" : requestedMode,
+    amount: "moderate", subject: "people", description: "", reason: "", decidedBy: "caller",
+  };
 
   /* ── auto expands when the caller composites ──────────────────────────────
      `auto` used to answer an expand verdict with Fit — the whole photograph,
@@ -5768,8 +5780,12 @@ async function handleEnhanceSingleShot(req, res) {
   const sourceW = srcDims ? Number(srcDims[1]) : 0;
   const sourceH = srcDims ? Number(srcDims[2]) : 0;
 
-  const plan = await planEnhance(buffer, mime, { posterRatio, sourceW, sourceH });
-  const mode = requestedMode === "auto" ? plan.mode : requestedMode;
+  // Same rule: gpt-image-1.5 and nothing else.
+  const plan = {
+    mode: requestedMode === "auto" ? "reframe" : requestedMode,
+    amount: "moderate", subject: "people", description: "", reason: "", decidedBy: "caller",
+  };
+  const mode = plan.mode;
 
   const payload = await runEnhanceEdit({
     buffer,

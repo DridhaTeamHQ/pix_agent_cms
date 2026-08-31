@@ -678,9 +678,15 @@
             <label class="field" style="margin-top:10px;">
               <span class="field-label">Job</span>
               <select id="enhance-mode">
-                <option value="auto" selected>Auto — sharpen, or reframe to fill the poster</option>
+                <!-- Restore is the default, not Auto. Auto resolves a
+                     landscape photo on a tall poster to Reframe, and Reframe
+                     is a REGENERATION — its own commit says faces and signage
+                     come back "recognisably the same, not identically the
+                     same". That is a fair option to offer and the wrong one
+                     to reach by not choosing, on a newsroom card. -->
+                <option value="restore" selected>Restore &amp; Upscale — keep the picture as photographed</option>
+                <option value="auto">Auto — sharpen, or reframe to fill the poster</option>
                 <option value="reframe">Reframe — redraw the whole picture to fit the poster</option>
-                <option value="restore">Restore &amp; Upscale — keep the framing</option>
                 <option value="expand">Expand &amp; Reframe — generate new scene (costs more)</option>
               </select>
             </label>

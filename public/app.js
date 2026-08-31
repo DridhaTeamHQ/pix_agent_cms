@@ -8391,6 +8391,16 @@ const enhanceModeHint   = document.getElementById("enhance-mode-hint");
    guard, the status line, the failure path — so there is one of it. What
    differs is the mode header, and what happens to the writer's framing when
    the picture lands. */
+/* gpt-image's output ceiling on the long edge, and therefore the only size
+   worth uploading. Both the skip gate and the upload cap below read it, so
+   they cannot drift apart — the gate exists precisely because the cap is
+   what makes a large photograph lose by going through here. */
+const MODEL_CEILING_PX = 1536;
+
+/* The only aspects gpt-image can return: 1024x1024, 1024x1536, 1536x1024.
+   Anything sent at a different shape comes back with the difference invented. */
+const MODEL_SHAPES = [1, 1024 / 1536, 1536 / 1024];
+
 const ENHANCE_LABELS = {
   restore: { done: "Restored and upscaled", failed: "Restore failed" },
   expand:  { done: "Expanded and reframed", failed: "Expand failed" },
@@ -8841,11 +8851,76 @@ async function runImageAI() {
     // the long edge (gpt-image's max output — no point uploading more).
     const rawW = img.naturalWidth || img.width;
     const rawH = img.naturalHeight || img.height;
-    const scale = Math.min(1, 1536 / Math.max(rawW, rawH));
+
+    /* ── The picture may already be better than the call can return ──
+       gpt-image's ceiling is MODEL_CEILING_PX on the long edge, and the
+       upload is capped to match two lines down. So a source ALREADY at or
+       above that ceiling is downscaled on the way out, repainted at the
+       ceiling, and enlarged back with lanczos on the way home — three steps
+       whose net effect on a 3000px photograph is to replace 3000px of real
+       capture with 1536px of the model's idea of it, and charge for the
+       privilege.
+
+       There is nothing the model can add here: it is never shown more than
+       the ceiling, so it can never hand back more than the ceiling. Below it
+       the call is worth making — the model genuinely returns more pixels
+       than it was given. At or above it, the honest answer is that the
+       photograph does not need this button.
+
+       Refusing costs nothing and loses nothing. It is also the only one of
+       these savings the writer can see happening. */
+    if (Math.max(rawW, rawH) >= MODEL_CEILING_PX) {
+      setEnhanceStatus(
+        `Already ${rawW}×${rawH} — bigger than this can return (${MODEL_CEILING_PX}px). ` +
+        `Enhancing would shrink it first and cost a credit, so it was skipped.`,
+        "success",
+      );
+      btn.disabled = false;
+      btn.classList.remove("working");
+      return;
+    }
+
+    /* ── Send a shape the model can actually return ──────────────────────
+       gpt-image has exactly three output shapes — 1024x1024, 1024x1536 and
+       1536x1024, so aspects 1.000, 0.667 and 1.500 — and nothing else. A
+       photograph whose aspect is not one of those CANNOT come back as itself:
+       the model has to make up the difference, and on an outdoor picture the
+       difference it makes up is sky. A 16:9 press photo is 1.778 against an
+       output of 1.500, so 19% of the returned frame is invented, every time.
+       That is the whole of the "it keeps adding clouds" report, and no
+       wording in the prompt can prevent it — the shape is a fact about the
+       request, not about the instructions.
+
+       So the picture is cropped to the nearest of the three BEFORE it goes,
+       and what gets cropped is precisely the strip the model would otherwise
+       have invented. Losing a real edge is the better half of that trade for
+       a newsroom: an edge that is missing is obvious, an edge that is
+       fabricated is not, and the poster crops to its own shape afterwards
+       regardless. */
+    const srcAspect = rawW / rawH;
+    /* Only when the job is to preserve. Reframe and Expand exist to CHANGE the
+       shape, so cropping to a model shape first would throw away picture they
+       were about to use — the trim is only ever right when the alternative is
+       the model inventing that same strip. */
+    const preserving = requestedMode === "restore";
+    const target = preserving
+      ? MODEL_SHAPES.reduce((best, a) =>
+          Math.abs(Math.log(a / srcAspect)) < Math.abs(Math.log(best / srcAspect)) ? a : best)
+      : srcAspect;
+
+    // The largest rect of the source that already has the target aspect.
+    let cropW = rawW, cropH = rawH;
+    if (srcAspect > target) cropW = rawH * target;   // too wide: trim the sides
+    else if (srcAspect < target) cropH = rawW / target; // too tall: trim top/bottom
+    const cropX = (rawW - cropW) / 2;
+    const cropY = (rawH - cropH) / 2;
+    const trimmedPct = Math.round((1 - (cropW * cropH) / (rawW * rawH)) * 100);
+
+    const scale = Math.min(1, MODEL_CEILING_PX / Math.max(cropW, cropH));
     const tmp = document.createElement("canvas");
-    tmp.width  = Math.round(rawW * scale);
-    tmp.height = Math.round(rawH * scale);
-    tmp.getContext("2d").drawImage(img, 0, 0, tmp.width, tmp.height);
+    tmp.width  = Math.round(cropW * scale);
+    tmp.height = Math.round(cropH * scale);
+    tmp.getContext("2d").drawImage(img, cropX, cropY, cropW, cropH, 0, 0, tmp.width, tmp.height);
 
     const sourceBlob = await canvasToPng(tmp);
 

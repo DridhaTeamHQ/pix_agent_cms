@@ -1968,7 +1968,7 @@ function autoFilterFor(image) {
   return { brightness, contrast, saturation, blur: 0, tone };
 }
 
-function applyFilterPreset(name) {
+function applyFilterPreset(name, { announce = true } = {}) {
   /* "auto" is the one preset that is not a fixed bundle — it is computed from
      the photograph currently on the page. If the picture cannot be read
      (cross-origin, or nothing loaded yet) it falls back to None rather than
@@ -1989,7 +1989,10 @@ function applyFilterPreset(name) {
     meta.textContent = labels[name] || "";
   }
 
-  if (name === "auto") {
+  /* The enhance button applies this as one step of a larger decision and
+     writes its own line about what it did and what it cost. Two status
+     messages for one press reads as two things having happened. */
+  if (name === "auto" && announce) {
     const t = p.tone;
     setStatus(
       t
@@ -9054,32 +9057,80 @@ async function runImageAI() {
     const rawW = img.naturalWidth || img.width;
     const rawH = img.naturalHeight || img.height;
 
-    /* ── The picture may already be better than the call can return ──
-       gpt-image's ceiling is MODEL_CEILING_PX on the long edge, and the
-       upload is capped to match two lines down. So a source ALREADY at or
-       above that ceiling is downscaled on the way out, repainted at the
-       ceiling, and enlarged back with lanczos on the way home — three steps
-       whose net effect on a 3000px photograph is to replace 3000px of real
-       capture with 1536px of the model's idea of it, and charge for the
-       privilege.
+    /* ── What does this photograph actually need? ────────────────────────
+       Worked out here, from the picture, before anything is spent. Two
+       questions, and only one of them can cost money:
 
-       There is nothing the model can add here: it is never shown more than
-       the ceiling, so it can never hand back more than the ceiling. Below it
-       the call is worth making — the model genuinely returns more pixels
-       than it was given. At or above it, the honest answer is that the
-       photograph does not need this button.
+         is it too small?   gpt-image's ceiling is MODEL_CEILING_PX on the
+                            long edge and the upload is capped to match, so
+                            a source already at or above it is downscaled on
+                            the way out, repainted at the ceiling, and
+                            enlarged back on the way home. On a 3000px wire
+                            photo that replaces real capture with the model's
+                            idea of it and bills for the privilege. The model
+                            is never shown more than the ceiling, so it can
+                            never return more. Below it, the call genuinely
+                            adds pixels.
 
-       Refusing costs nothing and loses nothing. It is also the only one of
-       these savings the writer can see happening. */
-    if (Math.max(rawW, rawH) >= MODEL_CEILING_PX) {
-      setEnhanceStatus(
-        `Already ${rawW}×${rawH} — bigger than this can return (${MODEL_CEILING_PX}px). ` +
-        `Enhancing would shrink it first and cost a credit, so it was skipped.`,
-        "success",
-      );
+         is it flat?        exposure, contrast and colour, read off the
+                            picture's own histogram. This is arithmetic and
+                            costs nothing — see autoFilterFor.
+
+       Which gives three answers, and two of them are free:
+
+         needs nothing      big enough, and correctly exposed. Say so and
+                            stop. This is most wire photographs.
+         tone only          big enough, but flat or dark. Fix it locally.
+                            No call, no credits, instant.
+         upscale            genuinely short of pixels. Spend — and apply the
+                            tone fix as well, since it is free either way.
+
+       The point is that the expensive answer is the LAST one considered
+       rather than the only one available. */
+    const longEdge = Math.max(rawW, rawH);
+    const bigEnough = longEdge >= MODEL_CEILING_PX;
+    const auto = autoFilterFor(img);
+    const toneHelps = !!auto && !(auto.brightness === 100 && auto.contrast === 100 && auto.saturation === 100);
+
+    const toneSummary = auto
+      ? `brightness ${auto.brightness}%, contrast ${auto.contrast}%, saturation ${auto.saturation}%`
+      : "";
+
+    if (bigEnough) {
+      if (toneHelps) {
+        applyFilterPreset("auto", { announce: false });
+        commitFieldToPage(enhanceOwner, "filterBrightness", auto.brightness);
+        commitFieldToPage(enhanceOwner, "filterContrast", auto.contrast);
+        commitFieldToPage(enhanceOwner, "filterSaturation", auto.saturation);
+        renderPoster();
+        setEnhanceStatus(
+          `Adjusted it here instead — ${toneSummary}. ` +
+          `At ${rawW}×${rawH} it is already larger than the AI can return ` +
+          `(${MODEL_CEILING_PX}px), so the call would have shrunk it. No credits used.`,
+          "success",
+        );
+      } else {
+        setEnhanceStatus(
+          `This photograph does not need it. ${rawW}×${rawH} is larger than the AI can ` +
+          `return (${MODEL_CEILING_PX}px), and its exposure and contrast already measure fine. ` +
+          `Nothing changed, no credits used.`,
+          "success",
+        );
+      }
       btn.disabled = false;
       btn.classList.remove("working");
       return;
+    }
+
+    /* Small enough that the model can genuinely add pixels. The tone fix is
+       free, so it is applied regardless — the call is being made for
+       resolution, not for exposure, and there is no reason to pay a model to
+       do arithmetic that has already been done. */
+    if (toneHelps) {
+      applyFilterPreset("auto", { announce: false });
+      commitFieldToPage(enhanceOwner, "filterBrightness", auto.brightness);
+      commitFieldToPage(enhanceOwner, "filterContrast", auto.contrast);
+      commitFieldToPage(enhanceOwner, "filterSaturation", auto.saturation);
     }
 
     /* ── Send a shape the model can actually return ──────────────────────

@@ -5490,15 +5490,6 @@ const GLASS = (window.GLASS = Object.assign({
      longer, gentler build. */
   runUpAboveCopy: 230,   // marked on the card: start the blend lower
 
-  /* The fill does most of the darkening; this is the gradient's share on top.
-
-     The two compose MULTIPLICATIVELY - the fade darkens what the fill left,
-     it does not add to it - so what has to stay bounded is the product of
-     what each one passes through: (1 - fillAlpha) x (1 - fadeMax), the
-     fraction of the photograph still visible at the foot. At 0.88 and 0.24
-     that is 9.1%, against 12% before. Below about 7% the picture stops being
-     a picture and the card is a black panel with type on it. */
-  fadeMax: 0.20,
 
   /* The text page's floor, under the glass rather than instead of it.
 
@@ -6058,148 +6049,43 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
   // Copy sitting at or below the foot leaves nothing to fade.
   if (span <= 0) return start;
 
-  /* Clamped because the two ramps below divide the span at this point, and a
-     copyTop outside the frame would put it outside 0..1 — every stop then
-     collapses onto the same offset and the fade renders as a hard black band
-     instead. Neither caller can currently do that (both anchor the block
-     inside the frame), which is exactly why it is worth pinning: a later
-     layout change should not be able to turn a fade into an edge. */
-  const copyFrac = Math.min(1, Math.max(0, (copyTop - start) / span));
+  /* The gradient spans the band, start to foot. It no longer needs to know
+     where the copy line falls: the design's stops are positions along the
+     gradient itself, not offsets from the first line of type. That is what
+     removed the two-segment shape this used to draw. */
   const grad = target.createLinearGradient(0, start, 0, height);
 
-  /* FADE_MAX_ALPHA is the 85% on the picker, and it is the reason any of the
-     photograph survives at the foot. The curve below still runs its full 0..1
-     — that is what keeps the copy line at the right relative depth — and this
-     scales the whole thing at the end, so the darkest point on the card is 85%
-     of black rather than opaque.
+  /* ── The gradient, exactly as drawn ──────────────────────────────────────
 
-     Black, plainly. This briefly took its colour from the photograph's own
-     dominant hue; it was measured, tested and correct, and it is gone because
-     the cards are wanted neutral. The smoked glass above still drains colour
-     out of the picture behind the copy, which is a different thing and stays. */
-  /* Pulled back from 0.85 now that the glass runs first. The two stack
-     multiplicatively — an 85% fill of #17130F under this — so leaving it
-     would put the foot of every card at 0.97 and lose the photograph
-     entirely. */
-  const FADE_MAX_ALPHA = GLASS.fadeMax;
-  const stopAt = (position, alpha) =>
-    grad.addColorStop(
-      Math.min(1, Math.max(0, position)),
-      `rgba(0,0,0,${(alpha * FADE_MAX_ALPHA * opacity).toFixed(3)})`,
-    );
+     From the design tool, read off the stop list:
 
-  // Two ramps meeting at the first line of copy: a slow one over the
-  // photograph, a short steep one under the words.
-  // How dark it is directly behind the first line of copy. Everything above
-  // ramps up to this; everything below continues on from it.
-  /* Raised from 0.78. Once the picture behind the words is frosted rather than
-     merely darkened, the glass has to be dark enough to be glass — a light
-     frost over a bright photograph left the first line fighting the picture
-     for contrast. The colour ramp above is brightened to match, so the panel
-     reads as dark glass with light colour in it rather than as mud. */
-  const COPY_LINE_ALPHA = 0.86;
-  const above = (progress, alpha) => stopAt(progress * copyFrac, alpha);
-  const below = (progress, alpha) => stopAt(copyFrac + progress * (1 - copyFrac), alpha);
+       fill    #000000, linear, 100%
+       0%      000000 at   0%
+       63%     000000 at  80%
+       100%    000000 at 100%
 
-  /* The upper ramp is a sampled curve, not a handful of hand-placed stops.
+     Three stops and nothing else. They are transcribed rather than
+     approximated, and the two things that used to sit on top of them are
+     gone:
 
-     Four stops make a piecewise-LINEAR gradient, and the slope changes where
-     the segments meet. The eye is far better at spotting a change in slope
-     than a change in value — Mach banding — so those joins read as faint
-     horizontal lines drawn across the photograph, which is exactly what they
-     looked like. Widening the gap between the stops to hold the top lighter
-     made it worse, because it steepened the last segment and sharpened the
-     corner feeding into it.
+       COPY_LINE_ALPHA (0.86) remapped the design's 100% onto the first line
+       of copy and then ran a second, separate segment from there to the foot.
+       That is a different gradient with a corner in the middle of it.
 
-     Sampling a continuous curve at forty-eight points removes the corners:
-     each join now turns by a fraction of a percent, far below what the eye
-     resolves, so there is no join left to see.
+       GLASS.fadeMax (0.20) scaled the whole thing at the end, so the design's
+       100% was rendering at 20% and the foot of the card was five times
+       lighter than specified.
 
-     The shape is a quadratic, measured rather than chosen: segment by segment,
-     the original four stops trace a quadratic almost exactly. The poster page
-     has always looked right, so the curve it was already drawing is the
-     specification — the only thing wrong with it was that four samples turned
-     it into four straight lines with corners between them.
+     Canvas interpolates LINEARLY between stops, which is what the design tool
+     does too — so three stops reproduce this gradient exactly and sampling it
+     more finely would be sampling two straight lines. Everything else in this
+     file samples because it is drawing a curve; this is not a curve.
 
-     A cube was tried here and is worse, for a reason worth recording. Pushing
-     the darkening later necessarily steepens the tail: the ink still has to
-     reach full strength by the first line, so holding it back early means
-     covering the same ground in less space. At t^3 the last quarter of the
-     ramp climbs from 0.23 to 0.78, and that rise resolves as a hard edge just
-     above the copy — obvious over a flat, bright background, which is exactly
-     where the poster page tends to have a dark subject and hide it. Later and
-     smoother pull against each other; the poster's own curve is the balance
-     that had already been struck.
-
-     The value AT the copy line, and every value below it, is unchanged: that
-     is what the text is read against, and it was already right. */
-  /* ── The ramp, to the gradient spec ──────────────────────────────────────
-
-     Three stops, from the design: transparent at the top, 80% at 63% of the
-     way down, full at the copy line. Interpolated linearly between them,
-     which is what the design tool does — so this IS that gradient rather
-     than an approximation of it.
-
-     It is the opposite shape to the quadratic it replaces. A quadratic holds
-     near nothing for most of its length and does the work at the end; this
-     spends most of its strength early and eases off into the copy. On a card
-     that means the picture starts giving way high and gently rather than
-     staying sharp and then dropping.
-
-     The two segments meet at 63% with a slope change of about 2.3x — 1.27
-     against 0.54 per unit of ramp. That is a real corner, and it is under the
-     ~2.5x that has previously been invisible here, which is the only reason
-     it is left as the design drew it rather than rounded off.
-
-     Sampled at GLASS.gradientSamples for the same reason everything else here
-     is: canvas interpolates linearly between stops, so a curve given few of
-     them becomes a few straight lines with a visible corner at every join.
-     These two segments are straight by intent; the sampling is what keeps the
-     ends and the join from acquiring any others.
-
-     It was a fixed 48 while the glass beside it went to 256. 48 stops across a
-     660px ramp is a join every 14px, and because this ramp starts 660px above
-     the copy it covers a stretch of the card the glass never reaches — so
-     those joins sit on bare photograph with nothing over them.
-
-     Measured on a source that is constant down the card, so that anything
-     row-to-row is the treatment's own: over that stretch the worst join is 1.1
-     levels of 255 with 25 rows past 0.7, against 0.7 and one row at 256. The
-     whole fade costs 0.19ms at 48 and 0.56ms here. */
-  const RAMP_SAMPLES = Math.max(8, Math.round(GLASS.gradientSamples));
-  stopAt(0, 0);
-  for (let i = 1; i <= RAMP_SAMPLES; i++) {
-    const t = i / RAMP_SAMPLES;
-    above(t, COPY_LINE_ALPHA * rampAlpha(t));
-  }
-
-  /* ── Below the copy: keep some photograph ──
-
-     This stretch used to ease to solid black within about 150px of the first
-     line and hold flat from there. That killed the one thing the poster was
-     liked for: you could still see the arm and the knee behind the headline.
-     A card whose lower third is an opaque panel is not the same design.
-
-     So the rest of the frame is spent going from the value behind the copy to
-     full black, linearly, arriving only at the very foot. Straight rather than
-     eased because a straight line has no internal corners at all, and because
-     it lands almost exactly where the original four stops did — 0.86 and 0.94
-     against their 0.84 and 0.94 — which is the transparency being asked for,
-     arrived at from the measurements rather than by eye.
-
-     There is one slope change left, where this meets the ramp above it: the
-     ramp arrives at 0.0030 alpha per pixel and this leaves at 0.0004, about
-     seven times gentler. That is a real discontinuity and it is the price of
-     keeping the picture visible behind the words — spreading the remaining
-     ink over the whole frame is exactly what makes it gentle. It is well
-     below the seventeen- to twenty-two-fold change the original had, and the
-     line that was actually being reported turned out to be a zoomed-out photo
-     failing to cover the frame, not this join at all. */
-  // Half the ramp's, since this segment is straight and twice as long.
-  const TAIL_SAMPLES = Math.max(8, Math.round(GLASS.gradientSamples / 2));
-  for (let i = 1; i <= TAIL_SAMPLES; i++) {
-    const t = i / TAIL_SAMPLES;
-    below(t, COPY_LINE_ALPHA + (1 - COPY_LINE_ALPHA) * t);
+     `opacity` still multiplies, for the story page's overlay control. At its
+     default of 1 the values above are what lands on the card. */
+  const SPEC_STOPS = [[0, 0], [0.63, 0.80], [1, 1]];
+  for (const [position, alpha] of SPEC_STOPS) {
+    grad.addColorStop(position, `rgba(0,0,0,${(alpha * opacity).toFixed(3)})`);
   }
 
   target.fillStyle = grad;

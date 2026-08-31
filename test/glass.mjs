@@ -416,24 +416,34 @@ console.log("\nThe bottom fade is still black, anchored, and capped");
   const a = target.stops.map((s) => s.a);
   ck("it painted a gradient", a.length > 0);
   ck("alpha never decreases", a.every((v, i) => !i || v >= a[i - 1] - 1e-9));
-  ck("foot lands on GLASS.fadeMax",
-    Math.abs(a[a.length - 1] - api.GLASS.fadeMax) < 1e-6,
-    a[a.length - 1] + " vs " + api.GLASS.fadeMax);
-  /* The property is that some photograph is left at the foot, and the old
-     form of this check had the arithmetic wrong: it added fillAlpha and
-     fadeMax against a bound of 1.06. They do not add. The fade darkens what
-     the fill let through, so they MULTIPLY — what survives is
-     (1 - fillAlpha) x (1 - fadeMax). Adding them is both too strict in the
-     middle of the range and meaningless at the ends, and it blocked a
-     deliberate darkening that leaves 9.1% of the picture visible.
+  /* The design's three stops, transcribed: 0% at 0, 63% at 80%, 100% at full.
+     Asserted as VALUES because they were read off a stop list rather than
+     derived — if someone re-tunes them, that should be a deliberate edit to
+     a spec, visible here, not a silent drift. */
+  const stopAt = (pos) => {
+    const s = target.stops.find((st) => Math.abs(st.p - pos) < 1e-6);
+    return s ? s.a : null;
+  };
+  ck("the top of the band is fully transparent", Math.abs(stopAt(0) - 0) < 1e-6, String(stopAt(0)));
+  ck("63% of the way down sits at 80%", Math.abs(stopAt(0.63) - 0.8) < 1e-6, String(stopAt(0.63)));
+  ck("the foot is opaque, as drawn", Math.abs(a[a.length - 1] - 1) < 1e-6, String(a[a.length - 1]));
+  ck("three stops and no more — this gradient is not a curve", a.length === 3, a.length + " stops");
 
-     7% is where a photograph stops reading as one and the card becomes a
-     black panel with type on it. Measured on a flat 154-grey source, 9.1%
-     lands the foot at 27 against 34 before. */
-  const surviving = (1 - api.GLASS.fillAlpha) * (1 - api.GLASS.fadeMax);
-  ck("some photograph survives at the foot",
-    surviving >= 0.07,
-    (surviving * 100).toFixed(1) + "% of the picture left");
+  /* The foot is now OPAQUE, and that is a change of intent worth stating.
+     This used to assert that some photograph survived down there — the fade
+     was capped at GLASS.fadeMax so that (1 - fillAlpha) x (1 - fadeMax) left
+     about 9% of the picture visible, on the reasoning that below ~7% a card
+     stops being a photograph with type on it and becomes a black panel.
+
+     The design says otherwise: its last stop is 100%. So the picture is gone
+     at the very foot by instruction, and what the reader still sees through
+     the treatment is the stretch ABOVE that — at 63% down, 20% of the
+     photograph is still coming through. That is where the property now
+     lives, so that is where it is checked. */
+  const atSixtyThree = 1 - stopAt(0.63);
+  ck("the picture still reads at the 63% stop",
+    atSixtyThree >= 0.15,
+    (atSixtyThree * 100).toFixed(0) + "% of the picture through the fade there");
 }
 
 console.log("\nEvery page that shows copy over a photograph gets the treatment");

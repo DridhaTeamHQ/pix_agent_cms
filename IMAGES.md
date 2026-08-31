@@ -34,6 +34,34 @@ so the canvas is not tainted and can be exported.
 `images/edits`. There is no self-hosted upscaler and no local resampler; both
 were removed deliberately (see §2.11).
 
+### 2.0 The browser decides first, and usually decides not to spend
+
+Before anything is uploaded, `runImageAI` measures the picture locally — free,
+about a millisecond — and answers two questions:
+
+| | |
+|---|---|
+| **Is it too small?** | gpt-image's ceiling is 1536px on the long edge and the upload is capped to match. A source already above it is shrunk on the way out, repainted at the ceiling, and enlarged back on the way home — real capture replaced by the model's idea of it, and billed. The model is never shown more than the ceiling, so it can never return more. |
+| **Is it flat?** | Exposure, contrast and colour off the picture's own histogram — see `analysePhoto` / `autoFilterFor`. Arithmetic, not a model. |
+
+Three outcomes, two of which cost nothing:
+
+- **needs nothing** — big enough and correctly exposed. Says so, changes
+  nothing, spends nothing. *This is most wire photographs.*
+- **tone only** — big enough but flat or dark. Corrected in the browser with
+  the brightness/contrast/saturation controls that already exist. No call.
+- **upscale** — genuinely short of pixels. Spends, and applies the tone fix
+  too, because there is no reason to pay a model to do arithmetic already done.
+
+The expensive answer is the last one considered rather than the only one
+available. Everything from 2.1 onward describes what happens **only in that
+third case**.
+
+Same measurement is on the **Auto** chip in the Filters panel, for correcting
+tone without going near the paid button.
+
+---
+
 ### 2.1 What the browser sends
 
 Body is the current background as PNG, **capped at 1536px on the long edge**
@@ -149,18 +177,40 @@ writer's existing zoom and pan still apply.
 
 ### 2.6 Cost and latency
 
-Billed per call, no free path. Prices are gpt-image-1.5 list, at the
-portrait/landscape shapes this route asks for (1024x1536 / 1536x1024); a square
-source resolves to 1024x1024 and costs less.
+**The real number is measured, not from this table.** Every call reads the
+`usage` block off its own response, prices it, and reports it three ways:
 
-| `IMAGE_QUALITY` | Cost per enhance |
+```
+console  ✓ AI restore done in 41200ms (gpt-image-1.5, 1536x1024, quality=medium) — $0.0631 (in 1568 img + 214 txt, out 1024)
+payload  "cost": { "textInTokens": 214, "imageInTokens": 1568, "outputTokens": 1024, "usd": 0.0631 }
+UI       ✓ Restored and upscaled via gpt-image-1.5 — $0.063
+```
+
+Read that, not the estimates below. A table in a document cannot know what
+OpenAI charged today, and this one has been wrong before: it previously quoted
+1024x1024 prices for a route that never asks for a square, understating `low`
+and `medium` by about half. Rates are overridable via `OPENAI_RATE_TEXT_IN`,
+`OPENAI_RATE_IMAGE_IN` and `OPENAI_RATE_IMAGE_OUT` (per million tokens); the
+authoritative total is always the OpenAI usage dashboard.
+
+Rough expectations, output tokens only, at the portrait/landscape shapes this
+route asks for:
+
+| `IMAGE_QUALITY` | Output cost |
 |---|---|
 | `low` | ~$0.013 (produces clay faces — not recommended) |
 | **`medium`** (default) | **~$0.05** |
 | `high` | ~$0.20 (4× medium, for detail the poster gradient covers) |
 
-Typically 20–90 seconds. The boot log states the engine and the real cost:
-`Restore & Upscale: gpt-image (quality=medium, ~$0.05 each).`
+**Add the input side to all three.** `input_fidelity=high` is hard-coded and
+has no environment override, and it bills image INPUT tokens on top of the
+figures above — a floor under every call that `IMAGE_QUALITY` cannot lower.
+At `low` it is the dominant line item, which is why switching to `low` saves
+far less than the table implies.
+
+Typically 20–90 seconds, and now bounded: `OPENAI_IMAGE_TIMEOUT_MS` (default
+180s) and `OPENAI_TEXT_TIMEOUT_MS` (default 60s). Before those, a hung request
+held its Railway worker until the platform reaped the whole thing.
 
 The default was `high` between dbcdb0f and this change, on the same day the
 free self-hosted upscaler was deleted. Those two together are what turned a

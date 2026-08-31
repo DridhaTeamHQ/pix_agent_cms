@@ -87,6 +87,37 @@ function env(name, ...aliases) {
   return "";
 }
 
+/* ── Every outbound call gets a deadline ─────────────────────────────────
+   fetch() has no default timeout. A request that never answers never
+   rejects, so the handler awaiting it never returns and the Railway worker
+   that was serving it is held until the platform reaps the whole request —
+   which on a small plan is a meaningful share of the capacity, taken out by
+   one slow upstream.
+
+   Two ceilings, because the two kinds of call are not comparable: a chat
+   completion that has not answered in a minute is not going to, while image
+   generation legitimately runs 30-90 seconds and is given three.
+
+   The AbortError is translated on the way out. "The operation was aborted"
+   in a log tells whoever is reading it nothing about which call, or that a
+   deadline rather than a fault is what happened. */
+const OPENAI_TEXT_TIMEOUT_MS = Number(env("OPENAI_TEXT_TIMEOUT_MS") || 60_000);
+const OPENAI_IMAGE_TIMEOUT_MS = Number(env("OPENAI_IMAGE_TIMEOUT_MS") || 180_000);
+
+async function fetchWithDeadline(url, options = {}, ms = OPENAI_TEXT_TIMEOUT_MS, label = "request") {
+  try {
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(ms) });
+  } catch (err) {
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+      const e = new Error(`${label} timed out after ${Math.round(ms / 1000)}s`);
+      e.status = 504;
+      e.timedOut = true;
+      throw e;
+    }
+    throw err;
+  }
+}
+
 function dailyMattrConfig() {
   return getDailyMattrConfig({
     DAILYMATTR_BASE_URL: env("DAILYMATTR_BASE_URL", "DAILYMATTR_API_BASE_URL"),
@@ -3096,7 +3127,7 @@ function sendScrapeError(res, error, fallback) {
 async function buildImageSearchQuery(title, articleText = "") {
   if (!openaiApiKey || !title) return "";
   try {
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    const r = await fetchWithDeadline("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${openaiApiKey}`,
@@ -3803,7 +3834,7 @@ async function handleGenerateCaption(req, res) {
     ].join("\n");
 
     const t0 = Date.now();
-    const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+    const aiRes = await fetchWithDeadline("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${openaiApiKey}`,
@@ -4018,7 +4049,7 @@ async function rectifyBullets({ headline, articleText, bullets, register, issues
     "Bullets to rewrite:\n" + bullets.map((b, i) => `${i + 1}. ${b}`).join("\n");
 
   try {
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    const r = await fetchWithDeadline("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "Authorization": `Bearer ${openaiApiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -4131,7 +4162,7 @@ async function handleGenerateArticle(req, res) {
     // the model returns the register it actually used and that value wins.
     const suggestedRegister = suggestRegister(headline, articleText);
 
-    const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+    const aiRes = await fetchWithDeadline("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${openaiApiKey}`,
@@ -4883,7 +4914,7 @@ async function planEnhance(buffer, mime, { posterRatio = "", sourceW = 0, source
   const cropLoss = coverCropLoss(sourceW, sourceH, posterRatio);
   try {
     const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    const r = await fetchWithDeadline("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${openaiApiKey}`,
@@ -5306,11 +5337,11 @@ async function runEnhanceEdit({
     if (withMask && mask) {
       form.append("mask", new Blob([mask.buffer], { type: "image/png" }), "mask.png");
     }
-    return fetch("https://api.openai.com/v1/images/edits", {
+    return fetchWithDeadline("https://api.openai.com/v1/images/edits", {
       method: "POST",
       headers: { "Authorization": `Bearer ${openaiApiKey}` },
       body: form,
-    });
+    }, OPENAI_IMAGE_TIMEOUT_MS, `${model} ${job}`);
   };
 
   let modelUsed = IMAGE_MODEL_PRIMARY;
@@ -5329,9 +5360,33 @@ async function runEnhanceEdit({
      pastes them back over the result anyway. */
   if (!aiRes.ok && [400, 403, 404].includes(aiRes.status)) {
     const firstErr = await aiRes.text().catch(() => "");
-    console.warn(`⚠ ${IMAGE_MODEL_PRIMARY} unavailable (${aiRes.status}) — falling back to ${IMAGE_MODEL_FALLBACK}:`, firstErr.slice(0, 160));
-    modelUsed = IMAGE_MODEL_FALLBACK;
-    aiRes = await callEdit(modelUsed, usedMask);
+
+    /* A 400 is not only "no such model". It is also how the API reports a
+       moderation refusal and a malformed parameter, and neither of those gets
+       better on a second model — the same picture and the same form go up
+       again, fail the same way, and the reviewer waits through two full
+       image-generation round trips before seeing an error. At three minutes
+       apiece that is six minutes to be told no.
+
+       So the retry is narrowed to what it was actually written for: the
+       account not having the newer model. 403 and 404 always mean that; a
+       400 only does when the body says so. Anything else fails on the first
+       attempt, which is both faster and more honest. */
+    const modelMissing =
+      aiRes.status !== 400 ||
+      /model|not.*(exist|found|available)|unsupported|does not have access/i.test(firstErr);
+
+    if (modelMissing) {
+      console.warn(`⚠ ${IMAGE_MODEL_PRIMARY} unavailable (${aiRes.status}) — falling back to ${IMAGE_MODEL_FALLBACK}:`, firstErr.slice(0, 160));
+      modelUsed = IMAGE_MODEL_FALLBACK;
+      aiRes = await callEdit(modelUsed, usedMask);
+    } else {
+      console.warn(`⚠ ${IMAGE_MODEL_PRIMARY} refused the request (${aiRes.status}) — not a missing model, so not retried:`, firstErr.slice(0, 200));
+      const err = new Error("The image service refused this picture.");
+      err.status = 502;
+      err.detail = firstErr.slice(0, 300);
+      throw err;
+    }
   }
   if (!aiRes.ok && usedMask && [400, 422].includes(aiRes.status)) {
     const maskErr = await aiRes.text().catch(() => "");

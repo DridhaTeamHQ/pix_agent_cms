@@ -12,7 +12,8 @@
     "generate": "node src/generate-post.mjs",
     "db:init": "node src/scripts/db-init.mjs",
     "users:seed": "node src/scripts/seed-users.mjs",
-    "users:list": "node src/scripts/seed-users.mjs --list"
+    "users:list": "node src/scripts/seed-users.mjs --list",
+    "test": "node test/run-all.mjs"
   },
   "dependencies": {
     "axios": "^1.19.0",

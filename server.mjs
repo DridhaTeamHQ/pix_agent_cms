@@ -5357,15 +5357,51 @@ async function runEnhanceEdit({
     throw err;
   }
 
+  /* ── What this call actually cost ─────────────────────────────────────
+     Read off the response's own usage block rather than estimated from a
+     table. The tables go stale — this repo's own IMAGES.md quoted square
+     prices for a route that never asks for a square, and understated low and
+     medium by about half — and an estimate is exactly the wrong thing to
+     hand someone deciding whether they can afford a feature.
+
+     Rates are per MILLION tokens and overridable, because they are the one
+     part of this that OpenAI can change without the code noticing. The
+     defaults are the published gpt-image rates. The authoritative number is
+     always the usage dashboard; this is the per-click figure that makes the
+     dashboard total explicable. */
+  const usage = data?.usage || null;
+  const RATE_TEXT_IN = Number(env("OPENAI_RATE_TEXT_IN") || 5);
+  const RATE_IMAGE_IN = Number(env("OPENAI_RATE_IMAGE_IN") || 10);
+  const RATE_IMAGE_OUT = Number(env("OPENAI_RATE_IMAGE_OUT") || 40);
+  let cost = null;
+  if (usage) {
+    const textIn = usage.input_tokens_details?.text_tokens ?? 0;
+    const imageIn = usage.input_tokens_details?.image_tokens ?? Math.max(0, (usage.input_tokens ?? 0) - textIn);
+    const out = usage.output_tokens ?? 0;
+    cost = {
+      textInTokens: textIn,
+      imageInTokens: imageIn,
+      outputTokens: out,
+      usd: Number((
+        (textIn * RATE_TEXT_IN + imageIn * RATE_IMAGE_IN + out * RATE_IMAGE_OUT) / 1e6
+      ).toFixed(4)),
+    };
+  }
+
   console.log(
     `✓ AI ${job} done in ${Date.now() - t0}ms (${modelUsed}, ${size}, quality=${quality}` +
-    `${job === "expand" ? `, ${amount}, ${usedMask ? "masked" : "unmasked"}` : ""}, chosen by ${decidedBy})`
+    `${job === "expand" ? `, ${amount}, ${usedMask ? "masked" : "unmasked"}` : ""}, chosen by ${decidedBy})` +
+    (cost
+      ? ` — $${cost.usd.toFixed(4)} (in ${cost.imageInTokens} img + ${cost.textInTokens} txt, out ${cost.outputTokens})`
+      : " — cost unknown (no usage in response)")
   );
 
   const payload = {
     image: `data:image/png;base64,${b64}`,
     context: description,
     engine: modelUsed,
+    // Measured, not estimated. Null when OpenAI returns no usage block.
+    cost,
     /* `quality` and `size` come back with the image so the setting can be
        checked from outside the box. IMAGE_QUALITY is an environment variable
        and an override in Railway silently reinstates the clay — without this

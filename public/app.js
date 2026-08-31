@@ -9436,7 +9436,14 @@ async function runImageAI() {
     /* A cache hit is worth saying out loud. It is the difference between a
        press that cost money and one that did not, and the reviewer is the
        only person who can decide whether to keep pressing. */
-    const billed = data.cached ? " (from cache, no charge)" : "";
+    /* What it cost, measured off OpenAI's own usage block rather than a
+       price table — the tables here have been wrong before. Shown because a
+       reviewer deciding whether to press this again is the one person the
+       number is actually for, and it was previously only in a boot log on
+       the host. */
+    const billed = data.cached
+      ? " (from cache, no charge)"
+      : (data.cost ? ` — $${data.cost.usd.toFixed(3)}` : "");
     setEnhanceStatus(
       `✓ ${label.done}${fitted} via ${engineLabel}${billed}${why}. Re-pick a stock image to undo.`,
       "success",

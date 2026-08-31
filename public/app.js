@@ -8600,6 +8600,17 @@ const enhanceModeHint   = document.getElementById("enhance-mode-hint");
    worth uploading. Both the skip gate and the upload cap below read it, so
    they cannot drift apart — the gate exists precisely because the cap is
    what makes a large photograph lose by going through here. */
+/* Carry the server's classification across the throw. `new Error(msg)` keeps
+   the words and drops everything else, so a safety refusal arrived at the
+   catch indistinguishable from a crash — which is how it ends up presented as
+   one. */
+function enhanceError(payload, status) {
+  const e = new Error(payload?.error || `HTTP ${status}`);
+  if (payload?.moderated) e.moderated = true;
+  if (payload?.detail) e.detail = payload.detail;
+  return e;
+}
+
 const MODEL_CEILING_PX = 1536;
 
 /* The only aspects gpt-image can return: 1024x1024, 1024x1536, 1536x1024.
@@ -9273,7 +9284,7 @@ async function runImageAI() {
       body: sourceBlob,
     });
     const plan = await planResp.json().catch(() => ({}));
-    if (!planResp.ok) throw new Error(plan.error || `HTTP ${planResp.status}`);
+    if (!planResp.ok) throw enhanceError(plan, planResp.status);
 
     /* An expand only happens if there is a frame to build it in. A size the
        server could not resolve to real dimensions ("auto") leaves nothing to
@@ -9348,7 +9359,7 @@ async function runImageAI() {
       body: form,
     });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (!resp.ok) throw enhanceError(data, resp.status);
     if (!data.image) throw new Error("No image returned.");
 
     const returned = new Image();
@@ -9503,10 +9514,19 @@ async function runImageAI() {
       "success",
     );
   } catch (err) {
-    // Before the plan lands there is no resolved mode, so the failure is
-    // named after what was asked for. On auto that is neither job yet.
-    const failed = ENHANCE_LABELS[requestedMode]?.failed || "Enhance failed";
-    setEnhanceStatus(`${failed}: ${err.message}`, "error");
+    /* A safety refusal is reported as itself, not as a failure. The software
+       did its job and the answer was no; "Restore failed" in front of that
+       tells a reviewer something is broken and sends them looking for a fault
+       that is not there. It is also the one refusal they can act on — by
+       publishing the photograph as it is. */
+    if (err.moderated) {
+      setEnhanceStatus(err.message, "success");
+    } else {
+      // Before the plan lands there is no resolved mode, so the failure is
+      // named after what was asked for. On auto that is neither job yet.
+      const failed = ENHANCE_LABELS[requestedMode]?.failed || "Enhance failed";
+      setEnhanceStatus(`${failed}: ${err.message}`, "error");
+    }
   } finally {
     btn.classList.remove("working");
     btn.disabled = !state.mainImage;

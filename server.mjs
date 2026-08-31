@@ -5381,10 +5381,39 @@ async function runEnhanceEdit({
       modelUsed = IMAGE_MODEL_FALLBACK;
       aiRes = await callEdit(modelUsed, usedMask);
     } else {
-      console.warn(`⚠ ${IMAGE_MODEL_PRIMARY} refused the request (${aiRes.status}) — not a missing model, so not retried:`, firstErr.slice(0, 200));
-      const err = new Error("The image service refused this picture.");
+      console.warn(`⚠ ${IMAGE_MODEL_PRIMARY} refused the request (${aiRes.status}) — not a missing model, so not retried:`, firstErr.slice(0, 300));
+
+      /* Say WHICH kind of no.
+
+         "The image service refused this picture" is true and useless. The
+         reviewer cannot tell whether they uploaded something broken, whether
+         the software is faulty, or whether to stop trying — and the one
+         answer that matters most is the one they will never guess: OpenAI's
+         safety system declines a lot of ordinary news photography. Injury,
+         disaster, distress and children are all common triggers, and a
+         newsroom photographs exactly those. Nothing is wrong with the file.
+
+         The classification is read off OpenAI's own response rather than
+         assumed, so if it refused for some other reason that reason is what
+         gets shown. */
+      let reason = "";
+      try {
+        const parsed = JSON.parse(firstErr);
+        reason = parsed?.error?.message || "";
+      } catch { /* not JSON — fall through to the raw text */ }
+      if (!reason) reason = firstErr.replace(/\s+/g, " ").trim().slice(0, 200);
+
+      const moderated = /moderation|safety system|content[_ ]policy|rejected as a result/i.test(firstErr);
+      const err = new Error(
+        moderated
+          ? "OpenAI's safety filter declined this photograph. Nothing is wrong with your file — " +
+            "distressing news images, and pictures of children, are refused routinely. " +
+            "Use it as it is; the poster does not need the AI."
+          : `The image service refused this picture: ${reason}`,
+      );
       err.status = 502;
       err.detail = firstErr.slice(0, 300);
+      err.moderated = moderated;
       throw err;
     }
   }
@@ -5778,6 +5807,10 @@ async function handleUpscaleImage(req, res) {
     sendJson(res, status, {
       error: err.message || "Image enhance failed.",
       ...(err.detail ? { detail: err.detail } : {}),
+      /* A safety refusal is not a fault. The client presents it differently:
+         "Restore failed" in front of it would tell a reviewer something
+         broke, when in fact the software worked and the answer was no. */
+      ...(err.moderated ? { moderated: true } : {}),
     });
   }
 }

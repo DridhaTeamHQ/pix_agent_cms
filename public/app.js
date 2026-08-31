@@ -1810,8 +1810,172 @@ function syncFilterUI() {
   }
 }
 
+/* ── Reading the photograph, so the adjustment is not a guess ────────────
+   A 64px thumbnail, one pass, cached on the image. The same size and the
+   same reasoning as imageHue: it is enough to characterise a picture and it
+   costs about a millisecond whatever was pasted in.
+
+   What is measured, and why each one:
+
+     p01, p99   the black and white points, as percentiles rather than the
+                actual min and max. A single blown highlight or one dead
+                pixel would otherwise say the range is already full when the
+                picture is visibly flat.
+     median     the exposure. The mean is pulled around by a large bright sky
+                or a large dark suit; the median is what the picture mostly
+                is.
+     chroma     mean saturation, for deciding whether the colour is flat.
+
+   Nothing here calls an API. This is the whole point: most of what people
+   press AI Enhance for — "it looks flat", "it looks dark", "it looks
+   washed out" — is a tone problem, not a resolution problem, and tone is
+   arithmetic. */
+function analysePhoto(image) {
+  if (!image) return null;
+  if (image.__tone !== undefined) return image.__tone;
+
+  let tone = null;
+  try {
+    const w = image.naturalWidth || image.width;
+    const h = image.naturalHeight || image.height;
+    if (w && h) {
+      const scale = Math.min(1, 64 / Math.max(w, h));
+      const sw = Math.max(1, Math.round(w * scale));
+      const sh = Math.max(1, Math.round(h * scale));
+      const off = document.createElement("canvas");
+      off.width = sw; off.height = sh;
+      const octx = off.getContext("2d", { willReadFrequently: true });
+      octx.drawImage(image, 0, 0, sw, sh);
+      const data = octx.getImageData(0, 0, sw, sh).data;
+
+      const hist = new Uint32Array(256);
+      let counted = 0, chromaSum = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 128) continue;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        const luma = Math.round(r * 0.299 + g * 0.587 + b * 0.114);
+        hist[Math.min(255, Math.max(0, luma))]++;
+        chromaSum += (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
+        counted++;
+      }
+      if (counted) {
+        const at = (share) => {
+          const want = counted * share;
+          let seen = 0;
+          for (let v = 0; v < 256; v++) { seen += hist[v]; if (seen >= want) return v; }
+          return 255;
+        };
+        tone = { p01: at(0.01), median: at(0.5), p99: at(0.99), chroma: chromaSum / counted, counted };
+      }
+    }
+  } catch (err) {
+    // Cross-origin photographs taint the canvas. No analysis, no adjustment.
+    tone = null;
+  }
+
+  image.__tone = tone;
+  return tone;
+}
+
+/* The free half of "enhance": what brightness, contrast and saturation this
+   particular photograph wants, worked out from its own histogram.
+
+   Deliberately timid. These are news photographs, and the failure everyone
+   recognises is the over-processed one — crushed blacks, a sky pushed to
+   neon. Each control is clamped to a range that cannot make a picture look
+   handled, so the worst case of pressing this is that it does very little.
+   That is the right worst case for a button that runs on somebody's
+   photograph without asking. */
+const AUTO_TONE = {
+  /* Deadbands, and they are the most important part of this.
+
+     Auto levels without them normalises every photograph to the same
+     midpoint, which is wrong for exactly the pictures a newsroom runs: a
+     high-key studio portrait on white is SUPPOSED to sit bright, and a
+     night shot is supposed to sit dark. Correcting those toward the middle
+     does not fix a fault, it removes an intention.
+
+     Measured on a properly exposed press photo: without a deadband this
+     asked for brightness 90 — a visible darkening of a picture that had
+     nothing wrong with it. So each control does nothing at all inside its
+     band, and outside it corrects only HALF the distance to the target.
+     Half because the measurement is a 64px thumbnail and a heuristic; a
+     correction that lands short is a photograph that still needs a nudge,
+     and one that overshoots is a photograph somebody has to undo. */
+  /* Wide on the bright side on purpose. A studio portrait on a white
+     background measures a median of 166 and there is nothing wrong with it;
+     at [95,155] this asked to darken it 8%. High-key is a normal way for a
+     press photograph to be exposed, and low-key is rarer, so the band is
+     not symmetric. */
+  medianOk: [90, 175],     // exposure inside this is a choice, not a fault
+  medianTarget: 122,
+  /* 180, not 200. A high-key portrait has a raised black point by
+     definition — that is what high-key MEANS — so it measures a span around
+     190 and read as "flat" at 200. The contrast lift that followed then
+     pushed its median past the exposure band and triggered a darkening: the
+     button turning a correctly exposed studio shot into a worse one through
+     two steps that were each individually defensible. A span of 180 out of
+     255 is a photograph with a full tonal range. */
+  spanOk: 180,             // a histogram this wide is not flat
+  spanTarget: 235,
+  chromaOk: [0.11, 0.32],  // colour inside this needs no help
+  chromaTarget: 0.19,
+  minChromaToTouch: 0.03,  // below this it is greyscale; never boost it
+
+  strength: 0.5,           // correct half the distance, never all of it
+  brightness: [92, 112],
+  contrast: [100, 125],
+  saturation: [100, 130],
+};
+
+function autoFilterFor(image) {
+  const tone = analysePhoto(image);
+  if (!tone) return null;
+  const clamp2 = (v, [lo, hi]) => Math.round(Math.min(hi, Math.max(lo, v)));
+  // Half the distance from "no change" to what the measurement asks for.
+  const ease = (want) => 100 + (want - 100) * AUTO_TONE.strength;
+
+  /* Contrast: a flat picture is one whose histogram does not reach the ends.
+     Expanding it is what "auto levels" has always meant, and it is the change
+     that makes the most difference on the pictures this button is for. */
+  const span = Math.max(1, tone.p99 - tone.p01);
+  /* A span this small is not a flat photograph, it is a picture with no
+     tonal information in it at all — a solid colour, a blank, a screenshot of
+     an empty panel. Expanding that has nothing to expand; it just pushes the
+     one tone present away from mid-grey. Left alone. */
+  const degenerate = span < 20;
+  const contrast = (degenerate || span >= AUTO_TONE.spanOk)
+    ? 100
+    : clamp2(ease((AUTO_TONE.spanTarget / span) * 100), AUTO_TONE.contrast);
+
+  /* Brightness against the MEDIAN, and measured after the contrast change
+     rather than before it: contrast() pivots on mid-grey, so expanding a dark
+     picture darkens it further, and correcting exposure from the original
+     median would be correcting a number that no longer applies. */
+  const medianAfter = 128 + (tone.median - 128) * (contrast / 100);
+  const brightness = (medianAfter >= AUTO_TONE.medianOk[0] && medianAfter <= AUTO_TONE.medianOk[1])
+    ? 100
+    : clamp2(ease((AUTO_TONE.medianTarget / Math.max(1, medianAfter)) * 100), AUTO_TONE.brightness);
+
+  /* Saturation only ever goes UP, and only on a picture that has colour to
+     begin with. Cutting it would override a deliberately muted photograph,
+     and dividing by a near-zero chroma on a greyscale one asks for 900%. */
+  const saturation = (tone.chroma < AUTO_TONE.minChromaToTouch ||
+                      (tone.chroma >= AUTO_TONE.chromaOk[0] && tone.chroma <= AUTO_TONE.chromaOk[1]))
+    ? 100
+    : clamp2(ease((AUTO_TONE.chromaTarget / tone.chroma) * 100), AUTO_TONE.saturation);
+
+  return { brightness, contrast, saturation, blur: 0, tone };
+}
+
 function applyFilterPreset(name) {
-  const p = FILTER_PRESETS[name] || FILTER_PRESETS["none"];
+  /* "auto" is the one preset that is not a fixed bundle — it is computed from
+     the photograph currently on the page. If the picture cannot be read
+     (cross-origin, or nothing loaded yet) it falls back to None rather than
+     silently doing nothing, so the chip never lies about having acted. */
+  const p = name === "auto"
+    ? (autoFilterFor(state.mainImage) || FILTER_PRESETS["none"])
+    : (FILTER_PRESETS[name] || FILTER_PRESETS["none"]);
   state.filterBrightness = p.brightness;
   state.filterContrast   = p.contrast;
   state.filterSaturation = p.saturation;
@@ -1821,8 +1985,19 @@ function applyFilterPreset(name) {
   // Reflect in the collapsed accordion header pill
   const meta = document.getElementById("acc-meta-filter");
   if (meta) {
-    const labels = { none:"None", vivid:"Vivid", bw:"B&W", warm:"Warm", cool:"Cool", faded:"Faded", soft:"Soft", custom:"Custom" };
+    const labels = { none:"None", auto:"Auto", vivid:"Vivid", bw:"B&W", warm:"Warm", cool:"Cool", faded:"Faded", soft:"Soft", custom:"Custom" };
     meta.textContent = labels[name] || "";
+  }
+
+  if (name === "auto") {
+    const t = p.tone;
+    setStatus(
+      t
+        ? `Auto: brightness ${p.brightness}%, contrast ${p.contrast}%, saturation ${p.saturation}% ` +
+          `— read off this photograph (range ${t.p01}–${t.p99}, midpoint ${t.median}). Costs nothing.`
+        : "Auto could not read this picture, so nothing was changed.",
+      t ? "success" : "error",
+    );
   }
 }
 

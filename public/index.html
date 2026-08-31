@@ -774,6 +774,10 @@
           <div class="acc-body"><div class="acc-inner">
             <div class="preset-grid" id="filter-presets" style="margin-bottom:14px;">
               <button type="button" class="preset-btn active" data-filter="none">None</button>
+              <!-- Computed from the photograph rather than a fixed bundle, and
+                   free: it moves the brightness/contrast/saturation controls
+                   that already exist, with no API call behind it. -->
+              <button type="button" class="preset-btn" data-filter="auto" title="Read this photograph and set brightness, contrast and saturation to suit it. Free — no AI credits.">Auto</button>
               <button type="button" class="preset-btn" data-filter="vivid">Vivid</button>
               <button type="button" class="preset-btn" data-filter="bw">B&amp;W</button>
               <button type="button" class="preset-btn" data-filter="warm">Warm</button>

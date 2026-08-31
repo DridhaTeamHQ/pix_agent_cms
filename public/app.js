@@ -4411,7 +4411,7 @@ function drawPixTextScreen() {
   ctx.fillStyle = `rgba(0, 0, 0, ${GLASS.textPageVeil})`;
   ctx.fillRect(0, 0, W, H);
 
-  paintMistGlass(ctx, { width: W, height: H, copyTop: textLayout.startY });
+  paintMistGlass(ctx, { width: W, height: H, copyTop: textLayout.startY, image });
   paintBottomFade(ctx, {
     width: W,
     height: H,
@@ -4633,6 +4633,7 @@ function drawStoryScreen() {
     height: H,
     copyTop: top,
     opacity: clamp(numberOr(state.storyOverlayOpacity, 100) / 100, 0, 1),
+    image,
   });
   paintBottomFade(ctx, {
     width: W,
@@ -5302,8 +5303,108 @@ function hsbToRgb(h, s, b) {
   };
 }
 
-function glassPanelColour() {
-  return hsbToRgb(GLASS.hue, GLASS.saturation, GLASS.brightness);
+/* ── The photograph's dominant hue ──────────────────────────────────────
+   Only the HUE. Saturation, brightness and the fill's 85% are fixed by the
+   design and never come from the picture: inherit those and a washed-out
+   photo gives a washed-out panel while a neon one gives a luminous one, and
+   the panel stops being the same panel. Fixing S and B is what lets every
+   card behave identically while still being its own colour.
+
+   Found on a 64px thumbnail, hues histogrammed into 24 buckets weighted by
+   chroma and by brightness, so a large flat wash of pale sky counts for less
+   than a smaller area of strong colour. Near-grey and near-black pixels are
+   skipped rather than down-weighted — arithmetically they have a hue, but it
+   is meaningless and one bit of sensor noise swings it across the wheel, so
+   they must not accumulate into a majority by sheer count.
+
+   The winning bucket is refined to the CIRCULAR mean of the pixels in it.
+   Circular because hue wraps: averaging 359 and 1 the arithmetic way gives
+   180, which is cyan — the exact opposite of the red they are.
+
+   Cached on the image beside its focal point. renderPoster runs on every
+   drag, and this would otherwise be the most expensive thing in the loop for
+   a value that cannot change. */
+function imageHue(image) {
+  if (!image) return null;
+  if (image.__panelHue !== undefined) return image.__panelHue;
+
+  let hue = null;
+  try {
+    const w = image.naturalWidth || image.width;
+    const h = image.naturalHeight || image.height;
+    if (w && h) {
+      const scale = Math.min(1, 64 / Math.max(w, h));
+      const sw = Math.max(1, Math.round(w * scale));
+      const sh = Math.max(1, Math.round(h * scale));
+      const off = document.createElement("canvas");
+      off.width = sw;
+      off.height = sh;
+      const octx = off.getContext("2d", { willReadFrequently: true });
+      octx.drawImage(image, 0, 0, sw, sh);
+      const data = octx.getImageData(0, 0, sw, sh).data;
+
+      const BUCKETS = 24;                       // 15 degrees each
+      const weight = new Float64Array(BUCKETS);
+      const sinSum = new Float64Array(BUCKETS);
+      const cosSum = new Float64Array(BUCKETS);
+      let chromaWeight = 0;
+      let counted = 0;
+
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 128) continue;        // transparent pixels say nothing
+        counted++;
+        const r = data[i] / 255, g = data[i + 1] / 255, b = data[i + 2] / 255;
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const chroma = max - min;
+        if (chroma < 0.09 || max < 0.12) continue;
+
+        let h2;
+        if (max === r)      h2 = 60 * (((g - b) / chroma) % 6);
+        else if (max === g) h2 = 60 * (((b - r) / chroma) + 2);
+        else                h2 = 60 * (((r - g) / chroma) + 4);
+        if (h2 < 0) h2 += 360;
+
+        const wgt = chroma * (0.4 + 0.6 * max);
+        const bucket = Math.min(BUCKETS - 1, Math.floor(h2 / (360 / BUCKETS)));
+        const rad = (h2 * Math.PI) / 180;
+        weight[bucket] += wgt;
+        sinSum[bucket] += Math.sin(rad) * wgt;
+        cosSum[bucket] += Math.cos(rad) * wgt;
+        chromaWeight += wgt;
+      }
+
+      /* Below this share of coloured pixels the hue is not a fact about the
+         picture, it is noise — a black-and-white press photo, a snow scene, a
+         document scan. Those keep the design's own hue rather than taking a
+         cast from an arithmetic accident. */
+      if (counted && chromaWeight / counted >= GLASS.minChroma) {
+        let best = 0;
+        for (let i = 1; i < BUCKETS; i++) if (weight[i] > weight[best]) best = i;
+        if (weight[best] > 0) {
+          hue = (Math.atan2(sinSum[best], cosSum[best]) * 180) / Math.PI;
+          if (hue < 0) hue += 360;
+        }
+      }
+    }
+  } catch (err) {
+    /* A cross-origin photograph taints the canvas and getImageData throws.
+       That is a normal thing for a scraped picture to be, not an error — the
+       panel keeps the design's hue, which is what it had before any of this. */
+    hue = null;
+  }
+
+  image.__panelHue = hue;
+  return hue;
+}
+
+/* The panel: the picture's hue at the design's fixed saturation, brightness
+   and 85% fill. GLASS.hue is the fallback for a photograph that has no hue
+   worth taking, and it is the design's own 196. */
+function glassPanelColour(image) {
+  const hue = GLASS.hueFromImage ? imageHue(image) : null;
+  return hsbToRgb(hue === null || hue === undefined ? GLASS.hue : hue,
+                  GLASS.saturation, GLASS.brightness);
 }
 
 const GLASS = (window.GLASS = Object.assign({
@@ -5319,9 +5420,31 @@ const GLASS = (window.GLASS = Object.assign({
      wash rather than as glass. Saturation 0 makes it a true black tint: the
      hue is kept only so the knob still exists for a deliberate warm or cool
      panel later. Brightness stays at the 9 from the picker. */
-  hue: 33,
-  saturation: 0,    // 0 = neutral black. 0.35 was the brown.
-  brightness: 0.09, // 0.09 was the picker's; darkened on request.
+  /* 196 is the design's own hue and the fallback for a photograph that has
+     none worth taking — greyscale, snow, a document scan, anything
+     cross-origin whose pixels cannot be read. */
+  hue: 196,
+  hueFromImage: true, // marked CHANGE on the picker: H comes from the picture
+  /* Below this share of coloured pixels the hue is noise, not a fact about
+     the picture, and the panel keeps the design's own 196.
+
+     0.06, not the 0.12 this threshold was born with. That number came from
+     the old FADE tint, where the hue was painted at saturation 78 across the
+     full height of the card — there, a wrong hue is a colour cast over the
+     whole thing and the bar to act on one should be high. Here the hue lands
+     at saturation 35 and brightness 9 under an 85% fill, which is a whisper:
+     the difference between hue 33 and hue 196 at those values is a couple of
+     levels of 255. The cost of a wrong hue collapsed, so the bar came down
+     with it.
+
+     What it was rejecting: ordinary muted photographs. A Getty press shot of
+     a man in a navy suit measures 0.10, an aerial of a flooded valley 0.08 —
+     both plainly coloured, both failing 0.12 and taking the fallback, which
+     is the opposite of "use the image's colours". True greyscale, snow and
+     document scans measure well under 0.02 and are still rejected. */
+  minChroma: 0.06,
+  saturation: 0.35,   // FIXED, marked on the picker. Never from the image.
+  brightness: 0.09,  // FIXED, marked on the picker. Never from the image.
 
   /* One colour on every card, rather than the hue read from each photograph.
 
@@ -5343,7 +5466,7 @@ const GLASS = (window.GLASS = Object.assign({
      The per-image path is gone rather than flagged off: the hue measurement
      it needed went with the fade's own tint, and a flag pointing at deleted
      machinery is worse than no flag. */
-  fillAlpha: 0.85,  // the 85% beside the hex, taken up on request.
+  fillAlpha: 0.85,   // FIXED, marked on the picker. The 85% beside the hex.
 
   /* Blur is quoted in the design's own units — 16 on a 382-wide card — and
      scaled to whatever the poster canvas actually is, so the frost is the
@@ -5579,7 +5702,7 @@ function glassNoise() {
   return tile;
 }
 
-function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
+function paintMistGlass(target, { width, height, copyTop, opacity = 1, image = null }) {
   /* The glass takes its geometry from GLASS.runUpAboveCopy and the height of
      its own band, not from the caller's fadeHeight - which it used to be
      handed through blurReach() and which could only ever be a fraction of a
@@ -5614,7 +5737,7 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1 }) {
      profile the bottom fade runs, so the two darkenings are one build rather
      than a cliff hidden inside a slope. */
   const copyFrac = 1;
-  const glassTint = glassPanelColour();
+  const glassTint = glassPanelColour(image);
 
   const canvas = target.canvas;
   if (!GLASS.on || !canvas || span <= 2 || width <= 2) return;
@@ -6064,6 +6187,22 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
        63%     000000 at  80%
        100%    000000 at 100%
 
+     ...and then the whole thing is scaled so the black tops out at 75%, which
+     is what "make the black gradient 75%" asks for. The shape drawn in the
+     design is kept exactly; only its ceiling moves:
+
+       0%      0.00        63%     0.60        100%    0.75
+
+     Scaled rather than clamped, and that is the whole decision. Setting ONLY
+     the last stop to 75% leaves the 63% stop at 80%, so the gradient would
+     rise to 80% and then fall back to 75% — the foot of the card coming out
+     LIGHTER than the middle of the band, which reads as exactly the sort of
+     horizontal edge this treatment exists to avoid. The test that says alpha
+     never decreases catches it.
+
+     What the ceiling buys: a quarter of the photograph is still coming
+     through at the very foot, where at 100% none of it was.
+
      Three stops and nothing else. They are transcribed rather than
      approximated, and the two things that used to sit on top of them are
      gone:
@@ -6083,9 +6222,10 @@ function paintBottomFade(target, { width, height, copyTop, fadeHeight: layoutFad
 
      `opacity` still multiplies, for the story page's overlay control. At its
      default of 1 the values above are what lands on the card. */
+  const BLACK_CEILING = 0.75;
   const SPEC_STOPS = [[0, 0], [0.63, 0.80], [1, 1]];
   for (const [position, alpha] of SPEC_STOPS) {
-    grad.addColorStop(position, `rgba(0,0,0,${(alpha * opacity).toFixed(3)})`);
+    grad.addColorStop(position, `rgba(0,0,0,${(alpha * BLACK_CEILING * opacity).toFixed(3)})`);
   }
 
   target.fillStyle = grad;
@@ -6107,6 +6247,7 @@ function drawHero() {
     width: canvas.width,
     height: canvas.height,
     copyTop: headlineTop,
+    image,
   });
   paintBottomFade(ctx, {
     width: canvas.width,

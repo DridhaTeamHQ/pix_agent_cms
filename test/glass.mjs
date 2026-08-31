@@ -145,6 +145,7 @@ function build({ transform = { a: 1, d: 1, e: 0, f: 0 }, overrides = {} } = {}) 
     const glassScratchPool = new Map();
     ${fnSrc("glassScratch")}
     ${fnSrc("hsbToRgb")}
+    ${fnSrc("imageHue")}
     ${fnSrc("glassPanelColour")}
     ${glassSrc}
     ${fnSrc("fadeReach")}
@@ -182,18 +183,35 @@ const ck = (n, c, d = "") => {
 };
 const W = 920, H = 1700, COPY = 1209, LAYOUT_FADE = 330;
 
-console.log("\nThe panel is neutral, not a colour wash");
+console.log("\nThe panel takes its HUE from the picture, and nothing else");
 {
   const { api } = build();
-  const c = api.glassPanelColour();
-  ck("saturation is 0 in the config", api.GLASS.saturation === 0, String(api.GLASS.saturation));
-  ck("so it renders a true grey (R === G === B)", c.r === c.g && c.g === c.b, JSON.stringify(c));
-  ck("at the picker's brightness",
-    Math.abs(Math.max(c.r, c.g, c.b) / 255 - api.GLASS.brightness) < 0.01, JSON.stringify(c));
-  // The reported bug was hue 33 at saturation 35 reading as brown.
-  const brown = build({ overrides: { saturation: 0.35 } }).api.glassPanelColour();
-  ck("the hue knob still works, so neutral is a CHOICE not an accident",
-    brown.r !== brown.b, JSON.stringify(brown));
+
+  /* Marked on the picker: saturation, brightness and the fill's 85% are fixed
+     and never come from the photograph. Inherit those and a washed-out picture
+     gives a washed-out panel while a neon one gives a luminous one, and a set
+     of slides stops looking like one design. */
+  ck("saturation is fixed at the picker's 35", Math.abs(api.GLASS.saturation - 0.35) < 1e-9, String(api.GLASS.saturation));
+  ck("brightness is fixed at the picker's 9", Math.abs(api.GLASS.brightness - 0.09) < 1e-9, String(api.GLASS.brightness));
+  ck("the fill is fixed at the picker's 85%", Math.abs(api.GLASS.fillAlpha - 0.85) < 1e-9, String(api.GLASS.fillAlpha));
+
+  const hex = (c) => "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase();
+
+  /* A picture with no hue worth taking keeps the design's own 196 — which is
+     #0F1517, the hex on the picker. */
+  ck("no usable hue falls back to the design's own #0F1517",
+    hex(api.glassPanelColour(null)) === "#0F1517", hex(api.glassPanelColour(null)));
+
+  /* And the hue does reach the colour. Driven through GLASS.hue rather than a
+     stub image, because imageHue needs a real canvas; what is under test is
+     that H moves the panel and that S and B do not move with it. */
+  const warm = build({ overrides: { hue: 33 } }).api.glassPanelColour(null);
+  const cool = build({ overrides: { hue: 212 } }).api.glassPanelColour(null);
+  ck("a warm hue leans the panel warm", warm.r > warm.b, hex(warm));
+  ck("a cool hue leans it cool", cool.b > cool.r, hex(cool));
+  const level = (c) => Math.max(c.r, c.g, c.b);
+  ck("and both keep the same brightness, so only H moved",
+    Math.abs(level(warm) - level(cool)) <= 1, hex(warm) + " vs " + hex(cool));
 }
 
 console.log("\nThe transition is gentle enough that there is no edge to find");
@@ -424,9 +442,17 @@ console.log("\nThe bottom fade is still black, anchored, and capped");
     const s = target.stops.find((st) => Math.abs(st.p - pos) < 1e-6);
     return s ? s.a : null;
   };
+  /* The design's shape — 0, 80%, 100% — scaled so the black tops out at 75%.
+     Scaled and not clamped: setting only the last stop to 0.75 would leave
+     0.80 at the 63% mark, and a gradient that rises to 0.80 and falls back to
+     0.75 puts a horizontal edge across the foot of every card. That is what
+     "alpha never decreases" above is there to catch. */
+  const CEILING = 0.75;
   ck("the top of the band is fully transparent", Math.abs(stopAt(0) - 0) < 1e-6, String(stopAt(0)));
-  ck("63% of the way down sits at 80%", Math.abs(stopAt(0.63) - 0.8) < 1e-6, String(stopAt(0.63)));
-  ck("the foot is opaque, as drawn", Math.abs(a[a.length - 1] - 1) < 1e-6, String(a[a.length - 1]));
+  ck("63% down keeps the design's 80%, scaled",
+    Math.abs(stopAt(0.63) - 0.8 * CEILING) < 1e-6, String(stopAt(0.63)));
+  ck("the black tops out at 75%, not opaque",
+    Math.abs(a[a.length - 1] - CEILING) < 1e-6, String(a[a.length - 1]));
   ck("three stops and no more — this gradient is not a curve", a.length === 3, a.length + " stops");
 
   /* The foot is now OPAQUE, and that is a change of intent worth stating.
@@ -440,9 +466,12 @@ console.log("\nThe bottom fade is still black, anchored, and capped");
      the treatment is the stretch ABOVE that — at 63% down, 20% of the
      photograph is still coming through. That is where the property now
      lives, so that is where it is checked. */
+  ck("a quarter of the photograph survives at the very foot",
+    Math.abs((1 - a[a.length - 1]) - 0.25) < 1e-6,
+    ((1 - a[a.length - 1]) * 100).toFixed(0) + "% left at the foot");
   const atSixtyThree = 1 - stopAt(0.63);
-  ck("the picture still reads at the 63% stop",
-    atSixtyThree >= 0.15,
+  ck("and 40% of it still reads at the 63% stop",
+    atSixtyThree >= 0.35,
     (atSixtyThree * 100).toFixed(0) + "% of the picture through the fade there");
 }
 

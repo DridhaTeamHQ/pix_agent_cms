@@ -8606,6 +8606,23 @@ const MODEL_CEILING_PX = 1536;
    Anything sent at a different shape comes back with the difference invented. */
 const MODEL_SHAPES = [1, 1024 / 1536, 1536 / 1024];
 
+/* Which of the three the picture is closest to, compared in LOG space.
+
+   Ratios are multiplicative, so a linear comparison is asymmetric: against
+   1.000 and 1.500, an aspect of 1.22 is 0.22 above one and 0.28 below the
+   other and picks the square, while 1/1.22 = 0.82 — the same relationship,
+   the other way up — sits 0.18 from 1.000 and 0.15 from 0.667 and picks the
+   portrait. A photograph and the same photograph rotated should not resolve
+   to differently-proportioned shapes. Log distance is symmetric and does not.
+
+   Named, and out of the closure it was written in, because a shape decision
+   that nothing can assert on has now shipped wrong three times in this file. */
+function nearestModelShape(aspect) {
+  if (!(aspect > 0) || !isFinite(aspect)) return 1;
+  return MODEL_SHAPES.reduce((best, a) =>
+    Math.abs(Math.log(a / aspect)) < Math.abs(Math.log(best / aspect)) ? a : best);
+}
+
 const ENHANCE_LABELS = {
   restore: { done: "Restored and upscaled", failed: "Restore failed" },
   expand:  { done: "Expanded and reframed", failed: "Expand failed" },
@@ -9088,7 +9105,22 @@ async function runImageAI() {
        The point is that the expensive answer is the LAST one considered
        rather than the only one available. */
     const longEdge = Math.max(rawW, rawH);
-    const bigEnough = longEdge >= MODEL_CEILING_PX;
+    /* Restore only, and the qualifier is load-bearing. The argument for
+       skipping is "the model cannot return more pixels than it was shown",
+       and that is an argument about RESOLUTION — which is the only thing
+       restore is for.
+
+       It does not transfer to the other jobs. Reframe and Expand exist to
+       change the SHAPE, and a 3000px landscape on a 9:16 poster is exactly
+       the case they were written for: the card is cropping two thirds of the
+       width away and no amount of resolution fixes that. Skipping them told
+       a reviewer who had explicitly chosen "redraw the whole picture to fit
+       the poster" that the photograph "does not need it" — the opposite of
+       the problem they were looking at — and, when the tone check fired,
+       silently applied a brightness change instead of the reframe they asked
+       for. Auto goes through too: only the server's planner knows which job
+       it will resolve to, so deciding here would be guessing. */
+    const bigEnough = longEdge >= MODEL_CEILING_PX && requestedMode === "restore";
     const auto = autoFilterFor(img);
     const toneHelps = !!auto && !(auto.brightness === 100 && auto.contrast === 100 && auto.saturation === 100);
 
@@ -9149,33 +9181,47 @@ async function runImageAI() {
        have invented. Losing a real edge is the better half of that trade for
        a newsroom: an edge that is missing is obvious, an edge that is
        fabricated is not, and the poster crops to its own shape afterwards
-       regardless. */
-    const srcAspect = rawW / rawH;
-    /* Only when the job is to preserve. Reframe and Expand exist to CHANGE the
-       shape, so cropping to a model shape first would throw away picture they
-       were about to use — the trim is only ever right when the alternative is
-       the model inventing that same strip. */
-    const preserving = requestedMode === "restore";
-    const target = preserving
-      ? MODEL_SHAPES.reduce((best, a) =>
-          Math.abs(Math.log(a / srcAspect)) < Math.abs(Math.log(best / srcAspect)) ? a : best)
-      : srcAspect;
+       regardless.
 
-    // The largest rect of the source that already has the target aspect.
-    let cropW = rawW, cropH = rawH;
-    if (srcAspect > target) cropW = rawH * target;   // too wide: trim the sides
-    else if (srcAspect < target) cropH = rawW / target; // too tall: trim top/bottom
-    const cropX = (rawW - cropW) / 2;
-    const cropY = (rawH - cropH) / 2;
-    const trimmedPct = Math.round((1 - (cropW * cropH) / (rawW * rawH)) * 100);
+       ...but it can only be done once the job is KNOWN, and the job is
+       decided by stage 1. Cropping here, from the mode the reviewer picked,
+       got that wrong for Auto — which is the default the planner exists to
+       serve. "auto" is not the string "restore", so the crop was skipped,
+       the native shape went up, the server resolved the verdict to restore
+       and asked for 1536x1024 anyway, and a 1.77 source came back with a
+       fifth of the frame invented and billed for. The mismatch the crop was
+       written to close was wide open on the path most presses take.
 
-    const scale = Math.min(1, MODEL_CEILING_PX / Math.max(cropW, cropH));
+       So stage 1 gets the picture as it is — it needs the true shape to
+       reason about crop loss — and the trim happens below, against the mode
+       that actually resolved. See cropToModelShape below. */
+    const cappedScale = Math.min(1, MODEL_CEILING_PX / Math.max(rawW, rawH));
     const tmp = document.createElement("canvas");
-    tmp.width  = Math.round(cropW * scale);
-    tmp.height = Math.round(cropH * scale);
-    tmp.getContext("2d").drawImage(img, cropX, cropY, cropW, cropH, 0, 0, tmp.width, tmp.height);
+    tmp.width  = Math.round(rawW * cappedScale);
+    tmp.height = Math.round(rawH * cappedScale);
+    tmp.getContext("2d").drawImage(img, 0, 0, tmp.width, tmp.height);
 
     const sourceBlob = await canvasToPng(tmp);
+
+    /* Crop a copy to the nearest shape gpt-image can return, for whichever of
+       the jobs turns out to preserve framing. Built as a function so it is
+       only paid for on the branch that uses it. */
+    const cropToModelShape = async () => {
+      const srcAspect = tmp.width / tmp.height;
+      const target = nearestModelShape(srcAspect);
+      let cw = tmp.width, ch = tmp.height;
+      if (srcAspect > target) cw = tmp.height * target;
+      else if (srcAspect < target) ch = tmp.width / target;
+      if (Math.abs(cw - tmp.width) < 1 && Math.abs(ch - tmp.height) < 1) return sourceBlob;
+      const c = document.createElement("canvas");
+      c.width = Math.round(cw);
+      c.height = Math.round(ch);
+      c.getContext("2d").drawImage(
+        tmp, Math.round((tmp.width - cw) / 2), Math.round((tmp.height - ch) / 2),
+        Math.round(cw), Math.round(ch), 0, 0, c.width, c.height,
+      );
+      return canvasToPng(c);
+    };
 
     /* ── Stage 1: what does this picture need, and at what size ──
        Cheap (one gpt-4o-mini look), spends no image credits, returns no
@@ -9268,8 +9314,16 @@ async function runImageAI() {
       form.append("image", await canvasToPng(built.frame), "frame.png");
       form.append("mask", await canvasToPng(built.mask), "mask.png");
       form.append("composited", "1");
-    } else {
+    } else if (plan.mode === "reframe") {
+      // Reframe redraws the whole picture at the poster's shape. Cropping it
+      // to a model shape first would discard picture it was about to use.
       form.append("image", sourceBlob, "source.png");
+      form.append("composited", "0");
+    } else {
+      // Restore, however it was reached — chosen outright, or resolved there
+      // by the planner on auto. Now the shape can be matched to what the model
+      // is able to hand back, so there is nothing left for it to invent.
+      form.append("image", await cropToModelShape(), "source.png");
       form.append("composited", "0");
     }
     /* A reframe needs nothing built for it — that is the point of it. The raw

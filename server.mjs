@@ -35,6 +35,10 @@ import {
 import {
   ScrapeValidationError, fetchPublicHtml, fetchPublicImage, parseScrapeArticleResult, parseScrapeRequest,
 } from "./lib/scrape-security.js";
+import {
+  extractBestArticleImage,
+  upgradeImageToHighestQuality as upgradeScrapedImage,
+} from "./lib/scrape.js";
 
 const root = join(process.cwd(), "public");
 const port = Number(process.env.PORT || 3000);
@@ -3090,11 +3094,17 @@ async function handleScrapeArticle(req, res) {
     // Clean up common suffixes like " - BBC News", " | Times of India"
     title = title.replace(/\s*[-|–—]\s*[^-|–—]{2,30}$/i, "").trim();
 
-    // Extract image: try secure_url first, then og:image, twitter:image
-    let image = extractMetaContent(html, ["og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"]);
+    // Evaluate every useful declaration instead of trusting the first social
+    // tag, which is often a logo, placeholder or low-resolution thumbnail.
+    let image = extractBestArticleImage(html, finalUrl, { title });
     if (image) {
-      image = resolveMaybeRelative(image, finalUrl);
-      image = upgradeImageToHighestQuality(image);
+      image = upgradeScrapedImage(image);
+      try {
+        const selected = new URL(image);
+        console.log(`[scrape] selected article image ${selected.hostname}${selected.pathname}`);
+      } catch { /* already validated by the selector */ }
+    } else {
+      console.warn(`[scrape] no usable article image found for ${new URL(finalUrl).hostname}`);
     }
 
     if (!title) {
@@ -3289,12 +3299,12 @@ async function enrichItems(items) {
     try {
       const { html, finalUrl } = await fetchPublicHtml(item.url, { userAgent: USER_AGENT });
       const metaTitle = extractMetaContent(html, ["og:title", "twitter:title"]);
-      const metaImage = extractMetaContent(html, ["og:image", "twitter:image", "twitter:image:src"]);
+      const metaImage = extractBestArticleImage(html, finalUrl, { title: metaTitle || next.title });
       if (metaTitle && looksLikeHeadline(metaTitle)) {
         next.title = trimTitle(cleanupText(metaTitle));
       }
       if (metaImage) {
-        next.image = resolveMaybeRelative(metaImage, finalUrl);
+        next.image = upgradeScrapedImage(metaImage);
       }
     } catch {
     }

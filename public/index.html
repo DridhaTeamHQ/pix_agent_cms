@@ -577,9 +577,11 @@
           <button type="button" class="btn-ghost preview-card-dl" data-download="x">
             <svg width="13" height="13" aria-hidden="true"><use href="#i-download"/></svg> Download
           </button>
-          <a class="btn-ghost preview-card-dl preview-card-x-link" href="https://x.com/intent/tweet" target="_blank" rel="noopener noreferrer" aria-label="Open X composer in a new tab" title="Open X in a new tab, then attach the downloaded Pix">
+          <a class="btn-ghost preview-card-dl preview-card-x-link" href="https://x.com/intent/tweet" target="_blank" rel="noopener noreferrer" aria-label="Open X composer with post text in a new tab" aria-describedby="x-share-hint" title="Open X with Text for X filled in; paste the copied image or attach the downloaded Pix">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg> Open X
           </a>
+          <button type="button" class="btn-ghost preview-card-dl" id="x-copy-image-btn" aria-describedby="x-share-hint">Copy Pix image</button>
+          <p class="preview-card-hint" id="x-share-hint">Text fills in on X. Copy and paste the image there, or attach the download.</p>
         </figure>
 
       </div>

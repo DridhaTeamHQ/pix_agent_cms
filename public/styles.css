@@ -4655,6 +4655,13 @@ textarea:focus {
   text-decoration: none;
 }
 
+.preview-card-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
 /* Cards now carry a grip, a number, a type and sometimes a remove button,
    so the label row is a layout rather than a line of text. */
 .preview-card-label {

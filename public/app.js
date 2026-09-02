@@ -1387,6 +1387,30 @@ function scrollPreviewIntoViewIfMobile() {
 /* ── Download for X ── */
 const xDownloadBtn = document.getElementById("x-download-btn");
 const xDownloadStatus = document.getElementById("x-download-status");
+const xComposerLink = document.querySelector(".preview-card-x-link");
+const xCopyImageBtn = document.getElementById("x-copy-image-btn");
+
+function xPostText(view) {
+  const tweet = typeof view.article?.tweet === "string" ? view.article.tweet.trim() : "";
+  return tweet || cleanHeadlineForPublish(view.headline);
+}
+
+function syncXComposerLink() {
+  if (!xComposerLink) return;
+  const url = new URL("https://x.com/intent/tweet");
+  const text = xPostText(basePageView());
+  if (text) url.searchParams.set("text", text);
+  xComposerLink.href = url.href;
+}
+
+// Keep normal new-tab behavior, including keyboard and middle-click, without
+// waiting for a request or allowing an older post's text to survive a reset.
+if (xComposerLink) {
+  for (const event of ["click", "auxclick", "contextmenu", "focus"]) {
+    xComposerLink.addEventListener(event, () => syncXComposerLink());
+  }
+}
+if (xCopyImageBtn) xCopyImageBtn.addEventListener("click", copyXPreviewImage);
 
 function setPostStatus(msg, kind) {
   if (!xDownloadStatus) return;
@@ -1549,84 +1573,96 @@ async function fetchAiCaption(headline, timeoutMs = 12000) {
   }
 }
 
-function downloadXPreview({ usePrimaryButton = false } = {}) {
-  /* The X card is pinned to the base page — it is not in slotOrder and shows
-     the post's own poster whatever is selected. The export did not say so:
-     it snapshotted the render MODE but not the SELECTION, so pressing Download
-     on the X card while a story or a second poster page was selected rendered
-     THAT page instead. The PNG carried the wrong picture, or none, and for a
-     second poster page the wrong headline and tag — silently, since it looks
-     like a normal download.
-
-     The headline test has to read the base page too, or a Story page (which
-     owns no headline) makes this refuse a post that has one. */
-  const baseHeadline = (basePageView().headline || "").trim();
-  if (!baseHeadline) {
-    setPostStatus("Build a poster first.", "error");
-    return;
-  }
-
-  const targetButton = usePrimaryButton ? downloadButton : xDownloadBtn;
-  if (targetButton) targetButton.disabled = true;
-  setPostStatus("Preparing X download...");
-
-  // Explicitly own the render mode so a stale "text" preview / forceTextExport
-  // can never leak the text image into the X export. Restore the user's
-  // on-screen preview mode afterwards.
+function renderXPreviewCanvas() {
+  // Download and clipboard must use the same pinned base poster, crop and logo.
   const prevMode = state.previewMode;
   const prevDownloading = state.isDownloading;
   const prevShortly = state.useShortlyLogo;
   const prevForceText = state.forceTextExport;
-  /* Render the page the X card actually shows. syncActivePageContent() first,
-     so the selected page's edits are filed before the selection moves. */
   syncActivePageContent();
   const restorePageId = activePageId;
-  setActivePage("base", { force: true });
 
-  state.isDownloading = true;
-  state.useShortlyLogo = true;
-  state.forceTextExport = false;
-  state.previewMode = "x";
-
-  const restore = () => {
-    /* Back to what they WERE, not to hard-coded defaults. Writing `false`
-       here meant an export that overlapped another one restored the wrong
-       thing permanently — the whole rail losing its engagement bars and
-       drawing the Shortly logo until the page was reloaded. */
+  try {
+    setActivePage("base", { force: true });
+    state.isDownloading = true;
+    state.useShortlyLogo = true;
+    state.forceTextExport = false;
+    state.previewMode = "x";
+    const exportCanvas = renderToHighResCanvas(X_EXPORT_SCALE);
+    return exportCanvasCroppedToContent(exportCanvas, {
+      paddingBelow: 36 * X_EXPORT_SCALE,
+      minHeight: 1100 * X_EXPORT_SCALE,
+    });
+  } finally {
+    // Restore before asynchronous PNG encoding so later edits/page selections
+    // cannot be overwritten by an old download or clipboard callback.
     state.isDownloading = prevDownloading;
     state.useShortlyLogo = prevShortly;
     state.forceTextExport = prevForceText;
     state.previewMode = prevMode;
     setActivePage(restorePageId, { force: true });
     renderPoster();
-    if (targetButton) targetButton.disabled = false;
-  };
+  }
+}
 
-  try {
-    const exportCanvas = renderToHighResCanvas(X_EXPORT_SCALE);
-    const cropped = exportCanvasCroppedToContent(exportCanvas, {
-      paddingBelow: 36   * X_EXPORT_SCALE,
-      minHeight:    1100 * X_EXPORT_SCALE,
-    });
-
+function createXPreviewBlob() {
+  return new Promise((resolve, reject) => {
+    const cropped = renderXPreviewCanvas();
     cropped.toBlob((blob) => {
-      restore();
-      if (!blob) {
-        setPostStatus("Couldn't render image.", "error");
-        return;
-      }
-      const blobUrl = URL.createObjectURL(blob);
-      const dl = document.createElement("a");
-      dl.href = blobUrl;
-      dl.download = `${slugify(baseHeadline || "pix-post")}-x.png`;
-      dl.click();
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-      setPostStatus("X-ready PNG downloaded.", "success");
+      if (blob) resolve(blob);
+      else reject(new Error("Couldn't render the X image."));
     }, "image/png");
+  });
+}
+
+async function downloadXPreview({ usePrimaryButton = false } = {}) {
+  const baseHeadline = (basePageView().headline || "").trim();
+  if (!baseHeadline) {
+    setPostStatus("Build a poster first.", "error");
+    return;
+  }
+  const targetButton = usePrimaryButton ? downloadButton : xDownloadBtn;
+  if (targetButton) targetButton.disabled = true;
+  setPostStatus("Preparing X download...");
+  try {
+    const blob = await createXPreviewBlob();
+    const blobUrl = URL.createObjectURL(blob);
+    const dl = document.createElement("a");
+    dl.href = blobUrl;
+    dl.download = `${slugify(baseHeadline || "pix-post")}-x.png`;
+    dl.click();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    setPostStatus("X-ready PNG downloaded.", "success");
   } catch (error) {
-    restore();
     setPostStatus("Couldn't render X download.", "error");
     console.error("X download failed:", error);
+  } finally {
+    if (targetButton) targetButton.disabled = false;
+  }
+}
+
+async function copyXPreviewImage() {
+  if (!(basePageView().headline || "").trim()) {
+    setPostStatus("Build a poster first.", "error");
+    return;
+  }
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+    setPostStatus("Image copying isn't supported here. Download the Pix and attach it on X.", "error");
+    return;
+  }
+  if (xCopyImageBtn) xCopyImageBtn.disabled = true;
+  setPostStatus("Copying X image...");
+  try {
+    const blobPromise = createXPreviewBlob();
+    // Handle encoding failure even if clipboard access fails before consuming it.
+    blobPromise.catch(() => {});
+    // Pass the promise without awaiting it to retain the click's user activation.
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blobPromise })]);
+    setPostStatus("Image copied. Open X, click in the post and paste (Ctrl+V or Cmd+V). Text fills in automatically.", "success");
+  } catch {
+    setPostStatus("Couldn't copy the image. Download the Pix and attach it on X instead.", "error");
+  } finally {
+    if (xCopyImageBtn) xCopyImageBtn.disabled = false;
   }
 }
 
@@ -3390,6 +3426,7 @@ function renderPoster() {
 
   syncZoomReadout();
   syncActivePageContent();
+  syncXComposerLink();
   recomputeDetailSlices();
 
   // The live values, restored after the last card. Every page is painted
@@ -8422,6 +8459,7 @@ async function generateArticle({ applyToSlides = false } = {}) {
 
     renderArticle(data);
     state.article = data;
+    syncXComposerLink();
 
     if (applyToSlides) {
       // The writer can be typing while this request is in flight — the scrape

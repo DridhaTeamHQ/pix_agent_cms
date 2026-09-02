@@ -4651,6 +4651,10 @@ textarea:focus {
   justify-content: center;
 }
 
+.preview-card-x-link {
+  text-decoration: none;
+}
+
 /* Cards now carry a grip, a number, a type and sometimes a remove button,
    so the label row is a layout rather than a line of text. */
 .preview-card-label {

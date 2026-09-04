@@ -411,6 +411,17 @@ const state = {
 
 // Build the ctx.filter string from current state values.
 function buildFilterString() {
+  /* "none", not an identity chain. A filter that changes nothing still costs
+     the whole filter pass — the picture goes to its own layer, through a
+     colour matrix, and back — on every card of every repaint. Measured at
+     ~10ms a card against ~2.5ms for the bare draw, so the DEFAULT state, no
+     filter chosen, was paying for one it never asked for. */
+  if (
+    Number(state.filterBrightness) === 100 &&
+    Number(state.filterContrast) === 100 &&
+    Number(state.filterSaturation) === 100 &&
+    !(Number(state.filterBlur) > 0)
+  ) return "none";
   return [
     `brightness(${state.filterBrightness}%)`,
     `contrast(${state.filterContrast}%)`,
@@ -2724,7 +2735,7 @@ window.addEventListener("mousemove", (e) => {
   state.imageOffset.y = clamp(dragOffsetStart.y + dy, -IMAGE_PAN_LIMIT, IMAGE_PAN_LIMIT);
   imgOffsetX.value = Math.round(state.imageOffset.x);
   imgOffsetY.value = Math.round(state.imageOffset.y);
-  renderPoster();
+  scheduleRender();
 });
 
 window.addEventListener("mouseup", () => {
@@ -3411,18 +3422,53 @@ function syncSliceLabels() {
    are the only ones that fire faster than the display. */
 let renderScheduled = false;
 
+/* ── Paint what is being edited now; paint the rest once the hand stops ─────
+
+   One paint per frame was still one paint of EVERYTHING per frame: every
+   page's card and the X preview, when the writer is looking at one of them.
+   Three cards is three photographs drawn, three backdrops blurred, three
+   panes of glass built, for one card that moved. On a five-page post it is
+   five, and the drag stutters in proportion.
+
+   So a scheduled render paints the active page's cards on the frame, and the
+   others — plus the X preview, which is on a different tab — are painted once
+   SETTLE_MS has passed with no further input. They cannot fall out of step
+   for longer than that, and nothing that reads a canvas back goes through
+   here: those callers still call renderPoster() and get every card at once. */
+const SETTLE_MS = 150;
+let settleTimer = 0;
+
+function liveCards() {
+  const page = activePage();
+  return new Set(page && page.cards ? page.cards : []);
+}
+
+function settleRender() {
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => {
+    settleTimer = 0;
+    renderPoster();
+  }, SETTLE_MS);
+}
+
 function scheduleRender() {
   if (renderScheduled) return;
   renderScheduled = true;
   requestAnimationFrame(() => {
     renderScheduled = false;
-    renderPoster();
+    renderPoster({ cards: liveCards() });
+    settleRender();
   });
 }
 
-function renderPoster() {
+function renderPoster(opts) {
   // Export paths swap ctx themselves and want a single paint.
   if (state._targetedRender) { paintPoster(); return; }
+
+  // A Set of cards restricts the paint to those — a scheduled render passes
+  // the active page's. Anything else, no argument or an Event from a
+  // listener, paints the lot.
+  const only = opts && opts.cards instanceof Set ? opts.cards : null;
 
   syncZoomReadout();
   syncActivePageContent();
@@ -3440,6 +3486,7 @@ function renderPoster() {
       applyPageFields(basePage.content);
       if (page !== basePage) applyPageFields(page.content);
       for (const card of page.cards) {
+        if (only && !only.has(card)) continue;
         // A text card paints its slice of the paragraph, not the whole of it.
         state._detailSlice = card.detailSlice || null;
         paintCardInto(card.canvas, card.mode);
@@ -3449,9 +3496,11 @@ function renderPoster() {
 
     // X is the poster again, so it always follows page 1 — never whichever
     // page happens to be selected.
-    applyPageFields(live);
-    applyPageFields(basePage.content);
-    paintCardInto(xPreviewCanvas, "x");
+    if (!only) {
+      applyPageFields(live);
+      applyPageFields(basePage.content);
+      paintCardInto(xPreviewCanvas, "x");
+    }
   } finally {
     applyPageFields(live);
     if (currentModalCard) updateScreenPreviewModal();
@@ -4532,6 +4581,14 @@ function videoTargetSize() {
    (see the listeners further down). */
 let videoPreviewRaf = 0;
 
+// Only the video pages change from one frame of playback to the next. Every
+// other card was being repainted sixty times a second for a clip it does not
+// show, which is what made playback drop frames on a post with a poster and
+// a text page beside it.
+function videoCards() {
+  return new Set(pages.filter((p) => p.type === "video").flatMap((p) => p.cards));
+}
+
 function startVideoPreviewLoop() {
   if (videoPreviewRaf) return;
   const tick = () => {
@@ -4542,7 +4599,7 @@ function startVideoPreviewLoop() {
       renderPoster();   // settle on the final frame
       return;
     }
-    renderPoster();
+    renderPoster({ cards: videoCards() });
     videoPreviewRaf = requestAnimationFrame(tick);
   };
   videoPreviewRaf = requestAnimationFrame(tick);
@@ -4626,7 +4683,7 @@ function drawPixTextScreen() {
   ctx.fillStyle = `rgba(0, 0, 0, ${GLASS.textPageVeil})`;
   ctx.fillRect(0, 0, W, H);
 
-  paintMistGlass(ctx, { width: W, height: H, copyTop: textLayout.startY, image });
+  paintMistGlass(ctx, { width: W, height: H, copyTop: textLayout.startY, image, cacheKey: glassCacheKey(image, "text") });
   paintBottomFade(ctx, {
     width: W,
     height: H,
@@ -4849,6 +4906,7 @@ function drawStoryScreen() {
     copyTop: top,
     opacity: clamp(numberOr(state.storyOverlayOpacity, 100) / 100, 0, 1),
     image,
+    cacheKey: glassCacheKey(image, "story"),
   });
   paintBottomFade(ctx, {
     width: W,
@@ -5030,6 +5088,36 @@ function drawTimestamp(x, y, s) {
    out of its way. A story slide is the opposite — the photo is the point, and
    the gradient alone keeps the lower copy legible — so it passes "none" and
    gets the image sharp. */
+/* ── The static layers, painted once per picture rather than once per frame ──
+
+   Of the three layers below, the first two do not move: the cover-scaled
+   backdrop and the un-panned copy are functions of the picture, the frame and
+   the zoom, and nothing the writer does between two keystrokes — or between
+   two frames of a drag — changes them. They were being blurred at 26px and
+   18px over the whole card on every repaint anyway, and a blur over 920x1700
+   is the single most expensive thing this renderer does.
+
+   So they are painted into a canvas the size of the card and that canvas is
+   blitted back until any of their inputs changes. The pan lives in the third
+   layer only, so a drag rebuilds nothing.
+
+   Bypassed under a scaled context (the 4x export), where the layer would be
+   the wrong resolution — the export paints directly, as it always did. */
+const backdropCache = new Map();
+const BACKDROP_CACHE_MAX = 6;
+let imageUidSeq = 0;
+
+function imageUid(image) {
+  if (!image) return "none";
+  if (!image.__uid) image.__uid = ++imageUidSeq;
+  return image.__uid;
+}
+
+function cacheKeep(map, max, key, value) {
+  if (map.size >= max) map.delete(map.keys().next().value);
+  map.set(key, value);
+}
+
 function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom, scale = 1, filter) {
   const bleed = 34 * scale;
   const drawX = x - bleed;
@@ -5041,6 +5129,14 @@ function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom
   const drawWidth = image.width * imageScale;
   const drawHeight = image.height * imageScale;
   const focal = image.__focalPoint || { x: image.width / 2, y: image.height / 2 };
+
+  const sharpFilter = filter || `blur(${Math.round(18 * scale)}px) brightness(62%) contrast(108%) saturate(72%)`;
+  const m = typeof ctx.getTransform === "function" ? ctx.getTransform() : null;
+  const unscaled = !m || (m.a === 1 && m.d === 1 && m.b === 0 && m.c === 0 && m.e === 0 && m.f === 0);
+  const cacheKey = unscaled && ctx.canvas
+    ? [imageUid(image), focal.x, focal.y, x, y, width, height, zoom || 1, scale, sharpFilter,
+       ctx.canvas.width, ctx.canvas.height].join("|")
+    : null;
 
   ctx.save();
 
@@ -5061,11 +5157,39 @@ function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom
      it only becomes visible at the point where the alternative was a black
      band. */
   const backdropScale = baseScale * IMAGE_PAN_HEADROOM;
-  ctx.filter = `blur(${Math.round(26 * scale)}px) brightness(52%) saturate(78%)`;
-  drawLayer(backdropScale, null);
+  const paintStaticLayers = () => {
+    ctx.filter = `blur(${Math.round(26 * scale)}px) brightness(52%) saturate(78%)`;
+    drawLayer(backdropScale, null);
+    ctx.filter = sharpFilter;
+    drawLayer(imageScale, null);
+  };
 
-  ctx.filter = filter || `blur(${Math.round(18 * scale)}px) brightness(62%) contrast(108%) saturate(72%)`;
-  drawLayer(imageScale, null);
+  if (cacheKey) {
+    let layer = backdropCache.get(cacheKey);
+    if (!layer) {
+      layer = document.createElement("canvas");
+      layer.width = ctx.canvas.width;
+      layer.height = ctx.canvas.height;
+      // drawLayer paints through the module-level ctx, so it is pointed at the
+      // cache canvas for the duration — the same swap paintCardInto does.
+      const prev = ctx;
+      ctx = layer.getContext("2d");
+      try {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        paintStaticLayers();
+      } finally {
+        ctx = prev;
+      }
+      cacheKeep(backdropCache, BACKDROP_CACHE_MAX, cacheKey, layer);
+    }
+    ctx.filter = "none";
+    ctx.drawImage(layer, 0, 0);
+  } else {
+    paintStaticLayers();
+  }
+
+  ctx.filter = sharpFilter;
   drawLayer(imageScale, offset);
   ctx.restore();
 
@@ -5861,6 +5985,33 @@ const GLASS = (window.GLASS = Object.assign({
    an allocation in the first place. */
 const glassScratchPool = new Map();
 
+/* ── Finished panes, kept ─────────────────────────────────────────────────────
+
+   The glass is a pure function of what lies under its band and of its own
+   geometry. Between keystrokes neither changes: the photograph, its pan, its
+   zoom and its filter are the same, and the band starts where the copy
+   starts. Yet it was rebuilt every frame — a dozen blur levels, fifty-six
+   strips, a dither pass and a mask — for each card, on each repaint.
+
+   paintMistGlass takes a cacheKey naming everything under the band (see
+   glassCacheKey); the geometry is appended inside. On a hit the masked pane
+   is blitted and the ink laid over it, and the whole build is skipped.
+
+   Only at 1:1. An export scales the context and would need the pane at that
+   resolution; those builds are rare and go straight through. */
+const glassCache = new Map();
+const GLASS_CACHE_MAX = 6;
+
+function glassCacheKey(image, extra = "") {
+  const focal = image && image.__focalPoint;
+  return [
+    state.previewMode, imageUid(image),
+    focal ? focal.x : "", focal ? focal.y : "",
+    state.imageOffset ? state.imageOffset.x : 0, state.imageOffset ? state.imageOffset.y : 0,
+    state.imageZoom, buildFilterString(), JSON.stringify(GLASS), extra,
+  ].join("|");
+}
+
 function glassScratch(role, width, height) {
   let cv = glassScratchPool.get(role);
   if (!cv) {
@@ -5917,7 +6068,7 @@ function glassNoise() {
   return tile;
 }
 
-function paintMistGlass(target, { width, height, copyTop, opacity = 1, image = null }) {
+function paintMistGlass(target, { width, height, copyTop, opacity = 1, image = null, cacheKey = null }) {
   /* The glass takes its geometry from GLASS.runUpAboveCopy and the height of
      its own band, not from the caller's fadeHeight - which it used to be
      handed through blurReach() and which could only ever be a fraction of a
@@ -5981,366 +6132,389 @@ function paintMistGlass(target, { width, height, copyTop, opacity = 1, image = n
 
   const devW = Math.max(2, Math.round(width * sx));
   const devSpan = Math.max(2, Math.round(span * sy));
-
-  /* The band, at a fraction of its size. Reading back from the canvas being
-     drawn on is safe here: the photograph and its backdrop are already down,
-     and nothing after this point has been painted yet. */
   const sw = Math.max(2, Math.round(devW / GLASS.downscale));
   const sh = Math.max(2, Math.round(devSpan / GLASS.downscale));
-  const small = glassScratch("small", sw, sh);
-  const sctx = small && small.getContext("2d", { willReadFrequently: false });
-  if (!sctx) return;
-  sctx.clearRect(0, 0, sw, sh);
 
-  try {
-    sctx.drawImage(canvas, ox, start * sy + oy, devW, devSpan, 0, 0, sw, sh);
-  } catch (err) {
-    /* A tainted canvas does not throw on drawImage, but a detached or
-       zero-sized one can. The fade alone is a complete treatment, so losing
-       the glass costs legibility nothing. */
-    return;
-  }
+  // The geometry joins the caller's key: the same picture under a band that
+  // starts lower — one more line of headline — is a different pane.
+  const keptKey = cacheKey && sx === 1 && sy === 1
+    ? `${cacheKey}|${start}|${span}|${width}|${height}|${devW}|${devSpan}`
+    : null;
+  let layer = keptKey ? glassCache.get(keptKey) : null;
 
-  // Build the finished glass at full size, then lay it down in one pass — so
-  // the ramp masks the whole stack and not each layer separately.
-  const glass = glassScratch("glass", devW, devSpan);
-  const g = glass && glass.getContext("2d");
-  if (!g) return;
-  g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1;
-  g.globalCompositeOperation = "source-over";
-  g.filter = "none";
-  g.clearRect(0, 0, devW, devSpan);
+  if (!layer) {
+    /* The band, at a fraction of its size. Reading back from the canvas being
+       drawn on is safe here: the photograph and its backdrop are already down,
+       and nothing after this point has been painted yet. */
+    const small = glassScratch("small", sw, sh);
+    const sctx = small && small.getContext("2d", { willReadFrequently: false });
+    if (!sctx) return;
+    sctx.clearRect(0, 0, sw, sh);
 
-  g.imageSmoothingEnabled = true;
-  g.imageSmoothingQuality = "high";
-
-  /* ── Refraction ───────────────────────────────────────────────────────
-     Blur alone is fog, not glass. What separates the two is that glass BENDS
-     what is behind it: a straight roofline behind real frosted glass arrives
-     wavy, and it is that displacement, not the softness, that tells the eye
-     it is looking through a solid.
-
-     Done by re-drawing the blurred band as horizontal strips, each pulled
-     sideways by a smooth function of its own depth. Two sine waves of
-     unrelated frequency are summed so the bend never repeats visibly — one
-     wave alone reads as a ripple effect, which is a filter, not a surface.
-
-     The bend is strongest at the leading edge and settles as it descends.
-     Real glass refracts hardest where it is thickest and where the eye meets
-     it at an angle, and it also puts the distortion where the photograph is
-     still legible — by the time the copy starts, the picture is far enough
-     gone that bending it further would only cost contrast. */
-  /* The blur is specified against a 382-wide card, so it scales with the
-     canvas.
-
-     It used to be divided by GLASS.downscale before being handed to
-     ctx.filter, on the reasoning that "most of it is delivered by the
-     downsample itself - drawing the band at 1/4 size and scaling back up IS a
-     blur of roughly that factor - and ctx.filter only has to supply the
-     remainder".
-
-     That is wrong, and it cost three quarters of the effect. The filter is set
-     on `g`, the FULL-SIZE context, so it resolves in destination pixels; the
-     division would only be recovered if the blur happened in the small
-     canvas's own space, before the 4x upscale. It does not, so the divide is
-     simply lost. And the premise is wrong too: downsampling by four discards
-     detail finer than about four pixels, it does not multiply a later blur by
-     four.
-
-     Measured on the rendered card at blurAt 34: the foot asked for 77px and
-     received a Gaussian of sigma 16.4 - read off the 10-90% width of a hard
-     edge, which is 2.563 sigma. Line three asked 31 and got 3.9.
-
-     So the radius goes to ctx.filter as-is. blurAt is retuned to match, since
-     the number now means what it says. */
-  const blurTarget = (GLASS.blurAt * devW) / GLASS.blurCardWidth;
-  const smallBlur = `blur(${Math.max(1, Math.round(blurTarget))}px)`;
-
-  /* ── The blur, done where it is cheap ─────────────────────────────────
-
-     Setting ctx.filter on the full-size context and letting each strip carry
-     its own radius is the obvious way and it is unaffordable: at the radii
-     this now asks for, a paint measured 140ms against 3ms. Fifty-six blurs of
-     a 920-wide band, at sigma up to 60, on every drag.
-
-     The band is already held at 1/GLASS.downscale for the read-back, and a
-     blur applied THERE is multiplied by the upscale on the way out — sigma 15
-     on the quarter-size copy lands as sigma 60 on the card, over a sixteenth
-     of the pixels. So the levels are built once, in small space, and the
-     strips just draw from whichever one matches their depth.
-
-     Quantising to GLASS.blurLevels steps rather than a radius per strip is
-     what makes that a fixed cost instead of a per-strip one. Twelve levels
-     across the ramp is a fifth of a pixel of sigma between neighbours on the
-     card, well under the quarter-pixel the per-strip version already rounded
-     to.
-
-     Padded and edge-extended before blurring, because a blur samples outward
-     and there is nothing past the edge of the small canvas: those samples come
-     back transparent, and at the foot that reads as the glass thinning out and
-     the sharp photograph coming back through at the very bottom of the card. */
-  const maxSigmaSmall = blurTarget / GLASS.downscale;
-  const levels = Math.max(2, Math.round(GLASS.blurLevels));
-  const pad = Math.max(2, Math.ceil(maxSigmaSmall * 3));
-  const padH = sh + pad * 2;
-  const padded = glassScratch("padded", sw, padH);
-  const pctx = padded && padded.getContext("2d");
-  const blurLevel = [];
-  if (pctx) {
-    pctx.setTransform(1, 0, 0, 1, 0, 0);
-    pctx.filter = "none";
-    pctx.clearRect(0, 0, sw, padH);
-    pctx.drawImage(small, 0, pad);
-    // Edge rows stretched into the padding, so the blur has something to read.
-    pctx.drawImage(small, 0, 0, sw, 1, 0, 0, sw, pad);
-    pctx.drawImage(small, 0, sh - 1, sw, 1, 0, sh + pad, sw, pad);
-    for (let k = 0; k < levels; k++) {
-      const sigma = (maxSigmaSmall * k) / (levels - 1);
-      const lv = glassScratch("blur" + k, sw, padH);
-      const lctx = lv && lv.getContext("2d");
-      if (!lctx) break;
-      lctx.setTransform(1, 0, 0, 1, 0, 0);
-      lctx.clearRect(0, 0, sw, padH);
-      lctx.filter = sigma >= 0.3 ? `blur(${Math.round(sigma * 4) / 4}px)` : "none";
-      lctx.drawImage(padded, 0, 0);
-      lctx.filter = "none";
-      blurLevel.push(lv);
+    try {
+      sctx.drawImage(canvas, ox, start * sy + oy, devW, devSpan, 0, 0, sw, sh);
+    } catch (err) {
+      /* A tainted canvas does not throw on drawImage, but a detached or
+         zero-sized one can. The fade alone is a complete treatment, so losing
+         the glass costs legibility nothing. */
+      return;
     }
-  }
 
-  const bendMax = devW * GLASS.refract;
-  if (bendMax >= 0.5 && blurLevel.length) {
-    const strips = Math.max(8, Math.round(GLASS.refractStrips));
-    const stripH = glass.height / strips;
-    // Sampled a strip taller than it is drawn, so a bent strip never exposes
-    // an unpainted sliver where it has been pulled away from its neighbour.
-    const bleed = Math.max(1, stripH * 0.6);
-    for (let i = 0; i < strips; i++) {
-      const t = i / (strips - 1);
-      /* Two slow waves, not two fast ones.
-
-         The step in displacement between neighbouring strips is
-         bendMax * |dwave/dt| / strips, and at 7.6 and 17.3 that derivative
-         peaks near 11 — which over 56 strips put adjacent ten-pixel slabs up
-         to four pixels apart sideways. Measured on the rendered card: a 7px
-         lateral jump across 3px of height. That is not a bend, it is tearing,
-         and it is what the layered lines were.
-
-         At 2.3 and 3.9 the derivative peaks near 2.9, and the strip count
-         below carries the rest. The bend still never repeats visibly — that is
-         what two unrelated frequencies buy — it just happens over the depth of
-         the band rather than within a few strips of it. */
-      const wave = Math.sin(t * 2.3) * 0.62 + Math.sin(t * 3.9 + 1.7) * 0.38;
-      // Falls from full bend at the leading edge to a third of it at the foot.
-      const depth = 1 - 0.66 * t;
-      const dx = wave * bendMax * depth;
-      /* A little vertical give as well, or the bend reads as a shear.
-
-         Slowed from 11.1 to match the sideways wave, so the surface undulates
-         as one thing rather than wobbling vertically at four times the rate it
-         bends horizontally.
-
-         NOT because 11.1 put the strips out of order, which is what this
-         comment claimed at first and is wrong: the step between neighbours is
-         amplitude * |dcos/dt| / strips, which even at 11.1 is 0.54px against a
-         strip height of 7 — nowhere near enough to reorder them. The test that
-         appeared to show reordering was in fact reading the cross-fade's two
-         draws per strip as two strips. Checked by reverting: the suite passes
-         either way, so this is a look, not a fix. */
-      const dy = Math.cos(t * 2.7) * bendMax * 0.35 * depth;
-      /* Named for what it is, and NOT `sy` — that is the transform's scale-y,
-         declared above and load-bearing for export correctness. Shadowing it
-         inside the one loop that also does coordinate maths is how the
-         design-space/device-pixel bug this function exists to avoid gets
-         reintroduced by someone reading quickly. */
-      /* Clamped as an INTERVAL, not as two independent numbers. Taking
-         min(sh, stripSrcH) bounds the height but not srcY + srcH, so the last
-         strips ask for pixels past the bottom of the small canvas; the read is
-         short and the strip is drawn stretched. Harmless at fifty-six strips
-         where the overhang is a fraction of one, live at refractStrips <= 8. */
-      /* Clamped into the PADDING, not to the band.
-
-         [0, sh] was the conservative bound, and it left the foot bare. The
-         last strip's destination bottom is sh * downscale + dy, and both
-         terms fall short: sh is round(devSpan / downscale), so on a 721px
-         band that is 180 and 180 * 4 = 720, one row shy; and dy at the foot
-         is negative, taking another ~2px. Three rows of the band get no
-         blurred content at all while the presence mask sits at alpha 1.0, so
-         the sharp photograph shows through at full strength — a 63-level drop
-         across the full width in three rows, which is a hard line.
-
-         Reading past `sh` is safe and was safe all along: the level canvases
-         are sh + pad * 2 tall and the read is already offset by `pad`, so
-         rows sh..sh+pad exist and hold edge-extended pixels. The clamp was
-         guarding against a short read that no longer happens.
-
-         What must NOT change is that the destination follows the clamped
-         source — that uniform mapping is what stops the first and last strips
-         being drawn stretched. It still does; only the interval got wider. */
-      const stripSrcY0 = Math.max(-pad, (i * stripH - bleed) / GLASS.downscale);
-      const stripSrcY1 = Math.min(sh + pad, (i * stripH + stripH + bleed) / GLASS.downscale);
-      const stripSrcH = Math.max(1, stripSrcY1 - stripSrcY0);
-
-      /* ── The blur RAMPS, rather than being faded in at full strength ──────
-
-         Until now one fully-blurred layer was alpha-faded over the sharp
-         picture. Halfway through that ramp you are looking at both at once —
-         a sharp image and a 63px-blurred one superimposed at half strength —
-         and the eye reads the sharp copy still sitting in it. That is what
-         makes the transition findable however smooth the alpha curve is: the
-         curve is smooth, but what it is fading between is two different
-         pictures rather than two amounts of the same effect.
-
-         Ramping the radius instead means every depth is a single, genuinely
-         blurred image at its own strength. Nothing is superimposed and there
-         is no sharp copy left to notice.
-
-         It costs nothing here because the refraction already redraws the band
-         as strips: the radius simply varies per strip.
-
-         The step between neighbours is blurTarget / strips, so it is the RAMP
-         that has to cover the strips, not the band. This comment used to claim
-         all fifty-six carried it, and that was wrong when it was written: the
-         ramp then ended at copyFrac = 0.26, so fourteen strips carried the
-         whole thing at 1.75px apart. It is true now only because the ramp runs
-         the full band - about a fifth of a pixel between neighbours, which a
-         diff against a constant-radius render puts at under 0.01 of 255 levels
-         on the finished card. If copyFrac is ever shortened again, this
-         divides by fourteen, not fifty-six. */
-      /* The blur follows the darkening's curve RAISED TO A POWER, so it lags
-         it: barely there where the band begins, and piling up towards the
-         foot. Asked for as "more blurry as you go down".
-
-         Raising blurAt alone would not do it. That scales every depth by the
-         same factor, so the leading edge gets blurrier in step with the foot
-         — and the leading edge is the one place a radius gradient is easy to
-         catch, because it is the only part of the band with enough luminance
-         left to show what sharpness was lost. Back-loading it instead adds
-         the blur where the card is nearly black and the eye has almost no
-         reference for focus, which is why blurAt can go up a long way while
-         the top of the band actually gets SOFTER in its rate of change. */
-      const rampT = Math.min(1, Math.max(0, t / copyFrac));
-      const ease = Math.pow(rampAlpha(rampT), GLASS.blurCurve);
-      /* Between two levels, not snapped to the nearest one.
-
-         Snapping quantises the radius to blurLevels steps, and across a range
-         that now reaches sigma 99 that is a step of nine pixels of blur from
-         one strip to the next — which is a band of visibly different sharpness
-         about ten pixels tall, reported as "layered lines". Drawing the lower
-         level and then the upper at the fractional weight blends them, and a
-         blend of two Gaussians of nearby sigma is close enough to the one in
-         between that the seam goes away entirely. */
-      const lp = ease * (blurLevel.length - 1);
-      const k0 = Math.min(blurLevel.length - 1, Math.max(0, Math.floor(lp)));
-      const k1 = Math.min(blurLevel.length - 1, k0 + 1);
-      const frac = lp - k0;
-      /* Destination follows the clamped source, so the mapping stays uniform.
-         Drawing a fixed-height destination from a clamped source is what
-         stretched the first and last strips: strip 0 asked for pixels above
-         the canvas, got the read clipped to the top, and then scaled that
-         short read over the full destination height. */
-      // + pad, because the levels carry the edge-extended padding.
-      const put = (canvasIn, alpha) => {
-        if (alpha <= 0.001) return;
-        g.globalAlpha = alpha;
-        g.drawImage(
-          canvasIn,
-          0, stripSrcY0 + pad, sw, stripSrcH,
-          dx, stripSrcY0 * GLASS.downscale + dy, glass.width, stripSrcH * GLASS.downscale,
-        );
-      };
-      put(blurLevel[k0], 1);
-      if (k1 !== k0) put(blurLevel[k1], frac);
-      g.globalAlpha = 1;
-    }
+    // Build the finished glass at full size, then lay it down in one pass — so
+    // the ramp masks the whole stack and not each layer separately.
+    const glass = glassScratch("glass", devW, devSpan);
+    const g = glass && glass.getContext("2d");
+    if (!g) return;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = "source-over";
     g.filter = "none";
-  } else if (blurLevel.length) {
-    g.drawImage(blurLevel[blurLevel.length - 1], 0, pad, sw, sh, 0, 0, glass.width, glass.height);
-  } else {
-    g.filter = smallBlur;
-    g.drawImage(small, 0, 0, sw, sh, 0, 0, glass.width, glass.height);
-    g.filter = "none";
-  }
+    g.clearRect(0, 0, devW, devSpan);
 
-  /* The bend pulls strips inward from the sides, so the outermost few pixels
-     can end up unpainted. Stretch the edge columns outward to cover it —
-     cheaper than drawing oversized and clipping, and invisible under this
-     much blur. */
-  if (bendMax >= 0.5) {
-    const edge = Math.ceil(bendMax) + 2;
-    g.drawImage(glass, edge, 0, 2, glass.height, 0, 0, edge, glass.height);
-    g.drawImage(glass, glass.width - edge - 2, 0, 2, glass.height, glass.width - edge, 0, edge, glass.height);
-  }
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = "high";
 
+    /* ── Refraction ───────────────────────────────────────────────────────
+       Blur alone is fog, not glass. What separates the two is that glass BENDS
+       what is behind it: a straight roofline behind real frosted glass arrives
+       wavy, and it is that displacement, not the softness, that tells the eye
+       it is looking through a solid.
 
-  /* The colour, blended rather than painted. "soft-light" keeps the glass's
-     own luminance — its highlights stay highlights — and moves only its hue
-     and saturation toward the photograph's dominant colour, which is what
-     makes this read as tinted frost instead of a sheet of colour. A picture
-     with no usable hue (imageFadeTint returns null on greyscale and on any
-     cross-origin image) simply skips this and keeps the neutral glass. */
-  /* ── Two ramps, because they are two different things ─────────────────
+       Done by re-drawing the blurred band as horizontal strips, each pulled
+       sideways by a smooth function of its own depth. Two sine waves of
+       unrelated frequency are summed so the bend never repeats visibly — one
+       wave alone reads as a ripple effect, which is a filter, not a surface.
 
-     The frost and the darkening used to share one mask: the blurred picture
-     and the dark fill were stacked into this canvas, and a single ramp faded
-     the whole stack in. That is why the card still read as sharp anywhere
-     near the copy however large the radius got.
+       The bend is strongest at the leading edge and settles as it descends.
+       Real glass refracts hardest where it is thickest and where the eye meets
+       it at an angle, and it also puts the distortion where the photograph is
+       still legible — by the time the copy starts, the picture is far enough
+       gone that bending it further would only cost contrast. */
+    /* The blur is specified against a 382-wide card, so it scales with the
+       canvas.
 
-     At half mask alpha you are not looking at a half-blurred picture. You are
-     looking at a blurred picture at half strength laid over the SHARP
-     original at half strength, and the eye takes its reading of focus from
-     the sharp component every time. Measured on the rendered card at blurAt
-     34: the strip loop asked for sigma 52 at line three and the composite
-     showed a 10-90 edge width of 1px - sharp - because the mask was only 60%
-     on there. Raising the radius cannot fix that; it only blurs the half you
-     were not looking at.
+       It used to be divided by GLASS.downscale before being handed to
+       ctx.filter, on the reasoning that "most of it is delivered by the
+       downsample itself - drawing the band at 1/4 size and scaling back up IS a
+       blur of roughly that factor - and ctx.filter only has to supply the
+       remainder".
 
-     So the blurred picture gets its own, faster ramp and is fully present by
-     the copy line, and the dark fill keeps the long gentle one. Past that point there is no sharp copy left anywhere, and the rest
-     of the transition is carried by brightness, which the eye cannot check.
-     The radius then goes on growing under a solid layer - which is what makes
-     "blurrier as you go down" visible rather than theoretical. */
-  /* The dither, over the finished blur and under the mask, so it is shaped by
-     the same ramp as everything else and never appears where the glass is not. */
-  if (GLASS.dither > 0 && typeof g.createPattern === "function") {
-    const tile = glassNoise();
-    const pattern = tile && g.createPattern(tile, "repeat");
-    if (pattern) {
-      g.globalCompositeOperation = "overlay";
-      g.globalAlpha = GLASS.dither;
-      g.fillStyle = pattern;
-      g.fillRect(0, 0, glass.width, glass.height);
-      g.globalAlpha = 1;
-      g.globalCompositeOperation = "source-over";
+       That is wrong, and it cost three quarters of the effect. The filter is set
+       on `g`, the FULL-SIZE context, so it resolves in destination pixels; the
+       division would only be recovered if the blur happened in the small
+       canvas's own space, before the 4x upscale. It does not, so the divide is
+       simply lost. And the premise is wrong too: downsampling by four discards
+       detail finer than about four pixels, it does not multiply a later blur by
+       four.
+
+       Measured on the rendered card at blurAt 34: the foot asked for 77px and
+       received a Gaussian of sigma 16.4 - read off the 10-90% width of a hard
+       edge, which is 2.563 sigma. Line three asked 31 and got 3.9.
+
+       So the radius goes to ctx.filter as-is. blurAt is retuned to match, since
+       the number now means what it says. */
+    const blurTarget = (GLASS.blurAt * devW) / GLASS.blurCardWidth;
+    const smallBlur = `blur(${Math.max(1, Math.round(blurTarget))}px)`;
+
+    /* ── The blur, done where it is cheap ─────────────────────────────────
+
+       Setting ctx.filter on the full-size context and letting each strip carry
+       its own radius is the obvious way and it is unaffordable: at the radii
+       this now asks for, a paint measured 140ms against 3ms. Fifty-six blurs of
+       a 920-wide band, at sigma up to 60, on every drag.
+
+       The band is already held at 1/GLASS.downscale for the read-back, and a
+       blur applied THERE is multiplied by the upscale on the way out — sigma 15
+       on the quarter-size copy lands as sigma 60 on the card, over a sixteenth
+       of the pixels. So the levels are built once, in small space, and the
+       strips just draw from whichever one matches their depth.
+
+       Quantising to GLASS.blurLevels steps rather than a radius per strip is
+       what makes that a fixed cost instead of a per-strip one. Twelve levels
+       across the ramp is a fifth of a pixel of sigma between neighbours on the
+       card, well under the quarter-pixel the per-strip version already rounded
+       to.
+
+       Padded and edge-extended before blurring, because a blur samples outward
+       and there is nothing past the edge of the small canvas: those samples come
+       back transparent, and at the foot that reads as the glass thinning out and
+       the sharp photograph coming back through at the very bottom of the card. */
+    const maxSigmaSmall = blurTarget / GLASS.downscale;
+    const levels = Math.max(2, Math.round(GLASS.blurLevels));
+    const pad = Math.max(2, Math.ceil(maxSigmaSmall * 3));
+    const padH = sh + pad * 2;
+    const padded = glassScratch("padded", sw, padH);
+    const pctx = padded && padded.getContext("2d");
+    const blurLevel = [];
+    if (pctx) {
+      pctx.setTransform(1, 0, 0, 1, 0, 0);
+      pctx.filter = "none";
+      pctx.clearRect(0, 0, sw, padH);
+      pctx.drawImage(small, 0, pad);
+      // Edge rows stretched into the padding, so the blur has something to read.
+      pctx.drawImage(small, 0, 0, sw, 1, 0, 0, sw, pad);
+      pctx.drawImage(small, 0, sh - 1, sw, 1, 0, sh + pad, sw, pad);
+      for (let k = 0; k < levels; k++) {
+        const sigma = (maxSigmaSmall * k) / (levels - 1);
+        const lv = glassScratch("blur" + k, sw, padH);
+        const lctx = lv && lv.getContext("2d");
+        if (!lctx) break;
+        lctx.setTransform(1, 0, 0, 1, 0, 0);
+        lctx.clearRect(0, 0, sw, padH);
+        lctx.filter = sigma >= 0.3 ? `blur(${Math.round(sigma * 4) / 4}px)` : "none";
+        lctx.drawImage(padded, 0, 0);
+        lctx.filter = "none";
+        blurLevel.push(lv);
+      }
     }
-  }
 
-  g.globalCompositeOperation = "destination-in";
-  const presence = g.createLinearGradient(0, 0, 0, glass.height);
-  const PRESENCE_SAMPLES = Math.max(8, Math.round(GLASS.gradientSamples));
-  /* Where the copy line falls inside the band, which is what the frost is
-     anchored to rather than a fixed fraction.
+    const bendMax = devW * GLASS.refract;
+    if (bendMax >= 0.5 && blurLevel.length) {
+      const strips = Math.max(8, Math.round(GLASS.refractStrips));
+      const stripH = glass.height / strips;
+      // Sampled a strip taller than it is drawn, so a bent strip never exposes
+      // an unpainted sliver where it has been pulled away from its neighbour.
+      const bleed = Math.max(1, stripH * 0.6);
+      for (let i = 0; i < strips; i++) {
+        const t = i / (strips - 1);
+        /* Two slow waves, not two fast ones.
 
-     GLASS.frostReach is a MULTIPLE of that: 1 means the blurred layer is
-     fully present exactly when the copy starts. Written this way so it
-     survives runUpAboveCopy being moved - a fixed fraction silently pushes
-     the frost below the first line when the run-up is shortened, which puts
-     the sharp original back under the very lines it was split out to clear. */
-  const copyFracInBand = Math.min(1, Math.max(0.02, runUp / span));
-  const frost = Math.min(1, Math.max(0.02, copyFracInBand * GLASS.frostReach));
-  for (let i = 0; i <= PRESENCE_SAMPLES; i++) {
-    const t = i / PRESENCE_SAMPLES;
-    // Same eased curve, compressed into the first GLASS.frostReach of the band.
-    presence.addColorStop(t, `rgba(0,0,0,${rampAlpha(Math.min(1, t / frost))})`);
-  }
-  g.fillStyle = presence;
-  g.fillRect(0, 0, glass.width, glass.height);
-  g.globalCompositeOperation = "source-over";
+           The step in displacement between neighbouring strips is
+           bendMax * |dwave/dt| / strips, and at 7.6 and 17.3 that derivative
+           peaks near 11 — which over 56 strips put adjacent ten-pixel slabs up
+           to four pixels apart sideways. Measured on the rendered card: a 7px
+           lateral jump across 3px of height. That is not a bend, it is tearing,
+           and it is what the layered lines were.
+
+           At 2.3 and 3.9 the derivative peaks near 2.9, and the strip count
+           below carries the rest. The bend still never repeats visibly — that is
+           what two unrelated frequencies buy — it just happens over the depth of
+           the band rather than within a few strips of it. */
+        const wave = Math.sin(t * 2.3) * 0.62 + Math.sin(t * 3.9 + 1.7) * 0.38;
+        // Falls from full bend at the leading edge to a third of it at the foot.
+        const depth = 1 - 0.66 * t;
+        const dx = wave * bendMax * depth;
+        /* A little vertical give as well, or the bend reads as a shear.
+
+           Slowed from 11.1 to match the sideways wave, so the surface undulates
+           as one thing rather than wobbling vertically at four times the rate it
+           bends horizontally.
+
+           NOT because 11.1 put the strips out of order, which is what this
+           comment claimed at first and is wrong: the step between neighbours is
+           amplitude * |dcos/dt| / strips, which even at 11.1 is 0.54px against a
+           strip height of 7 — nowhere near enough to reorder them. The test that
+           appeared to show reordering was in fact reading the cross-fade's two
+           draws per strip as two strips. Checked by reverting: the suite passes
+           either way, so this is a look, not a fix. */
+        const dy = Math.cos(t * 2.7) * bendMax * 0.35 * depth;
+        /* Named for what it is, and NOT `sy` — that is the transform's scale-y,
+           declared above and load-bearing for export correctness. Shadowing it
+           inside the one loop that also does coordinate maths is how the
+           design-space/device-pixel bug this function exists to avoid gets
+           reintroduced by someone reading quickly. */
+        /* Clamped as an INTERVAL, not as two independent numbers. Taking
+           min(sh, stripSrcH) bounds the height but not srcY + srcH, so the last
+           strips ask for pixels past the bottom of the small canvas; the read is
+           short and the strip is drawn stretched. Harmless at fifty-six strips
+           where the overhang is a fraction of one, live at refractStrips <= 8. */
+        /* Clamped into the PADDING, not to the band.
+
+           [0, sh] was the conservative bound, and it left the foot bare. The
+           last strip's destination bottom is sh * downscale + dy, and both
+           terms fall short: sh is round(devSpan / downscale), so on a 721px
+           band that is 180 and 180 * 4 = 720, one row shy; and dy at the foot
+           is negative, taking another ~2px. Three rows of the band get no
+           blurred content at all while the presence mask sits at alpha 1.0, so
+           the sharp photograph shows through at full strength — a 63-level drop
+           across the full width in three rows, which is a hard line.
+
+           Reading past `sh` is safe and was safe all along: the level canvases
+           are sh + pad * 2 tall and the read is already offset by `pad`, so
+           rows sh..sh+pad exist and hold edge-extended pixels. The clamp was
+           guarding against a short read that no longer happens.
+
+           What must NOT change is that the destination follows the clamped
+           source — that uniform mapping is what stops the first and last strips
+           being drawn stretched. It still does; only the interval got wider. */
+        const stripSrcY0 = Math.max(-pad, (i * stripH - bleed) / GLASS.downscale);
+        const stripSrcY1 = Math.min(sh + pad, (i * stripH + stripH + bleed) / GLASS.downscale);
+        const stripSrcH = Math.max(1, stripSrcY1 - stripSrcY0);
+
+        /* ── The blur RAMPS, rather than being faded in at full strength ──────
+
+           Until now one fully-blurred layer was alpha-faded over the sharp
+           picture. Halfway through that ramp you are looking at both at once —
+           a sharp image and a 63px-blurred one superimposed at half strength —
+           and the eye reads the sharp copy still sitting in it. That is what
+           makes the transition findable however smooth the alpha curve is: the
+           curve is smooth, but what it is fading between is two different
+           pictures rather than two amounts of the same effect.
+
+           Ramping the radius instead means every depth is a single, genuinely
+           blurred image at its own strength. Nothing is superimposed and there
+           is no sharp copy left to notice.
+
+           It costs nothing here because the refraction already redraws the band
+           as strips: the radius simply varies per strip.
+
+           The step between neighbours is blurTarget / strips, so it is the RAMP
+           that has to cover the strips, not the band. This comment used to claim
+           all fifty-six carried it, and that was wrong when it was written: the
+           ramp then ended at copyFrac = 0.26, so fourteen strips carried the
+           whole thing at 1.75px apart. It is true now only because the ramp runs
+           the full band - about a fifth of a pixel between neighbours, which a
+           diff against a constant-radius render puts at under 0.01 of 255 levels
+           on the finished card. If copyFrac is ever shortened again, this
+           divides by fourteen, not fifty-six. */
+        /* The blur follows the darkening's curve RAISED TO A POWER, so it lags
+           it: barely there where the band begins, and piling up towards the
+           foot. Asked for as "more blurry as you go down".
+
+           Raising blurAt alone would not do it. That scales every depth by the
+           same factor, so the leading edge gets blurrier in step with the foot
+           — and the leading edge is the one place a radius gradient is easy to
+           catch, because it is the only part of the band with enough luminance
+           left to show what sharpness was lost. Back-loading it instead adds
+           the blur where the card is nearly black and the eye has almost no
+           reference for focus, which is why blurAt can go up a long way while
+           the top of the band actually gets SOFTER in its rate of change. */
+        const rampT = Math.min(1, Math.max(0, t / copyFrac));
+        const ease = Math.pow(rampAlpha(rampT), GLASS.blurCurve);
+        /* Between two levels, not snapped to the nearest one.
+
+           Snapping quantises the radius to blurLevels steps, and across a range
+           that now reaches sigma 99 that is a step of nine pixels of blur from
+           one strip to the next — which is a band of visibly different sharpness
+           about ten pixels tall, reported as "layered lines". Drawing the lower
+           level and then the upper at the fractional weight blends them, and a
+           blend of two Gaussians of nearby sigma is close enough to the one in
+           between that the seam goes away entirely. */
+        const lp = ease * (blurLevel.length - 1);
+        const k0 = Math.min(blurLevel.length - 1, Math.max(0, Math.floor(lp)));
+        const k1 = Math.min(blurLevel.length - 1, k0 + 1);
+        const frac = lp - k0;
+        /* Destination follows the clamped source, so the mapping stays uniform.
+           Drawing a fixed-height destination from a clamped source is what
+           stretched the first and last strips: strip 0 asked for pixels above
+           the canvas, got the read clipped to the top, and then scaled that
+           short read over the full destination height. */
+        // + pad, because the levels carry the edge-extended padding.
+        const put = (canvasIn, alpha) => {
+          if (alpha <= 0.001) return;
+          g.globalAlpha = alpha;
+          g.drawImage(
+            canvasIn,
+            0, stripSrcY0 + pad, sw, stripSrcH,
+            dx, stripSrcY0 * GLASS.downscale + dy, glass.width, stripSrcH * GLASS.downscale,
+          );
+        };
+        put(blurLevel[k0], 1);
+        if (k1 !== k0) put(blurLevel[k1], frac);
+        g.globalAlpha = 1;
+      }
+      g.filter = "none";
+    } else if (blurLevel.length) {
+      g.drawImage(blurLevel[blurLevel.length - 1], 0, pad, sw, sh, 0, 0, glass.width, glass.height);
+    } else {
+      g.filter = smallBlur;
+      g.drawImage(small, 0, 0, sw, sh, 0, 0, glass.width, glass.height);
+      g.filter = "none";
+    }
+
+    /* The bend pulls strips inward from the sides, so the outermost few pixels
+       can end up unpainted. Stretch the edge columns outward to cover it —
+       cheaper than drawing oversized and clipping, and invisible under this
+       much blur. */
+    if (bendMax >= 0.5) {
+      const edge = Math.ceil(bendMax) + 2;
+      g.drawImage(glass, edge, 0, 2, glass.height, 0, 0, edge, glass.height);
+      g.drawImage(glass, glass.width - edge - 2, 0, 2, glass.height, glass.width - edge, 0, edge, glass.height);
+    }
+
+
+    /* The colour, blended rather than painted. "soft-light" keeps the glass's
+       own luminance — its highlights stay highlights — and moves only its hue
+       and saturation toward the photograph's dominant colour, which is what
+       makes this read as tinted frost instead of a sheet of colour. A picture
+       with no usable hue (imageFadeTint returns null on greyscale and on any
+       cross-origin image) simply skips this and keeps the neutral glass. */
+    /* ── Two ramps, because they are two different things ─────────────────
+
+       The frost and the darkening used to share one mask: the blurred picture
+       and the dark fill were stacked into this canvas, and a single ramp faded
+       the whole stack in. That is why the card still read as sharp anywhere
+       near the copy however large the radius got.
+
+       At half mask alpha you are not looking at a half-blurred picture. You are
+       looking at a blurred picture at half strength laid over the SHARP
+       original at half strength, and the eye takes its reading of focus from
+       the sharp component every time. Measured on the rendered card at blurAt
+       34: the strip loop asked for sigma 52 at line three and the composite
+       showed a 10-90 edge width of 1px - sharp - because the mask was only 60%
+       on there. Raising the radius cannot fix that; it only blurs the half you
+       were not looking at.
+
+       So the blurred picture gets its own, faster ramp and is fully present by
+       the copy line, and the dark fill keeps the long gentle one. Past that point there is no sharp copy left anywhere, and the rest
+       of the transition is carried by brightness, which the eye cannot check.
+       The radius then goes on growing under a solid layer - which is what makes
+       "blurrier as you go down" visible rather than theoretical. */
+    /* The dither, over the finished blur and under the mask, so it is shaped by
+       the same ramp as everything else and never appears where the glass is not. */
+    if (GLASS.dither > 0 && typeof g.createPattern === "function") {
+      const tile = glassNoise();
+      const pattern = tile && g.createPattern(tile, "repeat");
+      if (pattern) {
+        g.globalCompositeOperation = "overlay";
+        g.globalAlpha = GLASS.dither;
+        g.fillStyle = pattern;
+        g.fillRect(0, 0, glass.width, glass.height);
+        g.globalAlpha = 1;
+        g.globalCompositeOperation = "source-over";
+      }
+    }
+
+    g.globalCompositeOperation = "destination-in";
+    const presence = g.createLinearGradient(0, 0, 0, glass.height);
+    const PRESENCE_SAMPLES = Math.max(8, Math.round(GLASS.gradientSamples));
+    /* Where the copy line falls inside the band, which is what the frost is
+       anchored to rather than a fixed fraction.
+
+       GLASS.frostReach is a MULTIPLE of that: 1 means the blurred layer is
+       fully present exactly when the copy starts. Written this way so it
+       survives runUpAboveCopy being moved - a fixed fraction silently pushes
+       the frost below the first line when the run-up is shortened, which puts
+       the sharp original back under the very lines it was split out to clear. */
+    const copyFracInBand = Math.min(1, Math.max(0.02, runUp / span));
+    const frost = Math.min(1, Math.max(0.02, copyFracInBand * GLASS.frostReach));
+    for (let i = 0; i <= PRESENCE_SAMPLES; i++) {
+      const t = i / PRESENCE_SAMPLES;
+      // Same eased curve, compressed into the first GLASS.frostReach of the band.
+      presence.addColorStop(t, `rgba(0,0,0,${rampAlpha(Math.min(1, t / frost))})`);
+    }
+    g.fillStyle = presence;
+    g.fillRect(0, 0, glass.width, glass.height);
+    g.globalCompositeOperation = "source-over";
+
+    layer = glass;
+    if (keptKey) {
+      // Copied out of the scratch canvas, which the next build will overwrite.
+      const keep = document.createElement("canvas");
+      keep.width = glass.width;
+      keep.height = glass.height;
+      const kctx = keep.getContext("2d");
+      if (kctx) {
+        kctx.drawImage(glass, 0, 0);
+        cacheKeep(glassCache, GLASS_CACHE_MAX, keptKey, keep);
+        layer = keep;
+      }
+    }
+  } // if (!layer)
 
   const prevAlpha = target.globalAlpha;
   target.globalAlpha = opacity;
-  target.drawImage(glass, 0, 0, glass.width, glass.height, 0, start, width, span);
+  target.drawImage(layer, 0, 0, layer.width, layer.height, 0, start, width, span);
   target.globalAlpha = prevAlpha;
 
   /* The darkening, as its own gradient straight onto the target.
@@ -6463,6 +6637,7 @@ function drawHero() {
     height: canvas.height,
     copyTop: headlineTop,
     image,
+    cacheKey: glassCacheKey(image),
   });
   paintBottomFade(ctx, {
     width: canvas.width,
@@ -6555,10 +6730,43 @@ function drawFixedLogos() {
    mark read as a pale blue outline rather than as glow. Both are gone: the
    mark is its own solid circle and needs nothing behind it to separate from
    the photo. */
+/* The logo files are 3467px square and the slot is about a hundred. Drawing
+   them straight from the file resamples eleven megapixels down to a coin, on
+   every card, on every repaint — measured at 7ms a card, more than the
+   headline, the tag and the fade together. Once at the size it is drawn, then
+   blitted; keyed by device size so a 4x export gets a 4x copy. */
+const logoScaleCache = new Map();
+
+function logoAtSize(img, devW, devH) {
+  const w = Math.max(1, Math.round(devW));
+  const h = Math.max(1, Math.round(devH));
+  const rawW = img.naturalWidth || img.width || 0;
+  const rawH = img.naturalHeight || img.height || 0;
+  // Not worth a copy unless the file is well over the drawn size.
+  if (!rawW || rawW < w * 2 || rawH < h * 2) return img;
+  const key = `${imageUid(img)}|${w}x${h}`;
+  let scaled = logoScaleCache.get(key);
+  if (!scaled) {
+    scaled = document.createElement("canvas");
+    scaled.width = w;
+    scaled.height = h;
+    const c = scaled.getContext("2d");
+    if (!c) return img;
+    c.imageSmoothingEnabled = true;
+    c.imageSmoothingQuality = "high";
+    c.drawImage(img, 0, 0, w, h);
+    cacheKeep(logoScaleCache, 8, key, scaled);
+  }
+  return scaled;
+}
+
 function drawLogoAt(img, x, y, w, h) {
   const cx = x + w / 2;
   const cy = y + h / 2;
   const radius = Math.min(w, h) / 2;
+
+  const m = typeof ctx.getTransform === "function" ? ctx.getTransform() : null;
+  const source = logoAtSize(img, w * (m && m.a ? m.a : 1), h * (m && m.d ? m.d : 1));
 
   ctx.save();
   ctx.beginPath();
@@ -6566,7 +6774,7 @@ function drawLogoAt(img, x, y, w, h) {
   ctx.closePath();
   ctx.clip();
 
-  ctx.drawImage(img, x, y, w, h);
+  ctx.drawImage(source, x, y, w, h);
   ctx.restore();
 }
 
@@ -9900,7 +10108,7 @@ const videoCaptionInput = document.getElementById("video-caption");
 if (videoCaptionInput) {
   videoCaptionInput.addEventListener("input", () => {
     state.videoCaption = videoCaptionInput.value;
-    renderPoster();
+    scheduleRender();
   });
 }
 
@@ -9908,7 +10116,7 @@ const videoCaptionSizeInput = document.getElementById("video-caption-size");
 if (videoCaptionSizeInput) {
   videoCaptionSizeInput.addEventListener("input", () => {
     state.videoCaptionSize = Number(videoCaptionSizeInput.value) || 40;
-    renderPoster();
+    scheduleRender();
   });
 }
 
@@ -11570,7 +11778,7 @@ function attachVideoReframe(card, pageId) {
       y: over.y ? clamp(startFocus.y - dy / over.y, 0, 1) : 0.5,
     };
     state.videoFocus = next;
-    renderPoster();
+    scheduleRender();
   }
 
   function pointerUp(e) {

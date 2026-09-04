@@ -144,6 +144,9 @@ function build({ transform = { a: 1, d: 1, e: 0, f: 0 }, overrides = {} } = {}) 
     ${fadeConsts}
     const glassScratchPool = new Map();
     ${fnSrc("glassScratch")}
+    const glassCache = new Map();
+    const GLASS_CACHE_MAX = 6;
+    ${fnSrc("cacheKeep")}
     ${fnSrc("hsbToRgb")}
     ${fnSrc("imageHue")}
     ${fnSrc("glassPanelColour")}
@@ -366,6 +369,52 @@ console.log("\nIt reuses its scratch canvases instead of allocating per render")
     log.clears.length >= 2, log.clears.length + " clears");
 }
 
+
+console.log("\nA pane is built once per key, then blitted");
+{
+  /* renderPoster runs on every keystroke, and between two keystrokes nothing
+     under the band has changed. With a cacheKey the second paint must not
+     rebuild: no blur levels, no strips — one draw of the kept pane and the
+     ink over it. Without a key it must behave exactly as before. */
+  const { api, log, target } = build();
+  const arg = { width: W, height: H, copyTop: COPY, cacheKey: "photo-1|0|0|100" };
+  api.paintMistGlass(target, arg);
+  const built = log.filters.filter((f) => /blur/.test(f.value)).length;
+  const created = log.created.length;
+  const targetDraws = log.draws.filter((d) => d.ctx === "target").length;
+  ck("the first paint builds the blur levels", built > 0, String(built));
+  ck("and keeps one canvas of its own", created >= 1, String(created));
+
+  api.paintMistGlass(target, arg);
+  const builtAgain = log.filters.filter((f) => /blur/.test(f.value)).length - built;
+  ck("the second paint with the same key builds nothing", builtAgain === 0, builtAgain + " blur filters set");
+  ck("allocates nothing", log.created.length === created, `${created} then ${log.created.length}`);
+  ck("and still draws the pane onto the card",
+    log.draws.filter((d) => d.ctx === "target").length === targetDraws * 2, "");
+
+  // A different geometry under the same caller key is a different pane.
+  api.paintMistGlass(target, { ...arg, copyTop: COPY - 120 });
+  const builtLower = log.filters.filter((f) => /blur/.test(f.value)).length - built;
+  ck("a band that starts elsewhere is built afresh", builtLower > 0, String(builtLower));
+
+  // Under an export transform the cache is bypassed: the pane would be the
+  // wrong resolution, and exports are rare.
+  const scaled = build({ transform: { a: 4, d: 4, e: 0, f: 0 } });
+  scaled.api.paintMistGlass(scaled.target, arg);
+  const scaledCreated = scaled.log.created.length;
+  scaled.api.paintMistGlass(scaled.target, arg);
+  const b1 = scaled.log.filters.filter((f) => /blur/.test(f.value)).length;
+  ck("a scaled context builds every time, and keeps nothing",
+    b1 > 0 && scaled.log.created.length === scaledCreated, `${scaledCreated} then ${scaled.log.created.length}`);
+
+  // No key: the old contract, untouched.
+  const plain = build();
+  plain.api.paintMistGlass(plain.target, { width: W, height: H, copyTop: COPY });
+  const c0 = plain.log.created.length;
+  plain.api.paintMistGlass(plain.target, { width: W, height: H, copyTop: COPY });
+  ck("without a key nothing is kept and nothing extra is allocated",
+    plain.log.created.length === c0, `${c0} then ${plain.log.created.length}`);
+}
 
 console.log("\nThe blend begins well above the first line");
 {

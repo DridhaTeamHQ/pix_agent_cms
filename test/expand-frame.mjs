@@ -117,10 +117,14 @@ const api = new Function(
     ${fnSrc("buildExpandFrame")}
     ${fnSrc("composeExpandResult")}
     ${fnSrc("posterVisibleRect")}
+    ${fnSrc("nativeComposeScale")}
     const EXPAND_COMMIT_ZOOM = ${app.match(/^const EXPAND_COMMIT_ZOOM = (.+);$/m)[1]};
+    const COMPOSE_MAX_EDGE = ${app.match(/^const COMPOSE_MAX_EDGE = (\d+);$/m)[1]};
+    const SHARP_RAMP_FRACTION = ${app.match(/^const SHARP_RAMP_FRACTION = ([\d.]+);$/m)[1]};
     return {
       planExpandPlacement, buildExpandFrame, composeExpandResult,
-      posterVisibleRect, EXPAND_COMMIT_ZOOM,
+      posterVisibleRect, EXPAND_COMMIT_ZOOM, nativeComposeScale,
+      COMPOSE_MAX_EDGE, SHARP_RAMP_FRACTION,
     };
   `,
 )(documentStub, MARGIN_AREA, TOP_BIAS, HEADROOM, () => activePreset);
@@ -424,42 +428,125 @@ console.log("\nA person still gets the room below them, inside the visible area"
    and while it did, the card showed an 830px photograph stretched over a
    920px frame and the 4x export invented three quarters of its pixels.
 
-   That reasoning was right about the photograph and wrong about the canvas,
-   and a poster showed it: the composite is ONE canvas, so a scale that gave
-   layer 4 real pixels gave layer 2 only interpolated ones. The margin arrived
-   1.54x upsampled against a photograph at 1:1, joined along the full width of
-   the card with a 17px feather. A smear across the sky.
+   The first attempt at fixing that scaled the composite and pasted the
+   original hard-edged at 1:1 over a margin interpolated 1.54x, with an 11px
+   feather between them: a smear across the sky. For a while the answer was
+   "no scale, ever", which gave back the downscale — a 4000px photograph
+   returned at 830px, reported as "it is not upscaling".
 
-   So nothing passes a scale any more, and this is what holds it that way. The
-   parameter survives only as an identity, because every assertion above this
-   point is written against the unscaled rects. */
+   The honest version has both halves. The composite IS built at the
+   photograph's scale (nativeComposeScale), and the original goes in as a
+   fifth layer through an alpha ramp a good way wide, over layer 4 — the same
+   picture at the margin's softness. Sharp fades into soft inside the
+   photograph, where its own detail carries the slope, and there is no line
+   at the border for the eye to find. These pin that contract. */
 
-console.log("\nNo caller sharpens one layer of the composite and not the other");
+console.log("\nThe composite is built at the photograph's scale, never smaller");
 {
-  /* Read from the source: a call site that passes a 5th argument to
-     composeExpandResult is the regression coming back. The scale can only
-     ever be right for the layer that has pixels to spare, and on this canvas
-     that is never all of them. */
+  const place = api.planExpandPlacement(
+    1536, 864, 1024, 1536, "fit", "people", api.posterVisibleRect(1024, 1536),
+  );
+  const native = 4000 / place.w;
+  const cap = api.COMPOSE_MAX_EDGE / 1536;
+  ck("a 4000px wire photo asks for its own pixels, capped at the edge limit",
+     Math.abs(api.nativeComposeScale(4000, 2250, place) - Math.min(native, cap)) < 1e-9,
+     `${api.nativeComposeScale(4000, 2250, place)} vs min(${native.toFixed(3)}, ${cap.toFixed(3)})`);
+  ck("and that cap is real: the result never exceeds COMPOSE_MAX_EDGE",
+     Math.round(1536 * api.nativeComposeScale(9000, 5000, place)) <= api.COMPOSE_MAX_EDGE);
+  ck("a 1500px photo comes back at 1500px, not at the model's 1024",
+     Math.abs(api.nativeComposeScale(1500, 844, place) - 1500 / place.w) < 1e-9);
+  ck("a photograph smaller than the frame is not shrunk further",
+     api.nativeComposeScale(600, 338, place) === 1);
+  ck("garbage is the identity", api.nativeComposeScale(0, 0, place) === 1 &&
+     api.nativeComposeScale(1000, 500, null) === 1);
+
+  /* Read from the source: the one call site hands over the scale AND the
+     original as the sharp source. A scale without the original is the old
+     seam; the original without the scale is the old downscale. */
   const callSites = [...app.matchAll(/composeExpandResult\(([^)]*)\)/g)]
     .map((m) => m[1].trim())
-    // Skip the definition, and skip prose references — the comments above
-    // name this function repeatedly as `composeExpandResult()`, and an empty
-    // argument list is a mention, not a call.
     .filter((args) => args.length > 0 && !/^resultImg/.test(args));
-
-  ck("composeExpandResult is actually called somewhere", callSites.length >= 1,
-     "the compose step vanished — layer 4 is the only guarantee in the pipeline");
-
+  ck("composeExpandResult is actually called somewhere", callSites.length >= 1);
   for (const args of callSites) {
-    const arity = args.split(",").length;
-    ck(`called with ${arity} arguments, not a scale`, arity === 4,
-       `\`composeExpandResult(${args})\` — a 5th argument upsamples the drawn ` +
-       `margin against a photograph pasted at 1:1, which is the seam`);
+    const parts = args.split(",").map((a) => a.trim());
+    ck("called with the native scale and the original as the sharp source",
+       parts.length === 6 && /nativeComposeScale|composeScale/.test(args) && parts[5] === "img",
+       `\`composeExpandResult(${args})\``);
   }
+  ck("expandOutputScale is gone", !/function expandOutputScale/.test(app));
+}
 
-  ck("expandOutputScale is gone",
-     !/function expandOutputScale/.test(app),
-     "the helper is back; the seam comes with it");
+console.log("\nThe original lands last, through a ramp, over the same picture");
+{
+  const place = api.planExpandPlacement(
+    1536, 864, 1024, 1536, "fit", "people", api.posterVisibleRect(1024, 1536),
+  );
+  const src = { width: 1536, height: 864 };
+  const original = { width: 4000, height: 2250 };
+  const base = { width: 1024, height: 1536 };
+  const result = { width: 1024, height: 1536 };
+  const s = 2;
+
+  made.length = 0;
+  const out = api.composeExpandResult(result, src, base, place, s, original);
+  const draws = out.ops.filter((o) => o[0] === "drawImage");
+  const pw = Math.round(place.w * s), ph = Math.round(place.h * s);
+
+  const soft = draws[draws.length - 2];
+  ck("layer 4 — the model-sized copy — is still fully present under it",
+     soft[1] === src && soft[4] === pw && soft[5] === ph);
+
+  const sharpCanvas = made[made.length - 1];
+  const final = draws[draws.length - 1];
+  ck("the last thing drawn is the ramped original", final[1] === sharpCanvas &&
+     final[2] === Math.round(place.x * s) && final[3] === Math.round(place.y * s),
+     `at ${final[2]},${final[3]}`);
+  ck("at exactly the photograph's rect", sharpCanvas.width === pw && sharpCanvas.height === ph,
+     `${sharpCanvas.width}x${sharpCanvas.height}`);
+
+  const sops = sharpCanvas.ops;
+  const first = sops.find((o) => o[0] === "drawImage");
+  ck("built from the ORIGINAL, scaled to that rect",
+     first && first[1] === original && first[4] === pw && first[5] === ph);
+  const cut = sops.findIndex((o) => o[0] === "gco" && o[1] === "destination-out");
+  const back = sops.findIndex((o) => o[0] === "gco" && o[1] === "source-over");
+  const fades = sops.filter((o, i) => o[0] === "fillRect" && i > cut && i < back);
+  ck("with its four edges faded out, then compositing restored",
+     cut > 0 && back > cut && fades.length === 4, `${fades.length} fades`);
+
+  const inner = Math.max(Math.round(place.band * s) * 2, Math.round(Math.min(pw, ph) * api.SHARP_RAMP_FRACTION));
+  const widths = fades.map((f) => Math.min(f[3], f[4]));
+  ck("each ramp is SHARP_RAMP_FRACTION of the short side — wide, not a hairline",
+     widths.every((w) => w === inner) && inner > 20, `${widths.join(",")} vs ${inner}`);
+
+  // Without a scale the original is not asked for, even if supplied.
+  made.length = 0;
+  const flat = api.composeExpandResult(result, src, base, place, 1, original);
+  const flatDraws = flat.ops.filter((o) => o[0] === "drawImage");
+  ck("at scale 1 there is no fifth layer — the identity stays the identity",
+     flatDraws[flatDraws.length - 1][1] === src);
+}
+
+console.log("\n'fit' is an expand with no pull-back");
+{
+  ck("the amount exists and asks for no margin beyond the shape's own",
+     MARGIN_AREA.fit === 0, JSON.stringify(MARGIN_AREA));
+  const safe = api.posterVisibleRect(1024, 1536);
+  const p = api.planExpandPlacement(1536, 864, 1024, 1536, "fit", "people", safe);
+  const contain = Math.min(safe.w / 1536, safe.h / 864);
+  ck("a 16:9 photo on a 9:16 poster is placed at contain, exactly",
+     p.w === Math.round(1536 * contain) && p.h === Math.round(864 * contain),
+     `${p.w}x${p.h} vs ${Math.round(1536 * contain)}x${Math.round(864 * contain)}`);
+  ck("so it spans the visible width edge to edge", Math.abs(p.w - safe.w) <= 1);
+  /* A landscape photo on a tall poster is mostly margin by shape alone, so
+     "moderate" has nothing further to pull back and lands at contain too.
+     The difference shows on a photo that already has the poster's shape:
+     fit fills it, moderate steps back to leave room for more scene. */
+  const tall = api.planExpandPlacement(900, 1600, 1024, 1536, "fit", "people", safe);
+  const tallModerate = api.planExpandPlacement(900, 1600, 1024, 1536, "moderate", "people", safe);
+  ck("a poster-shaped photo reaches the visible area's edge at fit",
+     Math.abs(tall.w - safe.w) <= 1 || Math.abs(tall.h - safe.h) <= 1, `${tall.w}x${tall.h} in ${safe.w}x${safe.h}`);
+  ck("and is larger than the same photo pulled back", tall.w > tallModerate.w, `${tall.w} vs ${tallModerate.w}`);
 }
 
 console.log("\nScaling up moves every layer together, and the source lands last");

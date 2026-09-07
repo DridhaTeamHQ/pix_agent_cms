@@ -8883,14 +8883,14 @@ function nearestModelShape(aspect) {
 const ENHANCE_LABELS = {
   restore: { done: "Restored and upscaled", failed: "Restore failed" },
   expand:  { done: "Expanded and reframed", failed: "Expand failed" },
-  reframe: { done: "Reframed to fill the poster", failed: "Reframe failed" },
+  reframe: { done: "Reframed to fill the poster — your photograph kept pixel-for-pixel, the margin drawn around it", failed: "Reframe failed" },
 };
 
 const ENHANCE_WORKING = {
   auto:    "Reading the photograph, then either recovering detail or extending it to fill the frame (30–90s)…",
   restore: "Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…",
   expand:  "Expanding — reading how the photo is cropped, then drawing the scene outward (30–90s)…",
-  reframe: "Reframing — redrawing the whole picture at the poster's shape (30–90s)…",
+  reframe: "Reframing — fitting your photograph into the poster's shape, then drawing only the margin around it (30–90s)…",
 };
 
 /* Pull back is the distance to zoom out, and it only means anything when a
@@ -8904,9 +8904,9 @@ const ENHANCE_WORKING = {
    reads it before picking is told the wrong thing about the option they are
    about to pick, so it has to move with the selector. */
 const ENHANCE_MODE_HINTS = {
-  auto: "Reads the photograph and picks the job: recovers detail at your framing, or — when the poster would crop most of the picture away — reframes it to fill the poster. A reframe REDRAWS the picture, so faces and detail come back recognisably the same rather than identically the same. Uses paid AI credits.",
-  restore: "Recovers detail at exactly the framing you set. Nothing is reframed, zoomed or invented. Uses paid AI credits.",
-  reframe: "Redraws the whole picture at the poster's shape, showing more of the scene above and below. This is the one that looks best, and it REGENERATES: faces, tattoos, signage and fine detail come back recognisably the same, not pixel-identical. Do not use it on a photograph that must not be altered — use Expand or Restore for that.",
+  auto: "Runs Reframe & Upscale: fits the photograph into the poster's shape and has the AI draw only the margin around it. Uses paid AI credits.",
+  restore: "Recovers detail at exactly the framing you set by REDRAWING the picture at up to 1536px — faces and fine detail come back recognisably the same, not pixel-identical, and a photo already above 1536px is left alone. Uses paid AI credits.",
+  reframe: "Fits the photograph into the poster's shape and has the AI draw ONLY the margin around it. Nothing inside your photo is redrawn: it is kept pixel-for-pixel at its own resolution, up to 4096px tall, and only the new scene above and below is generated. Check that margin before publishing. Uses paid AI credits.",
   expand: "Draws new scene outward past the edges of the photograph to fill the poster. The original is pinned in place by a mask, but the margin is generated — check the result before publishing. Costs more than Restore.",
 };
 
@@ -8953,7 +8953,7 @@ syncEnhanceModeUI();
    Area rather than a linear percentage because that is what "show 50% more
    scene" actually means to someone looking at the result — a linear 0.5 leaves
    three quarters of the frame empty and shrinks the subject to a stamp. */
-const EXPAND_MARGIN_AREA = { slight: 0.20, moderate: 0.35, wide: 0.50 };
+const EXPAND_MARGIN_AREA = { fit: 0, slight: 0.20, moderate: 0.35, wide: 0.50 };
 
 /* Where the vertical margin goes, as the fraction of it that sits ABOVE the
    picture. Centred is the wrong answer for people: a subject cut at the chest
@@ -9263,7 +9263,40 @@ function buildExpandFrame(srcCanvas, place) {
 
    1 is the identity: every rect below rounds back to the number it started
    from, which is what the geometry tests measure. */
-function composeExpandResult(resultImg, srcCanvas, baseFrame, place, scale = 1) {
+/* ── How much bigger than the model's frame the composite is built ─────────
+
+   The model returns 1024x1536 and the writer's photograph is very often
+   larger — a 4000px wire photo, a 1920px screenshot. Building the composite
+   at the model's size threw those pixels away: the picture came back SMALLER
+   than it went in, which is what "it is not upscaling" meant.
+
+   So the composite is built at the photograph's own scale — the number of
+   source pixels per frame pixel where the photograph sits — and layer 5
+   (composeExpandResult) pastes the original in at that size. The margin is
+   the model's and is interpolated up to match; it is scenery under a
+   gradient, and the join is handled by a sharpness ramp, not a hard edge.
+
+   Never below 1 (a small photograph is not shrunk further), and capped so the
+   result cannot outgrow what a browser will happily hold — a 4096px-tall
+   canvas is already the export's own size. */
+const COMPOSE_MAX_EDGE = 4096;
+
+function nativeComposeScale(rawW, rawH, place) {
+  if (!place || !(place.w > 0) || !(place.h > 0) || !(rawW > 0) || !(rawH > 0)) return 1;
+  const native = Math.min(rawW / place.w, rawH / place.h);
+  const cap = COMPOSE_MAX_EDGE / Math.max(place.frameW || 1, place.frameH || 1);
+  return Math.max(1, Math.min(native, cap));
+}
+
+/* Where the sharp photograph gives way to the soft margin: a ramp this
+   fraction of the photograph's short side, measured inward from its edge.
+   The old 11px feather was the smear across the sky — soft next to sharp with
+   nothing between. Six percent of a 900px-tall photograph is ~54px, over
+   which the writer's pixels fade into the same picture at the margin's
+   softness, so there is no line to find. */
+const SHARP_RAMP_FRACTION = 0.06;
+
+function composeExpandResult(resultImg, srcCanvas, baseFrame, place, scale = 1, sharpSource = null) {
   const s = scale > 0 ? scale : 1;
   const out = document.createElement("canvas");
   out.width = Math.round(place.frameW * s);
@@ -9304,6 +9337,49 @@ function composeExpandResult(resultImg, srcCanvas, baseFrame, place, scale = 1) 
 
   ctx.drawImage(ring, px - band, py - band);
   ctx.drawImage(srcCanvas, px, py, pw, ph);
+
+  /* ── Layer 5: the writer's own pixels ─────────────────────────────────
+
+     Everything above is at the model's resolution, `srcCanvas` included —
+     that is the ≤1536px copy that went up. When the composite is built larger
+     than that (scale > 1, see nativeComposeScale) the photograph in layer 4
+     is interpolated, and the original is in hand with real pixels to give.
+
+     It is laid over layer 4 through an alpha ramp that is transparent at the
+     photograph's edge and opaque SHARP_RAMP_FRACTION of the way in. Layer 4
+     is the same picture at the margin's softness, fully opaque underneath, so
+     the ramp is not sharp-over-scenery — it is sharp-over-soft of the SAME
+     content, aligned by construction. That is the "feather wide enough to
+     cross the sharpness step honestly" the previous attempt at this needed
+     and did not have: the step is now a slope inside the photograph, where
+     the picture's own detail carries it, instead of a line at its border.
+
+     Only with a source to paste and a scale to justify it. At scale 1 the
+     sharp source IS srcCanvas, and the identity case stays the identity. */
+  if (sharpSource && s > 1) {
+    const inner = Math.max(band * 2, Math.round(Math.min(pw, ph) * SHARP_RAMP_FRACTION));
+    const sharp = document.createElement("canvas");
+    sharp.width = pw;
+    sharp.height = ph;
+    const sctx = sharp.getContext("2d");
+    sctx.imageSmoothingEnabled = true;
+    sctx.imageSmoothingQuality = "high";
+    sctx.drawImage(sharpSource, 0, 0, pw, ph);
+    sctx.globalCompositeOperation = "destination-out";
+    const ramp = (gx0, gy0, gx1, gy1, rx, ry, rw2, rh2) => {
+      const g = sctx.createLinearGradient(gx0, gy0, gx1, gy1);
+      g.addColorStop(0, "rgba(0,0,0,1)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      sctx.fillStyle = g;
+      sctx.fillRect(rx, ry, rw2, rh2);
+    };
+    ramp(0, 0, inner, 0, 0, 0, inner, ph);                    // left
+    ramp(pw, 0, pw - inner, 0, pw - inner, 0, inner, ph);     // right
+    ramp(0, 0, 0, inner, 0, 0, pw, inner);                    // top
+    ramp(0, ph, 0, ph - inner, 0, ph - inner, pw, inner);     // bottom
+    sctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(sharp, px, py);
+  }
   return out;
 }
 
@@ -9537,20 +9613,56 @@ async function runImageAI() {
        composite onto, and rather than fall back to asking the model to place
        the picture itself — the thing that drew the ghost — this drops to a
        restore, which reframes nothing and cannot double anything. */
-    const frameSize = plan.mode === "expand" ? parseEnhanceSize(plan.size) : null;
+    /* ── Reframe is an expand with no pull-back ────────────────────────
+       It used to be its own job: the raw picture went up with no frame and
+       no mask, and the model returned the whole poster-shaped image. That
+       is a regeneration, and it is why "sometimes it changes the image":
+       the model redrew the face along with the margin, and it returned it
+       at 1024px however large the photograph had been — a downscale that
+       read as "not upscaling".
+
+       So it now takes the road Expand takes. The photograph is fitted into
+       the poster's visible area as large as it will go (amount "fit" — no
+       pull-back, the margin is only what the shape demands), the mask pins
+       it, the model draws the margin, and composeExpandResult pastes the
+       writer's own pixels back over the middle at their native resolution.
+       The model never gets a say over anything inside the photograph. */
+    const framed = plan.mode === "expand" || plan.mode === "reframe";
+    const frameSize = framed ? parseEnhanceSize(plan.size) : null;
+    const amount = plan.mode === "reframe" ? "fit" : (plan.amount || "moderate");
+    /* Inside what the card will show, not inside what the model will
+       return — the two differ by a quarter of the width on a 9:16 poster,
+       and the difference used to come off the photograph rather than off
+       the margin drawn for it. */
+    const safeRect = frameSize ? posterVisibleRect(frameSize.w, frameSize.h) : null;
     const place = frameSize
-      ? planExpandPlacement(
-          tmp.width, tmp.height, frameSize.w, frameSize.h, plan.amount, plan.subject,
-          /* Inside what the card will show, not inside what the model will
-             return — the two differ by a quarter of the width on a 9:16
-             poster, and the difference used to come off the photograph
-             rather than off the margin drawn for it. */
-          posterVisibleRect(frameSize.w, frameSize.h),
-        )
+      ? planExpandPlacement(tmp.width, tmp.height, frameSize.w, frameSize.h, amount, plan.subject, safeRect)
       : null;
 
+    /* A photograph that already has the poster's shape leaves the model
+       nothing to draw. Fitted, it fills the visible area edge to edge; the
+       only thing a call could do is repaint it, which is the one thing this
+       job promises not to do. Say so and keep the credits. */
+    if (place && plan.mode === "reframe" && safeRect) {
+      const drawn = 1 - (place.w * place.h) / (safeRect.w * safeRect.h);
+      if (drawn < 0.03) {
+        setEnhanceStatus(
+          `This photograph already fills the ${state.aspectRatio || "poster"} frame at ${rawW}×${rawH} — ` +
+          `there is no margin for the AI to draw, and it does not redraw the picture itself. ` +
+          `${toneHelps ? `Adjusted it here instead — ${toneSummary}. ` : ""}No credits used.`,
+          "success",
+        );
+        if (toneHelps) renderPoster();
+        btn.disabled = false;
+        btn.classList.remove("working");
+        return;
+      }
+    }
+
     setEnhanceStatus(place
-      ? `Expanding — drawing the scene outward from the photo${plan.reason ? ` (${plan.reason})` : ""} (30–90s)…`
+      ? (plan.mode === "reframe"
+          ? "Reframing — your photograph is pinned in place; drawing only the margin around it (30–90s)…"
+          : `Expanding — drawing the scene outward from the photo${plan.reason ? ` (${plan.reason})` : ""} (30–90s)…`)
       : "Restoring and upscaling — recovering detail (30–90s)…");
 
     /* ── Stage 2: the paid call ──
@@ -9588,7 +9700,7 @@ async function runImageAI() {
        shape, and there is no composite to align or mask to pin. Only expand
        requires the frame, so only expand is gated on having built one. */
     form.append("mode", place ? "expand" : (plan.mode === "reframe" ? "reframe" : "restore"));
-    form.append("amount", plan.amount || "moderate");
+    form.append("amount", amount);
     form.append("subject", plan.subject || "people");
     form.append("description", plan.description || "");
     form.append("headline", encodeURIComponent((state.headline || "").slice(0, 200)));
@@ -9647,8 +9759,13 @@ async function runImageAI() {
        needs a wider feather, or a model that returns more pixels. */
     let enhanced = returned;
     if (data.mode === "expand" && place && baseFrame) {
+      /* Built at the photograph's own scale, and the ORIGINAL is what goes
+         in last — see nativeComposeScale and layer 5 of composeExpandResult.
+         `tmp` is still layers 3 and 4: it is the copy the model saw, so it
+         is registered exactly against the model's margin. */
+      const composeScale = nativeComposeScale(rawW, rawH, place);
       enhanced = await canvasToImage(
-        composeExpandResult(returned, tmp, baseFrame, place),
+        composeExpandResult(returned, tmp, baseFrame, place, composeScale, img),
       );
     }
 
@@ -9737,7 +9854,10 @@ async function runImageAI() {
        thing they might disagree with, and the select above is how they say so
        on the next press. "Expanded and reframed" alone gives them nothing to
        push against; "he was cropped at mid-chest with no room below" does. */
-    const label = ENHANCE_LABELS[data.mode] || ENHANCE_LABELS.restore;
+    // A reframe runs through the expand mechanics, so the server reports
+    // "expand"; the reviewer asked for a reframe and is told about one.
+    const jobRan = plan.mode === "reframe" && data.mode === "expand" ? "reframe" : data.mode;
+    const label = ENHANCE_LABELS[jobRan] || ENHANCE_LABELS.restore;
     const engineLabel = data.engine || "AI";
     const why = requestedMode === "auto" && data.reason ? ` — ${data.reason}` : "";
     // Fit changes what the reviewer is looking at as much as the job did, so

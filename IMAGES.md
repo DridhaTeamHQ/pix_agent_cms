@@ -78,7 +78,7 @@ over the result at up to its own resolution — see §2.10.
 | `X-Image-Orientation` | `landscape` \| `portrait` | Decides output size (§2.3) |
 | `X-Source-Size` | `WxH` of the capped upload | The planner — shape alone cannot tell a 400px crop from a 3000px one |
 | `X-Headline` | URL-encoded, ≤200 chars | Stage 1 context only. **Never** given to the image model — a quoted string in an image prompt is a string to render, which put headlines inside photographs |
-| `X-Enhance-Mode` | `restore` \| `reframe` \| `expand` \| `auto` | Unrecognised or absent ⇒ `restore`. `reframe` REGENERATES — §2.7 |
+| `X-Enhance-Mode` | `restore` \| `reframe` \| `expand` \| `auto` | Unrecognised or absent ⇒ `restore`. `reframe` is an expand at fit — §2.7 |
 | `X-Poster-Ratio` | e.g. `9:16` | Reframe and expand. The restore path ignores it — see §2.3 |
 | `X-Expand-Amount` | `slight` \| `moderate` \| `wide` | Expand only. Anything else ⇒ `moderate` |
 | `X-Expand-Capable` | `1` | The caller composites the frame, sends the mask and pastes the source back. Only such a caller may be given an expand on `auto` (§2.8) |
@@ -227,43 +227,35 @@ near-zero bill into a real one, and `medium` is the correction.
   nothing. This is a spend cap, not a security control — the reviewer-only
   route gate is that.
 
-### 2.7 Reframe — the job that regenerates, and what `auto` now picks
+### 2.7 Reframe — an expand with no pull-back, and what `auto` picks
 
-A reviewer typed *"make this image 9:16"* at ChatGPT, on the same landscape
-still this route had just handled badly, and got back something better than
-anything the pipeline was producing. **Same model.** The difference was never
-capability; it was everything being piled on top of it.
+Reframe used to be its own job: the raw picture went up with no frame and no
+mask, and the model returned the whole poster-shaped image. That is a
+regeneration, and it produced the two reports this section now answers —
+*"sometimes it changes the image"* (the face was redrawn along with the margin)
+and *"it is not upscaling"* (a 4000px photograph came back at 1024px, because
+that is all the model returns).
+
+**The model never gets a say over anything inside the photograph.** Reframe now
+takes the road Expand takes, with the pull-back set to `fit`:
 
 | | Expand | Reframe |
 |---|---|---|
-| what the model receives | a composite: sharp photo inset in blurred scaffolding | the picture |
-| mask | yes, pinning the original | none |
-| prompt | ~60 lines, mostly prohibitions | 9 lines |
-| what comes back | a margin, bolted on at a seam | the whole picture at the poster's shape |
-| the original | preserved pixel-for-pixel | **redrawn** |
+| placement | the photo pulled back inside the visible area by `amount` | the photo as large as the visible area allows (`EXPAND_MARGIN_AREA.fit = 0`) |
+| what the model receives | a composite: sharp photo inset in blurred scaffolding, and a mask pinning it | the same |
+| what comes back | the margin, drawn | the same — only the strips the poster's shape demands |
+| the original | pasted back pixel-for-pixel, at its own resolution (§2.10) | the same |
 
-Every failure this route has shipped was a failure of that bolt — the doubled
-subject, the framed print, the smeared sky (§2.8). Reframe has no bolt because
-it has no seam.
+The server sees `mode=expand`, `amount=fit`, `composited=1` and a mask; the
+reviewer is told about a reframe. A photograph that already has the poster's
+shape (under 3% margin) is not sent at all — there is nothing for the model to
+draw, and it does not redraw the picture itself.
 
-**The cost is real and is the reviewer's to accept.** The output is a
-regeneration: faces, tattoos, jewellery and signage come back *recognisably*
-the same, not *identically* the same. `input_fidelity: high` narrows that gap
-and does not close it. On the promotional art this product mostly handles it is
-invisible and the result is better. On a news photograph of a real person it is
-a fabrication with a masthead on it — so Expand and Restore stay on the Job
-selector, and the UI says which is which.
-
-`auto` resolves an expand verdict to **reframe**. Nothing gates it on the
-caller any more, since there is no frame to build; a shape that cannot be
-resolved still falls to Fit.
-
-**The prompt is short on purpose.** The long one is not more careful, it is more
-contradictory — "extend outward" and "change nothing" in the same breath, forty
-prohibitions deep — and a model handed a contradiction hedges by giving back
-what it was given. That is the smeared sky, restated.
+`auto` resolves to reframe. Restore remains the one job that regenerates, at the
+source's own framing and at most 1536px, and its hint says so.
 
 ---
+
 ### 2.8 Expand, and when `auto` picks it
 
 **`auto` resolves to expand when the planner says so and the caller can
@@ -342,44 +334,34 @@ the width, and aiming it at whichever face the detector returned first turned a
 landscape photograph of two people into a portrait of one of them. A single
 face is unchanged — the union of one box is that box.
 
-### 2.10 What resolution an expand comes back at, and why not more
+### 2.10 What resolution an expand comes back at
 
-The composite is rendered at the model's own frame size — 1024×1536 for a 9:16
-card — and the photograph is pasted into it at that scale. Every layer sits at
-one resolution, and the renderer scales the whole thing together.
+The composite is built at the **photograph's** scale, not the model's:
+`nativeComposeScale` is the number of source pixels per frame pixel where the
+photograph sits (a 4000px photo placed 864px wide in the 1024×1536 frame asks
+for 4.6×), never below 1, and capped so the result's long edge stays within
+`COMPOSE_MAX_EDGE` (4096px — the export's own size). Layers 1–4 are the model's
+frame and the ≤1536px upload, scaled up together; **layer 5 is the original**,
+drawn over layer 4 at that size.
 
-**There was a version that rendered it larger, and it is what put a smear
-across the sky of a poster.** The reasoning looked sound: the 1536px cap in
-§2.1 is an *upload* limit, the writer's original is still in hand at
-1280–3000px, and layer 4 pastes it back without consulting the model — so
-render bigger and paste from the original. On a 1280px source that resolved to
-1.54×.
+**There was a version that scaled the composite and it put a smear across the
+sky**, and the reason is worth keeping: the composite is one canvas, so scaling
+it sharpened the pasted photograph and could not sharpen the drawn margin, and
+the two met along a full-width line with an 11px feather between them. Soft
+next to sharp with nothing in between. The answer for a while was "no scale,
+ever" — which handed back the downscale.
 
-What it missed is that **the composite is one canvas.** Scaling it up scales
-every layer, and only layer 4 had more pixels to give:
+The fix is not the scale, it is the join. Layer 5 goes in through an alpha ramp
+`SHARP_RAMP_FRACTION` (6%) of the photograph's short side wide, transparent at
+the photograph's edge and opaque that far in. Underneath it, layer 4 is the
+*same picture* at the margin's softness, fully opaque — so the ramp is
+sharp-over-soft of identical, aligned content, and the sharpness step becomes a
+slope inside the photograph where its own detail carries it, instead of a line
+at its border. Measured on a synthetic frame: a hard edge in the original is
+still a one-pixel step in the output, and the margin is the model's.
 
-| Layer | At 1.54× |
-|---|---|
-| 1 — blurred bleed | upsampled, no new detail |
-| 2 — the model's drawn margin | **upsampled 1.54× from 1024×1536** |
-| 3 — feathered ring | 11 frame px → 17px |
-| 4 — the photograph | **1:1 from the original, genuinely sharper** |
-
-So the drawn margin arrived soft and was butted straight against a sharp
-photograph, along a horizontal line the full width of the card at `place.y`,
-with 17px of feather to cross it — **0.72% of the image height**.
-
-The shape of that failure is why it survived review. It showed badly along the
-top, where a sunset sky has no detail to disguise a sharpness step, and passed
-unnoticed along the bottom, where blocky landscape covered for it — so the
-symptom read as *"the model refused to paint the top margin"* when the model
-had in fact painted both.
-
-**Uniform beats sharp-in-places.** The photograph is now slightly softer than
-the original could support, and nothing on the card is sharper than what sits
-next to it. Getting that sharpness back is not a scale factor: it needs a
-feather wide enough to cross the step honestly, or a model that returns more
-than 1536px (§2.11).
+At scale 1 (a photograph no larger than its placement) there is no fifth layer,
+and the composite is exactly what it was before.
 
 `canvasToImage` still encodes through `toBlob` rather than `toDataURL` — a
 synchronous encode froze the editor at the end of the call. It produces a

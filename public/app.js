@@ -9645,7 +9645,10 @@ async function runImageAI() {
        job promises not to do. Say so and keep the credits. */
     if (place && plan.mode === "reframe" && safeRect) {
       const drawn = 1 - (place.w * place.h) / (safeRect.w * safeRect.h);
-      if (drawn < 0.03) {
+      /* Six percent, not three: the visible area is the 9:16 card less its
+         pan headroom, so a photograph that IS 9:16 still leaves ~4% of it
+         for margin. That is nothing to draw, and nothing to pay for. */
+      if (drawn < 0.06) {
         setEnhanceStatus(
           `This photograph already fills the ${state.aspectRatio || "poster"} frame at ${rawW}×${rawH} — ` +
           `there is no margin for the AI to draw, and it does not redraw the picture itself. ` +

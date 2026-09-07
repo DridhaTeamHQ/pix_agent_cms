@@ -248,7 +248,7 @@ takes the road Expand takes, with the pull-back set to `fit`:
 
 The server sees `mode=expand`, `amount=fit`, `composited=1` and a mask; the
 reviewer is told about a reframe. A photograph that already has the poster's
-shape (under 3% margin) is not sent at all — there is nothing for the model to
+shape (under 6% margin — the visible area is the card less its pan headroom, so a true 9:16 photo leaves ~4%) is not sent at all — there is nothing for the model to
 draw, and it does not redraw the picture itself.
 
 `auto` resolves to reframe. Restore remains the one job that regenerates, at the

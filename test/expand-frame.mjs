@@ -115,6 +115,10 @@ const api = new Function(
     ${fnSrc("planExpandPlacement")}
     ${fnSrc("fillExpandBleed")}
     ${fnSrc("fadeEdgesInward")}
+    ${fnSrc("rampStrip")}
+    ${fnSrc("edgeMeans")}
+    ${fnSrc("matchMarginTone")}
+    const TONE_REACH_FRACTION = ${app.match(/^const TONE_REACH_FRACTION = ([\d.]+);$/m)[1]};
     ${fnSrc("buildExpandFrame")}
     ${fnSrc("composeExpandResult")}
     ${fnSrc("posterVisibleRect")}
@@ -125,7 +129,7 @@ const api = new Function(
     return {
       planExpandPlacement, buildExpandFrame, composeExpandResult,
       posterVisibleRect, EXPAND_COMMIT_ZOOM, nativeComposeScale,
-      COMPOSE_MAX_EDGE, SHARP_RAMP_FRACTION,
+      COMPOSE_MAX_EDGE, SHARP_RAMP_FRACTION, rampStrip, edgeMeans, TONE_REACH_FRACTION,
     };
   `,
 )(documentStub, MARGIN_AREA, TOP_BIAS, HEADROOM, () => activePreset);
@@ -260,9 +264,9 @@ console.log("\nThe frame is opaque before the picture goes on it");
     const cut = mask.ops.findIndex((o) => o[0] === "gco" && o[1] === "destination-out");
     const back = mask.ops.findIndex((o, i) => i > cut && o[0] === "gco" && o[1] !== "destination-out");
     const fades = mask.ops.filter((o, i) => o[0] === "fillRect" && i > cut && (back < 0 || i < back));
-    ck("and is feathered inward across the blend strip on all four edges",
-       cut > 0 && fades.length === 4 && fades.every((f) => Math.min(f[3], f[4]) === place.blend),
-       `${fades.length} fades, widths ${fades.map((f) => Math.min(f[3], f[4])).join(",")} vs ${place.blend}`);
+    ck("and is feathered inward over the band only — enough to soften the model's edge, not to hand it the picture",
+       cut > 0 && fades.length === 4 && fades.every((f) => Math.min(f[3], f[4]) === place.band),
+       `${fades.length} fades, widths ${fades.map((f) => Math.min(f[3], f[4])).join(",")} vs ${place.band}`);
   }
   if (rect) {
     const [, mx, my, mw, mh] = rect;
@@ -305,9 +309,16 @@ console.log("\nWhatever the model returns, the source is pasted back over it");
   {
     const cut = soft.ops.findIndex((o) => o[0] === "gco" && o[1] === "destination-out");
     const fades = soft.ops.filter((o, i) => o[0] === "fillRect" && i > cut);
-    ck("faded in across the blend strip on all four edges — no hard line anywhere",
-       cut > 0 && fades.length === 4 && fades.every((f) => Math.min(f[3], f[4]) === place.blend),
-       `${fades.length} fades, ${fades.map((f) => Math.min(f[3], f[4])).join(",")} vs ${place.blend}`);
+    /* The photograph is whole and exact. Only the band — two percent, the
+       model's own edge — is crossed. A wide fade blended two renderings of
+       the same arm and drew a ghost; the tone step is handled on the margin's
+       side instead (matchMarginTone), and that must run BEFORE the photograph
+       goes down, reading the margin the model actually drew. */
+    ck("and it is pasted whole — no fade at its edges, which exposed the model's blended edge row as a hairline",
+       cut < 0 && fades.length === 0, `${fades.length} fades`);
+    const body = fnSrc("composeExpandResult");
+    ck("the margin's tone is matched to the photograph before the photograph is drawn",
+       body.indexOf("matchMarginTone(") > 0 && body.indexOf("matchMarginTone(") < body.indexOf("ctx.drawImage(soft, px, py)"));
   }
   ck("no outward ring is drawn any more — it re-drew the hard edge the soft mask removed",
      !draws.some((d) => d[1] !== base && d[1] !== result && d[1] !== soft),
@@ -548,7 +559,7 @@ console.log("\nThe original lands last, through a ramp, over the same picture");
   ck("with its four edges faded out, then compositing restored",
      cut > 0 && back > cut && fades.length === 4, `${fades.length} fades`);
 
-  const inner = Math.max(Math.round(place.blend * s), Math.round(Math.min(pw, ph) * api.SHARP_RAMP_FRACTION));
+  const inner = Math.max(Math.round(place.band * s) * 2, Math.round(Math.min(pw, ph) * api.SHARP_RAMP_FRACTION));
   const widths = fades.map((f) => Math.min(f[3], f[4]));
   ck("each ramp is SHARP_RAMP_FRACTION of the short side — wide, not a hairline",
      widths.every((w) => w === inner) && inner > 20, `${widths.join(",")} vs ${inner}`);
@@ -615,13 +626,50 @@ console.log("\nScaling up moves every layer together, and the source lands last"
      `${final[2]},${final[3]} ${photo.width}x${photo.height} — expected ` +
      `${place.x * 2},${place.y * 2} ${place.w * 2}x${place.h * 2}`);
 
-  /* The blend strip scales with the composite, so the crossing stays the
-     same fraction of the photograph at every output size. */
-  const cut = photo.ops.findIndex((o) => o[0] === "gco" && o[1] === "destination-out");
-  const fades = photo.ops.filter((o, i) => o[0] === "fillRect" && i > cut);
-  ck("and its fade-in strip is scaled by the same factor",
-     fades.length === 4 && fades.every((f) => Math.min(f[3], f[4]) === Math.round(place.blend * 2)),
-     `${fades.map((f) => Math.min(f[3], f[4])).join(",")} vs ${Math.round(place.blend * 2)}`);
+  ck("and still whole — no fade at any scale",
+     !photo.ops.some((o) => o[0] === "gco" && o[1] === "destination-out"));
+}
+
+console.log("\nThe margin is lifted to the photograph's tone, and only near the edge");
+{
+  /* A margin drawn 60 levels darker than the photograph, below it. After the
+     ramp, the margin's first row matches the photograph and its last row is
+     untouched, with a monotone slope between. */
+  const width = 8, height = 40;
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < data.length; i += 4) { data[i] = 100; data[i + 1] = 110; data[i + 2] = 120; data[i + 3] = 255; }
+  const deltas = new Float32Array(width * 3);
+  for (let x = 0; x < width; x++) { deltas[x * 3] = 60; deltas[x * 3 + 1] = 60; deltas[x * 3 + 2] = 60; }
+  api.rampStrip(data, width, height, deltas, true, true);
+  const row = (y) => data[(y * width + 3) * 4];
+  ck("the row touching the photograph is lifted by the full step", row(0) === 160, String(row(0)));
+  ck("the far row is left as the model drew it", row(height - 1) <= 101, String(row(height - 1)));
+  let monotone = true;
+  for (let y = 1; y < height; y++) if (row(y) > row(y - 1)) monotone = false;
+  ck("and the slope between is monotone", monotone);
+  ck("alpha is untouched", data[3] === 255 && data[(width * (height - 1)) * 4 + 3] === 255);
+
+  // The same strip above the photograph: the photograph is at the LAST row.
+  const up = new Uint8ClampedArray(width * height * 4).fill(100);
+  api.rampStrip(up, width, height, deltas, true, false);
+  ck("above the photograph the ramp is full at the bottom row and gone at the top",
+     up[((height - 1) * width + 3) * 4] === 160 && up[(0 * width + 3) * 4] <= 101,
+     `${up[((height - 1) * width + 3) * 4]} / ${up[3 * 4]}`);
+
+  /* Means along an edge are smoothed, so one bright column does not become
+     one bright streak of correction. */
+  const w2 = 9, h2 = 2;
+  const strip = new Uint8ClampedArray(w2 * h2 * 4).fill(50);
+  for (let y = 0; y < h2; y++) { const i = (y * w2 + 4) * 4; strip[i] = 230; strip[i + 1] = 230; strip[i + 2] = 230; }
+  const rawMeans = api.edgeMeans(strip, w2, h2, true, 0);
+  const smoothMeans = api.edgeMeans(strip, w2, h2, true, 2);
+  ck("the raw mean carries the spike", rawMeans[4 * 3] === 230 && rawMeans[3 * 3] === 50);
+  ck("the smoothed one spreads it over its neighbours",
+     smoothMeans[4 * 3] < 120 && smoothMeans[3 * 3] > 50 && smoothMeans[0] === 50,
+     `${smoothMeans[4 * 3].toFixed(0)} at the spike, ${smoothMeans[3 * 3].toFixed(0)} beside it`);
+
+  ck("the reach is a real fraction of the picture, not a hairline",
+     api.TONE_REACH_FRACTION >= 0.2 && api.TONE_REACH_FRACTION <= 0.6, String(api.TONE_REACH_FRACTION));
 }
 
 console.log("\nScale 1 is the identity");

@@ -9214,7 +9214,14 @@ function buildExpandFrame(srcCanvas, place) {
      so this is what lets it blend its margin INTO the picture's edge rather
      than butting up against it — the half of the seam fix that happens on
      the model's side. See place.blend. */
-  fadeEdgesInward(mctx, place.x, place.y, place.w, place.h, place.blend);
+  /* Over `band` — two percent — and not the wider `blend`. A wide feather
+     hands the model a strip of the photograph to REDRAW, and it does: on the
+     first live result it drew the rider's arm and helmet slightly differently
+     inside the strip, and fading the original into that was a smeared band
+     across the arm — a ghost, which is worse than a line. The feather here
+     is only enough to soften the model's own edge. Tone continuity is
+     handled on the margin's side, in matchMarginTone. */
+  fadeEdgesInward(mctx, place.x, place.y, place.w, place.h, place.band);
 
   return { frame, mask };
 }
@@ -9337,6 +9344,110 @@ function nativeComposeScale(rawW, rawH, place) {
   return Math.max(1, Math.min(native, cap));
 }
 
+/* How far out into the margin the tone correction reaches, as a fraction of
+   the photograph's short side. Full at the boundary, gone this far out. Long
+   enough that a broad shade difference becomes a gradient the eye reads as
+   light falling off, short enough that the model's margin further out is
+   its own. */
+const TONE_REACH_FRACTION = 0.35;
+
+/* Per-line colour offsets applied to a strip of pixels, full on the line that
+   touches the photograph and easing to nothing at the far side. `data` is an
+   ImageData's bytes, `width` x `height`. When `alongX` the strip runs the
+   width of the photograph and `deltas` holds one RGB triple per column;
+   otherwise it runs the height and holds one per row. `photoFirst` says the
+   photograph is at line 0 (a strip below or right of it) rather than at the
+   last line. Pure, so it can be tested without a canvas. */
+function rampStrip(data, width, height, deltas, alongX, photoFirst) {
+  const lines = alongX ? height : width;
+  if (lines <= 0) return;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const line = alongX ? y : x;
+      const dist = photoFirst ? line : (lines - 1 - line);
+      const t = Math.min(1, dist / lines);
+      const w = 1 - t * t * (3 - 2 * t);      // smoothstep, 1 at the photo, 0 at the far side
+      if (w <= 0) continue;
+      const d = (alongX ? x : y) * 3;
+      const i = (y * width + x) * 4;
+      data[i]     += deltas[d]     * w;
+      data[i + 1] += deltas[d + 1] * w;
+      data[i + 2] += deltas[d + 2] * w;
+    }
+  }
+}
+
+/* Mean RGB of each column (alongX) or row across a strip, then box-smoothed
+   along the edge by `radius` so one bright pixel does not become one bright
+   streak of correction. */
+function edgeMeans(data, width, height, alongX, radius) {
+  const n = alongX ? width : height;
+  const depth = alongX ? height : width;
+  const raw = new Float32Array(n * 3);
+  for (let k = 0; k < n; k++) {
+    let r = 0, g = 0, b = 0;
+    for (let j = 0; j < depth; j++) {
+      const i = (alongX ? (j * width + k) : (k * width + j)) * 4;
+      r += data[i]; g += data[i + 1]; b += data[i + 2];
+    }
+    raw[k * 3] = r / depth; raw[k * 3 + 1] = g / depth; raw[k * 3 + 2] = b / depth;
+  }
+  const rad = Math.max(0, Math.round(radius));
+  if (!rad) return raw;
+  const out = new Float32Array(n * 3);
+  for (let k = 0; k < n; k++) {
+    const a = Math.max(0, k - rad), z = Math.min(n - 1, k + rad);
+    let r = 0, g = 0, b = 0;
+    for (let m = a; m <= z; m++) { r += raw[m * 3]; g += raw[m * 3 + 1]; b += raw[m * 3 + 2]; }
+    const c = z - a + 1;
+    out[k * 3] = r / c; out[k * 3 + 1] = g / c; out[k * 3 + 2] = b / c;
+  }
+  return out;
+}
+
+/* Bend the margin's tone to meet the photograph along each of its four edges.
+   `photo` is a canvas holding the photograph at pw x ph; the margin is what
+   is already on `ctx` around (px, py, pw, ph). Reads and writes pixels, so it
+   is a no-op on a context that cannot (the test stubs), and on a tainted
+   canvas, where getImageData throws — the composite is still complete
+   without it, just with the line the correction exists to remove. */
+function matchMarginTone(ctx, photo, px, py, pw, ph, { reach, sample, smooth }) {
+  if (typeof ctx.getImageData !== "function" || typeof ctx.putImageData !== "function") return;
+  const W = ctx.canvas ? ctx.canvas.width : px + pw;
+  const H = ctx.canvas ? ctx.canvas.height : py + ph;
+  const k = Math.max(1, Math.min(Math.round(sample), Math.floor(Math.min(pw, ph) / 4)));
+  const pctx = photo.getContext && photo.getContext("2d");
+  if (!pctx || typeof pctx.getImageData !== "function") return;
+  try {
+    const edges = [
+      // [alongX, photoFirst, photo strip rect, margin strip rect]
+      { alongX: true,  photoFirst: true,  photoRect: [0, ph - k, pw, k],       marginRect: [px, py + ph, pw, Math.min(reach, H - (py + ph))] },
+      { alongX: true,  photoFirst: false, photoRect: [0, 0, pw, k],            marginRect: [px, Math.max(0, py - reach), pw, Math.min(reach, py)] },
+      { alongX: false, photoFirst: true,  photoRect: [pw - k, 0, k, ph],       marginRect: [px + pw, py, Math.min(reach, W - (px + pw)), ph] },
+      { alongX: false, photoFirst: false, photoRect: [0, 0, k, ph],            marginRect: [Math.max(0, px - reach), py, Math.min(reach, px), ph] },
+    ];
+    for (const e of edges) {
+      const [mx, my, mw, mh] = e.marginRect;
+      if (mw <= 0 || mh <= 0) continue;
+      const photoPx = pctx.getImageData(...e.photoRect);
+      const margin = ctx.getImageData(mx, my, mw, mh);
+      // The margin's own edge rows, next to the photograph.
+      const near = e.alongX
+        ? ctx.getImageData(mx, e.photoFirst ? my : my + mh - Math.min(k, mh), mw, Math.min(k, mh))
+        : ctx.getImageData(e.photoFirst ? mx : mx + mw - Math.min(k, mw), my, Math.min(k, mw), mh);
+      const a = edgeMeans(photoPx.data, photoPx.width, photoPx.height, e.alongX, smooth);
+      const b = edgeMeans(near.data, near.width, near.height, e.alongX, smooth);
+      const deltas = new Float32Array(a.length);
+      for (let i = 0; i < a.length; i++) deltas[i] = a[i] - b[i];
+      rampStrip(margin.data, mw, mh, deltas, e.alongX, e.photoFirst);
+      ctx.putImageData(margin, mx, my);
+    }
+  } catch (err) {
+    /* Tainted canvas or a context that will not read back: leave the margin
+       as the model drew it. */
+  }
+}
+
 /* Where the sharp photograph gives way to the soft margin: a ramp this
    fraction of the photograph's short side, measured inward from its edge.
    The old 11px feather was the smear across the sky — soft next to sharp with
@@ -9382,7 +9493,35 @@ function composeExpandResult(resultImg, srcCanvas, baseFrame, place, scale = 1, 
   soft.height = ph;
   const softCtx = soft.getContext("2d");
   softCtx.drawImage(srcCanvas, 0, 0, pw, ph);
-  fadeEdgesInward(softCtx, 0, 0, pw, ph, blend);
+
+  /* ── The margin is bent to meet the photograph; the photograph is not bent ──
+
+     Two things have now been tried at this boundary and both drew something:
+     a hard edge drew a LINE wherever the model's margin was a shade off the
+     photograph's tone, and a wide alpha fade drew a GHOST wherever the model
+     had redrawn a shape inside the strip. Blending pixels between two
+     renderings of the same arm cannot be made to work; the renderings differ.
+
+     So the photograph goes down whole and exact, and the mismatch is fixed on
+     the other side of the edge: the colour step between the photograph's
+     outermost rows and the margin's innermost rows is measured per column
+     (per row for the sides), smoothed along the edge, and added to the
+     margin at full strength on its first line, fading to nothing `reach`
+     lines out. A table drawn a shade darker below the picture is lifted to
+     the picture's shade where they meet and left alone further away. No
+     content is blended, only tone — which is the only thing that was wrong. */
+  matchMarginTone(ctx, soft, px, py, pw, ph, {
+    reach: Math.round(Math.min(pw, ph) * TONE_REACH_FRACTION),
+    sample: Math.max(2, band),
+    smooth: blend,
+  });
+
+  /* Whole, hard-edged, no fade at all. Even a two-percent fade exposed the
+     model's edge pixels along the photograph's outermost rows — and those
+     are the model's blend of picture and margin, a shade off — as a one-row
+     hairline. The tone correction above has already brought the margin's
+     first rows to the photograph's shade, so the hard edge is now the
+     smoothest edge there is. */
   ctx.drawImage(soft, px, py);
 
   /* ── Layer 5: the writer's own pixels ─────────────────────────────────
@@ -9404,7 +9543,7 @@ function composeExpandResult(resultImg, srcCanvas, baseFrame, place, scale = 1, 
      Only with a source to paste and a scale to justify it. At scale 1 the
      sharp source IS srcCanvas, and the identity case stays the identity. */
   if (sharpSource && s > 1) {
-    const inner = Math.max(blend, Math.round(Math.min(pw, ph) * SHARP_RAMP_FRACTION));
+    const inner = Math.max(band * 2, Math.round(Math.min(pw, ph) * SHARP_RAMP_FRACTION));
     const sharp = document.createElement("canvas");
     sharp.width = pw;
     sharp.height = ph;

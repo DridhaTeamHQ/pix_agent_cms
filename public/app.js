@@ -9097,6 +9097,31 @@ function planExpandPlacement(srcW, srcH, frameW, frameH, amount, subject, safe) 
        a rectangle is a picture frame — which is the thing this whole file is
        trying not to draw. */
     band: Math.min(24, Math.max(4, Math.round(Math.min(w, h) * 0.02))),
+    /* ── The soft boundary, and why a hard one drew a rectangle ──────────
+
+       The photograph used to end on a hard line: the mask kept every pixel of
+       it, and the paste-back laid it down at full alpha. Where the model's
+       margin happened to match the photograph's tone the line was invisible;
+       where it did not — a table drawn a shade darker below a bright one —
+       the line ran the full width of the card, and the result read as a
+       photograph lying on a scene. The rectangle, again.
+
+       So the boundary is a STRIP, not a line. The mask fades across it, so
+       the model is allowed to repaint the outermost `blend` pixels of the
+       photograph and carry its own margin into them; and the paste-back
+       fades the photograph in across the same strip, so its presence goes
+       from nothing at the edge to everything `blend` pixels in. Whatever the
+       model did with tone at the edge is crossed gradually, inside the
+       picture, where its own detail hides the crossing.
+
+       Eight percent of the short side — 39px on a 486px-tall photo in the
+       1024x1536 frame, so real room for a tone shift to be spread over. The
+       floor is twice the old band; the cap keeps a huge frame from eating a
+       small subject. */
+    blend: Math.min(120, Math.max(
+      2 * Math.min(24, Math.max(4, Math.round(Math.min(w, h) * 0.02))),
+      Math.round(Math.min(w, h) * 0.08),
+    )),
   };
 }
 
@@ -9183,14 +9208,38 @@ function buildExpandFrame(srcCanvas, place) {
   mask.height = place.frameH;
   const mctx = mask.getContext("2d");
   mctx.fillStyle = "#000";
-  mctx.fillRect(
-    place.x + place.band,
-    place.y + place.band,
-    Math.max(1, place.w - place.band * 2),
-    Math.max(1, place.h - place.band * 2),
-  );
+  mctx.fillRect(place.x, place.y, Math.max(1, place.w), Math.max(1, place.h));
+  /* Feathered inward over `blend`: fully editable at the photograph's edge,
+     fully kept `blend` pixels in. gpt-image reads the mask as a soft mask,
+     so this is what lets it blend its margin INTO the picture's edge rather
+     than butting up against it — the half of the seam fix that happens on
+     the model's side. See place.blend. */
+  fadeEdgesInward(mctx, place.x, place.y, place.w, place.h, place.blend);
 
   return { frame, mask };
+}
+
+/* Knock a canvas's alpha out across a strip inside a rect's edges: gone at the
+   edge, untouched `width` pixels in. Shared by the mask (what the model may
+   repaint) and the paste-back (how much of the photograph is present), and
+   the two must agree, or the strip the model blended is either covered
+   hard-edged or left showing. */
+function fadeEdgesInward(ctx, x, y, w, h, width) {
+  const d = Math.max(1, Math.min(Math.round(width), Math.floor(Math.min(w, h) / 2)));
+  const prev = ctx.globalCompositeOperation;
+  ctx.globalCompositeOperation = "destination-out";
+  const run = (gx0, gy0, gx1, gy1, rx, ry, rw, rh) => {
+    const g = ctx.createLinearGradient(gx0, gy0, gx1, gy1);
+    g.addColorStop(0, "rgba(0,0,0,1)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(rx, ry, rw, rh);
+  };
+  run(x, 0, x + d, 0, x, y, d, h);                       // left
+  run(x + w, 0, x + w - d, 0, x + w - d, y, d, h);       // right
+  run(0, y, 0, y + d, x, y, w, d);                       // top
+  run(0, y + h, 0, y + h - d, x, y + h - d, w, d);       // bottom
+  ctx.globalCompositeOperation = prev;
 }
 
 /* ── Why the composite is NOT rendered larger ────────────────────────────
@@ -9307,36 +9356,34 @@ function composeExpandResult(resultImg, srcCanvas, baseFrame, place, scale = 1, 
   if (resultImg) ctx.drawImage(resultImg, 0, 0, out.width, out.height);
 
   const band = Math.max(1, Math.round(place.band * s));
+  const blend = Math.max(band, Math.round((place.blend || place.band * 2) * s));
   const px = Math.round(place.x * s);
   const py = Math.round(place.y * s);
   const pw = Math.round(place.w * s);
   const ph = Math.round(place.h * s);
-  const ring = document.createElement("canvas");
-  ring.width = pw + band * 2;
-  ring.height = ph + band * 2;
-  const rctx = ring.getContext("2d");
-  rctx.drawImage(srcCanvas, 0, 0, ring.width, ring.height);
+  /* ── Layers 3 and 4: the photograph, faded in across the boundary ─────
 
-  // Ramp the ring's alpha to zero across its outer band, so it covers the
-  // boundary at full strength and disappears into the margin.
-  rctx.globalCompositeOperation = "destination-out";
-  const fade = (gx0, gy0, gx1, gy1, rx, ry, rw, rh) => {
-    const g = rctx.createLinearGradient(gx0, gy0, gx1, gy1);
-    g.addColorStop(0, "rgba(0,0,0,1)");
-    g.addColorStop(1, "rgba(0,0,0,0)");
-    rctx.fillStyle = g;
-    rctx.fillRect(rx, ry, rw, rh);
-  };
-  const rw = ring.width;
-  const rh = ring.height;
-  fade(0, 0, band, 0, 0, 0, band, rh);                       // left
-  fade(rw, 0, rw - band, 0, rw - band, 0, band, rh);         // right
-  fade(0, 0, 0, band, 0, 0, rw, band);                       // top
-  fade(0, rh, 0, rh - band, 0, rh - band, rw, band);         // bottom
-  rctx.globalCompositeOperation = "source-over";
+     There used to be a ring here — the source drawn slightly oversized and
+     faded OUTWARD over the margin, then the source hard-edged over that. It
+     was written to hide a halo the model left at the mask's edge, and it
+     drew a rectangle instead: the halo was gone once the mask went soft
+     (buildExpandFrame), and the ring put a hard content edge straight back
+     across the strip the model had just blended into.
 
-  ctx.drawImage(ring, px - band, py - band);
-  ctx.drawImage(srcCanvas, px, py, pw, ph);
+     Now the photograph fades IN, over the model's picture, across the same
+     `blend` strip the mask let the model repaint. At the photograph's edge
+     the model's version shows entirely — that is where it carried its tone
+     across — and `blend` pixels in the photograph is entirely itself. The
+     crossing is inside the picture, spread over enough pixels that a tone
+     step becomes a gradient, and it is aligned by construction: the model
+     was handed this photograph at this rect and drew around it. */
+  const soft = document.createElement("canvas");
+  soft.width = pw;
+  soft.height = ph;
+  const softCtx = soft.getContext("2d");
+  softCtx.drawImage(srcCanvas, 0, 0, pw, ph);
+  fadeEdgesInward(softCtx, 0, 0, pw, ph, blend);
+  ctx.drawImage(soft, px, py);
 
   /* ── Layer 5: the writer's own pixels ─────────────────────────────────
 
@@ -9357,7 +9404,7 @@ function composeExpandResult(resultImg, srcCanvas, baseFrame, place, scale = 1, 
      Only with a source to paste and a scale to justify it. At scale 1 the
      sharp source IS srcCanvas, and the identity case stays the identity. */
   if (sharpSource && s > 1) {
-    const inner = Math.max(band * 2, Math.round(Math.min(pw, ph) * SHARP_RAMP_FRACTION));
+    const inner = Math.max(blend, Math.round(Math.min(pw, ph) * SHARP_RAMP_FRACTION));
     const sharp = document.createElement("canvas");
     sharp.width = pw;
     sharp.height = ph;

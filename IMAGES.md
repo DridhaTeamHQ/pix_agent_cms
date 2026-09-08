@@ -360,6 +360,8 @@ slope inside the photograph where its own detail carries it, instead of a line
 at its border. Measured on a synthetic frame: a hard edge in the original is
 still a one-pixel step in the output, and the margin is the model's.
 
+**The boundary is a strip, not a line.** The first live result with the paste-back showed a photograph lying on a scene: the model had drawn the table a shade darker below the picture and the picture ended on a full-width line. So the mask is feathered inward over `place.blend` (8% of the photograph's short side, 39px on a 486px-tall photo in the frame) — the model may repaint that strip and carry its own tone into the picture — and the paste-back fades the photograph IN across the same strip, absent at its edge and whole `blend` pixels in. Any tone step is crossed inside the picture, spread over enough rows that the eye reads a gradient. The old outward ring is gone: it re-drew a hard content edge over the strip the model had just blended. Measured with a mock that paints the margin 94 levels darker: the crossing takes 44 rows with no row-to-row step above 5.
+
 At scale 1 (a photograph no larger than its placement) there is no fifth layer,
 and the composite is exactly what it was before.
 

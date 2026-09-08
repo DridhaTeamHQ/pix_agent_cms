@@ -114,6 +114,7 @@ const api = new Function(
   "document", "EXPAND_MARGIN_AREA", "EXPAND_TOP_BIAS", "IMAGE_PAN_HEADROOM", "getLayout", `
     ${fnSrc("planExpandPlacement")}
     ${fnSrc("fillExpandBleed")}
+    ${fnSrc("fadeEdgesInward")}
     ${fnSrc("buildExpandFrame")}
     ${fnSrc("composeExpandResult")}
     ${fnSrc("posterVisibleRect")}
@@ -216,6 +217,10 @@ for (const [sl, sw, sh] of SOURCES) {
   ck(`${sl} band ${p.band}px`,
      p.band >= 4 && p.band <= 24 && p.band * 2 < Math.min(p.w, p.h),
      `band ${p.band}, rect ${p.w}x${p.h}`);
+  ck(`${sl} blend strip ${p.blend}px — wide enough to spread a tone step, inside the picture`,
+     p.blend >= p.band * 2 && p.blend <= 120 && p.blend * 2 < Math.min(p.w, p.h) &&
+     Math.abs(p.blend - Math.min(120, Math.max(p.band * 2, Math.round(Math.min(p.w, p.h) * 0.08)))) <= 1,
+     `blend ${p.blend}, rect ${p.w}x${p.h}`);
 }
 
 console.log("\nThe frame is opaque before the picture goes on it");
@@ -244,14 +249,26 @@ console.log("\nThe frame is opaque before the picture goes on it");
   ck("mask matches the frame", mask.width === 1024 && mask.height === 1536,
      `${mask.width}x${mask.height}`);
 
+  /* The mask is SOFT now: opaque over the whole photograph, then knocked out
+     across the `blend` strip inside its edges, so the model may repaint the
+     outermost strip of the picture and carry its margin into it. A hard mask
+     at the photograph's edge is what left a full-width line where the
+     model's tone met the photograph's — the rectangle, again. */
   const rect = mask.ops.find((o) => o[0] === "fillRect");
   ck("mask has an opaque region at all", Boolean(rect), "no fillRect recorded");
+  {
+    const cut = mask.ops.findIndex((o) => o[0] === "gco" && o[1] === "destination-out");
+    const back = mask.ops.findIndex((o, i) => i > cut && o[0] === "gco" && o[1] !== "destination-out");
+    const fades = mask.ops.filter((o, i) => o[0] === "fillRect" && i > cut && (back < 0 || i < back));
+    ck("and is feathered inward across the blend strip on all four edges",
+       cut > 0 && fades.length === 4 && fades.every((f) => Math.min(f[3], f[4]) === place.blend),
+       `${fades.length} fades, widths ${fades.map((f) => Math.min(f[3], f[4])).join(",")} vs ${place.blend}`);
+  }
   if (rect) {
     const [, mx, my, mw, mh] = rect;
-    ck("opaque region is inset by the band, not outset",
-       mx === place.x + place.band && my === place.y + place.band &&
-       mw === Math.max(1, place.w - place.band * 2) &&
-       mh === Math.max(1, place.h - place.band * 2),
+    ck("the opaque region is the photograph's own rect; the feather does the inset",
+       mx === place.x && my === place.y &&
+       mw === Math.max(1, place.w) && mh === Math.max(1, place.h),
        `${mx},${my} ${mw}x${mh}`);
     ck("opaque region sits strictly inside the picture",
        mx >= place.x && my >= place.y &&
@@ -274,12 +291,27 @@ console.log("\nWhatever the model returns, the source is pasted back over it");
 
   const draws = out.ops.filter((o) => o[0] === "drawImage");
   const final = draws[draws.length - 1];
-  ck("the LAST thing drawn is the source itself", final[1] === src,
+  /* The last thing drawn is the photograph — as a canvas built from the
+     source at its rect and faded in across the blend strip, not the source
+     hard-edged. See composeExpandResult, layers 3 and 4. */
+  const soft = made[made.length - 1];
+  const softDraw = soft.ops.find((o) => o[0] === "drawImage");
+  ck("the LAST thing drawn is the photograph", final[1] === soft && softDraw && softDraw[1] === src,
      "something else was drawn over the photograph");
   ck("and at exactly the planned rect",
      final[2] === place.x && final[3] === place.y &&
-     final[4] === place.w && final[5] === place.h,
-     `${final[2]},${final[3]} ${final[4]}x${final[5]}`);
+     soft.width === place.w && soft.height === place.h,
+     `${final[2]},${final[3]} ${soft.width}x${soft.height}`);
+  {
+    const cut = soft.ops.findIndex((o) => o[0] === "gco" && o[1] === "destination-out");
+    const fades = soft.ops.filter((o, i) => o[0] === "fillRect" && i > cut);
+    ck("faded in across the blend strip on all four edges — no hard line anywhere",
+       cut > 0 && fades.length === 4 && fades.every((f) => Math.min(f[3], f[4]) === place.blend),
+       `${fades.length} fades, ${fades.map((f) => Math.min(f[3], f[4])).join(",")} vs ${place.blend}`);
+  }
+  ck("no outward ring is drawn any more — it re-drew the hard edge the soft mask removed",
+     !draws.some((d) => d[1] !== base && d[1] !== result && d[1] !== soft),
+     "an extra layer sits between the model's picture and the photograph");
   ck("the base frame goes down first", draws[0][1] === base,
      "the opaque frame is not layer 1 — a hole in the return could reach the canvas");
 
@@ -288,7 +320,7 @@ console.log("\nWhatever the model returns, the source is pasted back over it");
   const out2 = api.composeExpandResult(null, src, base, place);
   const d2 = out2.ops.filter((o) => o[0] === "drawImage");
   ck("a null model return still composites", d2.length >= 2, `${d2.length} draws`);
-  ck("and still ends with the source", d2[d2.length - 1][1] === src);
+  ck("and still ends with the photograph", d2[d2.length - 1][1] === made[made.length - 1]);
 }
 
 /* ── The part the card actually shows ────────────────────────────────────
@@ -492,9 +524,11 @@ console.log("\nThe original lands last, through a ramp, over the same picture");
   const draws = out.ops.filter((o) => o[0] === "drawImage");
   const pw = Math.round(place.w * s), ph = Math.round(place.h * s);
 
-  const soft = draws[draws.length - 2];
-  ck("layer 4 — the model-sized copy — is still fully present under it",
-     soft[1] === src && soft[4] === pw && soft[5] === ph);
+  const softDraw = draws[draws.length - 2];
+  const softCanvas = made[made.length - 2];
+  ck("layer 3 — the model-sized copy, faded in — is under it at the same rect",
+     softDraw[1] === softCanvas && softCanvas.width === pw && softCanvas.height === ph &&
+     softCanvas.ops.some((o) => o[0] === "drawImage" && o[1] === src));
 
   const sharpCanvas = made[made.length - 1];
   const final = draws[draws.length - 1];
@@ -514,7 +548,7 @@ console.log("\nThe original lands last, through a ramp, over the same picture");
   ck("with its four edges faded out, then compositing restored",
      cut > 0 && back > cut && fades.length === 4, `${fades.length} fades`);
 
-  const inner = Math.max(Math.round(place.band * s) * 2, Math.round(Math.min(pw, ph) * api.SHARP_RAMP_FRACTION));
+  const inner = Math.max(Math.round(place.blend * s), Math.round(Math.min(pw, ph) * api.SHARP_RAMP_FRACTION));
   const widths = fades.map((f) => Math.min(f[3], f[4]));
   ck("each ramp is SHARP_RAMP_FRACTION of the short side — wide, not a hairline",
      widths.every((w) => w === inner) && inner > 20, `${widths.join(",")} vs ${inner}`);
@@ -524,7 +558,9 @@ console.log("\nThe original lands last, through a ramp, over the same picture");
   const flat = api.composeExpandResult(result, src, base, place, 1, original);
   const flatDraws = flat.ops.filter((o) => o[0] === "drawImage");
   ck("at scale 1 there is no fifth layer — the identity stays the identity",
-     flatDraws[flatDraws.length - 1][1] === src);
+     flatDraws[flatDraws.length - 1][1] === made[made.length - 1] &&
+     made[made.length - 1].ops.some((o) => o[0] === "drawImage" && o[1] === src) &&
+     !made[made.length - 1].ops.some((o) => o[0] === "drawImage" && o[1] === original));
 }
 
 console.log("\n'fit' is an expand with no pull-back");
@@ -570,21 +606,22 @@ console.log("\nScaling up moves every layer together, and the source lands last"
      `${draws[0][4]}x${draws[0][5]}`);
 
   const final = draws[draws.length - 1];
-  ck("the source is still the last thing drawn", final[1] === src);
+  const photo = made[made.length - 1];
+  ck("the photograph is still the last thing drawn",
+     final[1] === photo && photo.ops.some((o) => o[0] === "drawImage" && o[1] === src));
   ck("at the placement scaled by the same factor",
      final[2] === place.x * 2 && final[3] === place.y * 2 &&
-     final[4] === place.w * 2 && final[5] === place.h * 2,
-     `${final[2]},${final[3]} ${final[4]}x${final[5]} — expected ` +
+     photo.width === place.w * 2 && photo.height === place.h * 2,
+     `${final[2]},${final[3]} ${photo.width}x${photo.height} — expected ` +
      `${place.x * 2},${place.y * 2} ${place.w * 2}x${place.h * 2}`);
 
-  /* The ring is layer 3 and has to stay registered against layer 4, or it
-     covers the seam in the wrong place and imports the halo it exists to
-     hide. It is drawn one band up and left of the picture, at both scales. */
-  const ring = draws[draws.length - 2];
-  ck("the ring is still centred on the picture",
-     ring[2] === place.x * 2 - Math.round(place.band * 2) &&
-     ring[3] === place.y * 2 - Math.round(place.band * 2),
-     `ring at ${ring[2]},${ring[3]}`);
+  /* The blend strip scales with the composite, so the crossing stays the
+     same fraction of the photograph at every output size. */
+  const cut = photo.ops.findIndex((o) => o[0] === "gco" && o[1] === "destination-out");
+  const fades = photo.ops.filter((o, i) => o[0] === "fillRect" && i > cut);
+  ck("and its fade-in strip is scaled by the same factor",
+     fades.length === 4 && fades.every((f) => Math.min(f[3], f[4]) === Math.round(place.blend * 2)),
+     `${fades.map((f) => Math.min(f[3], f[4])).join(",")} vs ${Math.round(place.blend * 2)}`);
 }
 
 console.log("\nScale 1 is the identity");

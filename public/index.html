@@ -683,16 +683,15 @@
             <label class="field" style="margin-top:10px;">
               <span class="field-label">Job</span>
               <select id="enhance-mode">
-                <!-- Reframe is the default. It fits the photograph into the
-                     poster's shape, pins it with a mask, has gpt-image-1.5 draw
-                     only the margin, and pastes the writer's own pixels back at
-                     their native resolution (composeExpandResult, app.js).
-                     Nothing inside the photo is redrawn. Restore is the one job
-                     that regenerates, and cannot return more than 1536px. -->
-                <option value="reframe" selected>Reframe &amp; Upscale — fill the poster, keep the photo as shot</option>
+                <!-- Reframe is the default: one gpt-image-1.5 call at high
+                     quality redraws the whole scene at the poster's shape —
+                     what "upscale and reframe it to 9:16" gets from ChatGPT.
+                     It is a regeneration. Expand is the job that pins the
+                     photograph and composites a drawn margin around it. -->
+                <option value="reframe" selected>Reframe &amp; Upscale — redraw the whole scene at 9:16 (high quality)</option>
                 <option value="restore">Restore — redraw for detail at the same framing</option>
                 <option value="auto">Auto — same as Reframe &amp; Upscale</option>
-                <option value="expand">Expand &amp; Reframe — pull back and generate more scene</option>
+                <option value="expand">Expand — keep the photo pinned, draw the margin around it</option>
               </select>
             </label>
             <label class="field" id="expand-amount-field" style="margin-top:10px;" hidden>
@@ -710,7 +709,7 @@
             <small class="helper-text" id="enhance-strength-hint">20% — raise this only if the image still looks soft.</small>
             <!-- Rewritten per job by syncEnhanceModeUI() in app.js; this is
                  the Auto text, which is what the selector defaults to. -->
-            <small class="helper-text" id="enhance-mode-hint">One call to gpt-image-1.5: your photograph is fitted into the poster's shape and pinned in place, and the AI draws only the margin around it. Nothing inside the photo is redrawn — it is kept at its own resolution, up to 4096px. Uses paid AI credits and tells you what it cost.</small>
+            <small class="helper-text" id="enhance-mode-hint">One gpt-image-1.5 call at high quality redraws the whole scene at the poster's shape — the same as asking ChatGPT to "upscale and reframe it to 9:16". It is a regeneration: recognisably the same, not pixel-identical. About $0.20 a picture; the status line says what each press cost.</small>
             <p id="ai-enhance-status" class="status-text" role="status" aria-live="polite"></p>
           </div></div>
         </div>

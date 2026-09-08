@@ -207,15 +207,20 @@ console.log("\nThe reframe prompt stays short and says the load-bearing things")
   ck("it names the target shape", /9:16/.test(p), p.slice(0, 80));
   ck("it carries the vision stage's description",
      /two men on a street at golden hour/.test(p));
-  ck("it asks to keep the subjects recognisable",
-     /recognisably themselves/i.test(p));
+  ck("it asks to keep the subjects the same people",
+     /same people|recognisably themselves/i.test(p) && /same faces/i.test(p));
   ck("it forbids inventing people", /Do not add people/i.test(p));
   ck("it forbids text and watermarks", /Do not add text|watermarks/i.test(p));
   /* The ghost, named once. This prompt has no mask and no paste-back behind
      it, so the only thing standing between it and a photo-print-in-a-scene is
      this sentence. */
   ck("it forbids the picture-in-a-picture that has bitten twice",
-     /not a picture inside a picture/i.test(p) && /border, frame or photo print/i.test(p));
+     /picture-in-picture|picture inside a picture/i.test(p) && /border/i.test(p) && /one continuous image/i.test(p));
+  /* Short on purpose. "Upscale and reframe it to 9:16" typed at ChatGPT beat
+     every long brief this route has carried; the long ones argue with
+     themselves and the model hedges. */
+  ck("it opens with what a person would type", /^Upscale this image and reframe it to a 9:16 ratio\./.test(p), p.slice(0, 60));
+  ck("and stays short", p.split("\n").filter(Boolean).length <= 12, p.split("\n").filter(Boolean).length + " lines");
   ck("it does NOT tell the model to place the image smaller in the frame",
      !/place the supplied|smaller within the output frame/i.test(p),
      "that sentence is what drew the framed print");

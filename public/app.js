@@ -8858,6 +8858,7 @@ function enhanceError(payload, status) {
 }
 
 const MODEL_CEILING_PX = 1536;
+const RATIO_ASPECTS = { "9:16": 9 / 16, "4:5": 4 / 5, "1:1": 1, "16:9": 16 / 9 };
 
 /* The only aspects gpt-image can return: 1024x1024, 1024x1536, 1536x1024.
    Anything sent at a different shape comes back with the difference invented. */
@@ -8883,14 +8884,14 @@ function nearestModelShape(aspect) {
 const ENHANCE_LABELS = {
   restore: { done: "Restored and upscaled", failed: "Restore failed" },
   expand:  { done: "Expanded and reframed", failed: "Expand failed" },
-  reframe: { done: "Reframed to fill the poster — your photograph kept pixel-for-pixel, the margin drawn around it", failed: "Reframe failed" },
+  reframe: { done: "Reframed to the poster's shape — the whole picture redrawn at 9:16", failed: "Reframe failed" },
 };
 
 const ENHANCE_WORKING = {
   auto:    "Reading the photograph, then either recovering detail or extending it to fill the frame (30–90s)…",
   restore: "Restoring and upscaling — analysing the photo, then recovering detail (30–90s)…",
   expand:  "Expanding — reading how the photo is cropped, then drawing the scene outward (30–90s)…",
-  reframe: "Reframing — fitting your photograph into the poster's shape, then drawing only the margin around it (30–90s)…",
+  reframe: "Reframing — redrawing the whole picture at the poster's shape, high quality (60–120s)…",
 };
 
 /* Pull back is the distance to zoom out, and it only means anything when a
@@ -8904,9 +8905,9 @@ const ENHANCE_WORKING = {
    reads it before picking is told the wrong thing about the option they are
    about to pick, so it has to move with the selector. */
 const ENHANCE_MODE_HINTS = {
-  auto: "Runs Reframe & Upscale: fits the photograph into the poster's shape and has the AI draw only the margin around it. Uses paid AI credits.",
+  auto: "Runs Reframe & Upscale: the whole picture redrawn at the poster's shape, high quality. Uses paid AI credits.",
   restore: "Recovers detail at exactly the framing you set by REDRAWING the picture at up to 1536px — faces and fine detail come back recognisably the same, not pixel-identical, and a photo already above 1536px is left alone. Uses paid AI credits.",
-  reframe: "Fits the photograph into the poster's shape and has the AI draw ONLY the margin around it. Nothing inside your photo is redrawn: it is kept pixel-for-pixel at its own resolution, up to 4096px tall, and only the new scene above and below is generated. Check that margin before publishing. Uses paid AI credits.",
+  reframe: "The same thing as asking ChatGPT to 'upscale and reframe it to 9:16': one gpt-image-1.5 call at HIGH quality redraws the whole scene at the poster's shape, seamless, with more of the setting above and below. It is a regeneration — faces and fine detail come back recognisably the same, not pixel-identical. Use Expand to keep the photograph pinned exactly. About $0.20 a picture.",
   expand: "Draws new scene outward past the edges of the photograph to fill the poster. The original is pinned in place by a mask, but the margin is generated — check the result before publishing. Costs more than Restore.",
 };
 
@@ -9813,9 +9814,19 @@ async function runImageAI() {
        it, the model draws the margin, and composeExpandResult pastes the
        writer's own pixels back over the middle at their native resolution.
        The model never gets a say over anything inside the photograph. */
-    const framed = plan.mode === "expand" || plan.mode === "reframe";
+    /* ── Reframe is a whole-frame redraw; Expand is the pinned composite ──
+
+       Reframe went through the pinned-photo composite for two commits and
+       came back with a rectangle, then a smear, then a tone-matched edge
+       that still could not match what the same model does when it is simply
+       ASKED: a reviewer typed "upscale and reframe it to 9:16" at ChatGPT and
+       got a seamless, coherent 9:16 picture. Same model. It regenerates the
+       scene, and that is the trade the reviewer is making when they pick
+       Reframe — it is stated on the selector. Expand stays as the job that
+       pins the photograph and composites the margin around it. */
+    const framed = plan.mode === "expand";
     const frameSize = framed ? parseEnhanceSize(plan.size) : null;
-    const amount = plan.mode === "reframe" ? "fit" : (plan.amount || "moderate");
+    const amount = plan.amount || "moderate";
     /* Inside what the card will show, not inside what the model will
        return — the two differ by a quarter of the width on a 9:16 poster,
        and the difference used to come off the photograph rather than off
@@ -9825,19 +9836,17 @@ async function runImageAI() {
       ? planExpandPlacement(tmp.width, tmp.height, frameSize.w, frameSize.h, amount, plan.subject, safeRect)
       : null;
 
-    /* A photograph that already has the poster's shape leaves the model
-       nothing to draw. Fitted, it fills the visible area edge to edge; the
-       only thing a call could do is repaint it, which is the one thing this
-       job promises not to do. Say so and keep the credits. */
-    if (place && plan.mode === "reframe" && safeRect) {
-      const drawn = 1 - (place.w * place.h) / (safeRect.w * safeRect.h);
-      /* Six percent, not three: the visible area is the 9:16 card less its
-         pan headroom, so a photograph that IS 9:16 still leaves ~4% of it
-         for margin. That is nothing to draw, and nothing to pay for. */
-      if (drawn < 0.06) {
+    /* A photograph that already has the poster's shape AND is already larger
+       than the model returns has nothing to gain from a redraw: same shape
+       back, fewer pixels, a regenerated face. Say so and keep the credits.
+       Smaller than the model's output it still gains pixels, so it goes. */
+    if (plan.mode === "reframe") {
+      const target = RATIO_ASPECTS[state.aspectRatio] || 9 / 16;
+      const sameShape = Math.abs(Math.log((rawW / rawH) / target)) < 0.06;
+      if (sameShape && longEdge >= MODEL_CEILING_PX) {
         setEnhanceStatus(
-          `This photograph already fills the ${state.aspectRatio || "poster"} frame at ${rawW}×${rawH} — ` +
-          `there is no margin for the AI to draw, and it does not redraw the picture itself. ` +
+          `This photograph is already ${state.aspectRatio || "9:16"} at ${rawW}×${rawH} — larger than the AI ` +
+          `can return (${MODEL_CEILING_PX}px), so a redraw could only shrink it. ` +
           `${toneHelps ? `Adjusted it here instead — ${toneSummary}. ` : ""}No credits used.`,
           "success",
         );
@@ -9849,10 +9858,10 @@ async function runImageAI() {
     }
 
     setEnhanceStatus(place
-      ? (plan.mode === "reframe"
-          ? "Reframing — your photograph is pinned in place; drawing only the margin around it (30–90s)…"
-          : `Expanding — drawing the scene outward from the photo${plan.reason ? ` (${plan.reason})` : ""} (30–90s)…`)
-      : "Restoring and upscaling — recovering detail (30–90s)…");
+      ? `Expanding — drawing the scene outward from the photo${plan.reason ? ` (${plan.reason})` : ""} (30–90s)…`
+      : plan.mode === "reframe"
+        ? ENHANCE_WORKING.reframe
+        : "Restoring and upscaling — recovering detail (30–90s)…");
 
     /* ── Stage 2: the paid call ──
        Multipart, because an expand sends two files: the composited frame and
@@ -10043,10 +10052,7 @@ async function runImageAI() {
        thing they might disagree with, and the select above is how they say so
        on the next press. "Expanded and reframed" alone gives them nothing to
        push against; "he was cropped at mid-chest with no room below" does. */
-    // A reframe runs through the expand mechanics, so the server reports
-    // "expand"; the reviewer asked for a reframe and is told about one.
-    const jobRan = plan.mode === "reframe" && data.mode === "expand" ? "reframe" : data.mode;
-    const label = ENHANCE_LABELS[jobRan] || ENHANCE_LABELS.restore;
+    const label = ENHANCE_LABELS[data.mode] || ENHANCE_LABELS.restore;
     const engineLabel = data.engine || "AI";
     const why = requestedMode === "auto" && data.reason ? ` — ${data.reason}` : "";
     // Fit changes what the reviewer is looking at as much as the job did, so

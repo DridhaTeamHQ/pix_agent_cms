@@ -208,6 +208,9 @@ const gptImageDisabled = /^(1|true|yes)$/i.test(env("DISABLE_GPT_IMAGE"));
    you end up reassured by a message that is quietly wrong. */
 function enhanceCostLabel() {
   const q = (process.env.IMAGE_QUALITY || "medium").toLowerCase();
+  const rq = (process.env.IMAGE_QUALITY_REFRAME || "high").toLowerCase();
+  const rper = { low: "~$0.013", medium: "~$0.05", high: "~$0.20" }[rq] || "cost unknown";
+  if (rq !== q) return `restore quality=${q}, reframe quality=${rq} (${rper} each)`;
   // gpt-image-1.5 list price at the portrait/landscape shapes this route asks
   // for (1024x1536 / 1536x1024). Square is cheaper; these are the figures that
   // matter because sizeForRatio() follows the source and rarely returns square.
@@ -4683,23 +4686,26 @@ function buildExpandPrompt(description, ratioLabel, amount = "moderate", subject
    breath, forty prohibitions deep, is how you get a model that hedges by
    handing back what it was given. */
 function buildReframePrompt(description, ratioLabel, subject = "people") {
-  const shape = ratioLabel ? `a ${ratioLabel} vertical frame` : "a taller vertical frame";
+  /* Kept to what a person types. "Upscale and reframe it to 9:16 ratio" at
+     ChatGPT, on the same model, returned a cleaner picture than any long
+     brief this route has carried — the long ones argue with themselves
+     ("extend outward", "change nothing") and the model hedges. What is
+     added below is only what a newsroom cannot leave to chance. */
+  const ratio = ratioLabel || "9:16";
   return [
-    `Reframe this image to fill ${shape}.`,
+    `Upscale this image and reframe it to a ${ratio} ratio.`,
     "",
     description ? `The image shows: ${description}` : null,
     "",
-    "Show the same scene and the same subjects, continuing naturally beyond the",
-    "current edges so the taller frame is filled with more of the setting —",
-    "more sky and surroundings above, more of the subjects and the ground below.",
+    `Show the same scene from the same viewpoint, filling the ${ratio} frame`,
+    "edge to edge by continuing the setting naturally beyond the current",
+    "edges. Photorealistic, sharp and detailed, in the same light.",
     "",
     subject === "graphic"
       ? "Keep the mark, its letterforms, colours and proportions exactly as they are, drawn once, on more of its own background."
-      : "Keep the subjects recognisably themselves: the same faces, expressions, hair, clothing, tattoos and jewellery, in the same light and the same place.",
-    "",
-    "Do not add people who are not already there. Do not add text, captions,",
-    "logos or watermarks. Do not draw a border, frame or photo print — the",
-    "result is one continuous image, not a picture inside a picture.",
+      : "The people are the same people: same faces, expressions, hair, clothing and pose.",
+    "Do not add people. No text, captions, logos or watermarks. No border,",
+    "frame or picture-in-picture — one continuous image.",
   ].filter((l) => l !== null).join("\n");
 }
 
@@ -5279,10 +5285,19 @@ async function runEnhanceEdit({
 
      IMAGE_QUALITY still overrides per deployment, in both directions, and the
      boot log states the tier actually in force. */
-  const quality = (process.env.IMAGE_QUALITY || "medium").toLowerCase();
+  /* Reframe renders HIGH by default, separately from the rest. It is the
+     job whose output IS the picture — every pixel on the poster is the
+     model's — and at medium the leaves, water and skin that make a redrawn
+     scene believable come back soft. High is what ChatGPT spends on the same
+     request, and the comparison that prompted this was made against it.
+     ~$0.20 against ~$0.05; the status line says what each press cost.
+     IMAGE_QUALITY_REFRAME overrides it on its own. */
+  const quality = (mode === "reframe"
+    ? (process.env.IMAGE_QUALITY_REFRAME || "high")
+    : (process.env.IMAGE_QUALITY || "medium")).toLowerCase();
   if (quality === "low") {
     console.warn("⚠ IMAGE_QUALITY=low — faces come back smooth and clay-like. medium is the intended floor.");
-  } else if (quality === "high") {
+  } else if (quality === "high" && mode !== "reframe") {
     console.warn("⚠ IMAGE_QUALITY=high — roughly 4× the price of medium (~$0.20 vs ~$0.05 per enhance).");
   }
 

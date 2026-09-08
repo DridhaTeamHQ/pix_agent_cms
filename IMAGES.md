@@ -227,32 +227,13 @@ near-zero bill into a real one, and `medium` is the correction.
   nothing. This is a spend cap, not a security control — the reviewer-only
   route gate is that.
 
-### 2.7 Reframe — an expand with no pull-back, and what `auto` picks
+### 2.7 Reframe — the whole picture redrawn, the way ChatGPT does it
 
-Reframe used to be its own job: the raw picture went up with no frame and no
-mask, and the model returned the whole poster-shaped image. That is a
-regeneration, and it produced the two reports this section now answers —
-*"sometimes it changes the image"* (the face was redrawn along with the margin)
-and *"it is not upscaling"* (a 4000px photograph came back at 1024px, because
-that is all the model returns).
+A reviewer typed *"upscale and reframe it to 9:16 ratio"* at ChatGPT and got a seamless, coherent 9:16 picture. Same model. Reframe is that request: the raw picture (capped at 1536px) goes up with no frame and no mask, a short prompt (`buildReframePrompt`) that opens with what the reviewer typed, and **high** render quality (`IMAGE_QUALITY_REFRAME`, default `high`, ~$0.20). The returned 1024×1536 is the result, used as it comes back.
 
-**The model never gets a say over anything inside the photograph.** Reframe now
-takes the road Expand takes, with the pull-back set to `fit`:
+**It is a regeneration.** Faces and fine detail come back recognisably the same, not pixel-identical, and the selector says so. Two commits tried to get the same picture without regenerating it — the photograph pinned by a mask, the margin drawn around it, the original pasted back at native resolution — and came back with a rectangle, then a smear, then a tone-matched edge that still could not match what the model does when it is simply asked. That machinery survives as **Expand** (§2.8–2.10), for a photograph that must not be redrawn.
 
-| | Expand | Reframe |
-|---|---|---|
-| placement | the photo pulled back inside the visible area by `amount` | the photo as large as the visible area allows (`EXPAND_MARGIN_AREA.fit = 0`) |
-| what the model receives | a composite: sharp photo inset in blurred scaffolding, and a mask pinning it | the same |
-| what comes back | the margin, drawn | the same — only the strips the poster's shape demands |
-| the original | pasted back pixel-for-pixel, at its own resolution (§2.10) | the same |
-
-The server sees `mode=expand`, `amount=fit`, `composited=1` and a mask; the
-reviewer is told about a reframe. A photograph that already has the poster's
-shape (under 6% margin — the visible area is the card less its pan headroom, so a true 9:16 photo leaves ~4%) is not sent at all — there is nothing for the model to
-draw, and it does not redraw the picture itself.
-
-`auto` resolves to reframe. Restore remains the one job that regenerates, at the
-source's own framing and at most 1536px, and its hint says so.
+A photograph that already has the poster's shape and is already above 1536px is not sent: a redraw could only shrink it. Smaller than that it still gains pixels, so it goes. `auto` resolves to reframe.
 
 ---
 

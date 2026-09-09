@@ -13,6 +13,7 @@
     "db:init": "node src/scripts/db-init.mjs",
     "users:seed": "node src/scripts/seed-users.mjs",
     "users:list": "node src/scripts/seed-users.mjs --list",
+    "diag:reframe": "node scripts/diag-reframe.mjs prod",
     "test": "node test/run-all.mjs"
   },
   "dependencies": {

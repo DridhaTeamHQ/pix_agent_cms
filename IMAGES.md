@@ -229,7 +229,7 @@ near-zero bill into a real one, and `medium` is the correction.
 
 ### 2.7 Reframe — the whole picture redrawn, the way ChatGPT does it
 
-A reviewer typed *"upscale and reframe it to 9:16 ratio"* at ChatGPT and got a seamless, coherent 9:16 picture. Same model. Reframe is that request: the raw picture (capped at 1536px) goes up with no frame and no mask, a short prompt (`buildReframePrompt`) that opens with what the reviewer typed, and **high** render quality (`IMAGE_QUALITY_REFRAME`, default `high`, ~$0.20). The returned 1024×1536 is the result, used as it comes back.
+A reviewer typed *"upscale and reframe it to 9:16 ratio"* at ChatGPT and got a seamless, coherent 9:16 picture. Same model. Reframe is that request: the raw picture (capped at 1536px) goes up with no frame and no mask, a short prompt (`buildReframePrompt`) that opens with what the reviewer typed, and **high** render quality (`IMAGE_QUALITY_REFRAME`, default `high`, ~$0.33 measured — input fidelity bills the upload too). The returned 1024×1536 is the result, used as it comes back.
 
 **It is a regeneration.** Faces and fine detail come back recognisably the same, not pixel-identical, and the selector says so. Two commits tried to get the same picture without regenerating it — the photograph pinned by a mask, the margin drawn around it, the original pasted back at native resolution — and came back with a rectangle, then a smear, then a tone-matched edge that still could not match what the model does when it is simply asked. That machinery survives as **Expand** (§2.8–2.10), for a photograph that must not be redrawn.
 

@@ -8907,7 +8907,7 @@ const ENHANCE_WORKING = {
 const ENHANCE_MODE_HINTS = {
   auto: "Runs Reframe & Upscale: the whole picture redrawn at the poster's shape, high quality. Uses paid AI credits.",
   restore: "Recovers detail at exactly the framing you set by REDRAWING the picture at up to 1536px — faces and fine detail come back recognisably the same, not pixel-identical, and a photo already above 1536px is left alone. Uses paid AI credits.",
-  reframe: "The same thing as asking ChatGPT to 'upscale and reframe it to 9:16': one gpt-image-1.5 call at HIGH quality redraws the whole scene at the poster's shape, seamless, with more of the setting above and below. It is a regeneration — faces and fine detail come back recognisably the same, not pixel-identical. Use Expand to keep the photograph pinned exactly. About $0.20 a picture.",
+  reframe: "The same thing as asking ChatGPT to 'upscale and reframe it to 9:16': one gpt-image-1.5 call at HIGH quality redraws the whole scene at the poster's shape, seamless, with more of the setting above and below. It is a regeneration — faces and fine detail come back recognisably the same, not pixel-identical. Use Expand to keep the photograph pinned exactly. About $0.33 a picture, measured — the uploaded photo is billed as well as the output.",
   expand: "Draws new scene outward past the edges of the photograph to fill the poster. The original is pinned in place by a mask, but the margin is generated — check the result before publishing. Costs more than Restore.",
 };
 

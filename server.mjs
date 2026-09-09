@@ -209,7 +209,9 @@ const gptImageDisabled = /^(1|true|yes)$/i.test(env("DISABLE_GPT_IMAGE"));
 function enhanceCostLabel() {
   const q = (process.env.IMAGE_QUALITY || "medium").toLowerCase();
   const rq = (process.env.IMAGE_QUALITY_REFRAME || "high").toLowerCase();
-  const rper = { low: "~$0.013", medium: "~$0.05", high: "~$0.20" }[rq] || "cost unknown";
+  // Measured, not the price-table figure: input_fidelity=high bills the
+  // uploaded photograph (~6.5k image tokens) on top of the output.
+  const rper = { low: "~$0.02", medium: "~$0.12", high: "~$0.33" }[rq] || "cost unknown";
   if (rq !== q) return `restore quality=${q}, reframe quality=${rq} (${rper} each)`;
   // gpt-image-1.5 list price at the portrait/landscape shapes this route asks
   // for (1024x1536 / 1536x1024). Square is cheaper; these are the figures that

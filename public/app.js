@@ -1400,17 +1400,55 @@ const xDownloadBtn = document.getElementById("x-download-btn");
 const xDownloadStatus = document.getElementById("x-download-status");
 const xComposerLink = document.querySelector(".preview-card-x-link");
 const xCopyImageBtn = document.getElementById("x-copy-image-btn");
+const X_POST_LIMIT = 280;
+const X_FOLLOW_LINE = "Follow @dailymattr for more such news.";
 
-function xPostText(view) {
+function xHashtags(view) {
+  const tags = ["DailyMattr"];
+  const seen = new Set(tags.map((tag) => tag.toLowerCase()));
+  const candidates = String(view.keywords || "").split(/[#,\n]+/);
+
+  for (const candidate of candidates) {
+    const tag = candidate.trim().replace(/[^\p{L}\p{N}_]+/gu, "").slice(0, 40);
+    if (!tag || seen.has(tag.toLowerCase())) continue;
+    tags.push(tag);
+    seen.add(tag.toLowerCase());
+    if (tags.length >= 3) break;
+  }
+  if (!seen.has("news")) tags.push("News");
+  return tags;
+}
+
+function truncateXPostText(value, limit) {
+  const chars = Array.from(String(value || "").trim());
+  if (chars.length <= limit) return chars.join("");
+  const clipped = chars.slice(0, Math.max(0, limit - 1)).join("");
+  const wordBreak = clipped.lastIndexOf(" ");
+  const clean = wordBreak >= Math.floor(limit * 0.7) ? clipped.slice(0, wordBreak) : clipped;
+  return clean.replace(/[\s,;:!?.-]+$/u, "") + "…";
+}
+
+function xPostText(view, hashtags = xHashtags(view)) {
   const tweet = typeof view.article?.tweet === "string" ? view.article.tweet.trim() : "";
-  return tweet || cleanHeadlineForPublish(view.headline);
+  const main = tweet || cleanHeadlineForPublish(view.headline);
+  if (!main) return "";
+  // X renders each hashtags parameter entry as ` #tag`, which also counts
+  // toward 280. Reserve that space and keep the requested follow line intact.
+  const hashtagLength = hashtags.reduce((length, tag) => length + tag.length + 2, 0);
+  const mainLimit = X_POST_LIMIT - X_FOLLOW_LINE.length - 2 - hashtagLength;
+  return `${truncateXPostText(main, mainLimit)}\n\n${X_FOLLOW_LINE}`;
 }
 
 function syncXComposerLink() {
   if (!xComposerLink) return;
   const url = new URL("https://x.com/intent/tweet");
-  const text = xPostText(basePageView());
-  if (text) url.searchParams.set("text", text);
+  const view = basePageView();
+  const hashtags = xHashtags(view);
+  const text = xPostText(view, hashtags);
+  if (text) {
+    url.searchParams.set("text", text);
+    url.searchParams.set("hashtags", hashtags.join(","));
+  }
   xComposerLink.href = url.href;
 }
 

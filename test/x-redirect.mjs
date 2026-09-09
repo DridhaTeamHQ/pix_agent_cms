@@ -43,7 +43,7 @@ await check("accessible label describes the new tab and image fallback", () => {
   assert.match(link.attr("aria-label"), /X composer.*new tab/);
   assert.match(link.attr("title"), /attach the downloaded Pix/);
   assert.equal(link.attr("aria-describedby"), "x-share-hint");
-  assert.match($("#x-share-hint").text(), /Copy and paste.*or attach/);
+  assert.match($("#x-share-hint").text(), /hashtags and the follow line.*Copy and paste.*or attach/);
 });
 await check("download remains separate from redirect and copy", () => {
   assert.equal(card.find('button[data-download="x"]').length, 1);
@@ -65,7 +65,7 @@ function harness() {
   const handlers = new Map();
   const state = {
     headline: "Other page headline", article: null, previewMode: "story",
-    isDownloading: false, useShortlyLogo: false, forceTextExport: true,
+    isDownloading: false, useShortlyLogo: false, forceTextExport: true, keywords: "",
   };
   const base = { headline: "[Base] poster" };
   const h = {
@@ -76,6 +76,8 @@ function harness() {
     xDownloadBtn: { disabled: false }, downloadButton: { disabled: false },
     console: { error() {} },
     HIGHLIGHT_ANY_CHARS_GLOBAL: /[\[\](){}]/g,
+    X_POST_LIMIT: 280,
+    X_FOLLOW_LINE: "Follow @dailymattr for more such news.",
     basePageView: () => ({ ...state, ...base }),
     syncActivePageContent() {},
     setActivePage(id) {
@@ -112,32 +114,59 @@ function harness() {
   const context = createContext(h);
   runInContext(section("function cleanHeadlineForPublish(", "function inferDailyMattrKeywords("), context);
   runInContext(section("function renderXPreviewCanvas(", "if (xDownloadBtn)"), context);
-  runInContext(section("function xPostText(", "function setPostStatus("), context);
+  runInContext(section("function xHashtags(", "function setPostStatus("), context);
   return h;
 }
 
-await check("prefills Text for X without changing punctuation or line breaks", () => {
+await check("prefills Text for X and the requested follow line", () => {
   const h = harness();
   h.state.article = { tweet: "  News (explained) & updates\n#India + 50% https://example.com/?a=1&b=2  " };
   h.syncXComposerLink();
   const url = new URL(h.xComposerLink.href);
   assert.equal(url.origin + url.pathname, "https://x.com/intent/tweet");
-  assert.equal(url.searchParams.get("text"), h.state.article.tweet.trim());
-  assert.equal([...url.searchParams].length, 1);
+  assert.equal(url.searchParams.get("text"), `${h.state.article.tweet.trim()}\n\n${h.X_FOLLOW_LINE}`);
+  assert.equal(url.searchParams.get("hashtags"), "DailyMattr,News");
+  assert.equal([...url.searchParams].length, 2);
 });
-await check("preserves non-Latin text and emoji without truncation", () => {
+await check("preserves non-Latin text and emoji", () => {
   const h = harness();
-  const tweet = "\u092D\u093E\u0930\u0924 \uD83C\uDDEE\uD83C\uDDF3 " + "news ".repeat(65);
+  const tweet = "\u092D\u093E\u0930\u0924 \uD83C\uDDEE\uD83C\uDDF3 news";
   h.state.article = { tweet };
   h.syncXComposerLink();
-  assert.equal(new URL(h.xComposerLink.href).searchParams.get("text"), tweet.trim());
+  assert.equal(new URL(h.xComposerLink.href).searchParams.get("text"), `${tweet}\n\n${h.X_FOLLOW_LINE}`);
+});
+await check("adds clean keyword hashtags plus DailyMattr and News", () => {
+  const h = harness();
+  h.state.keywords = "Indian politics, #Election 2026, dailymattr, ignored";
+  h.syncXComposerLink();
+  assert.equal(new URL(h.xComposerLink.href).searchParams.get("hashtags"), "DailyMattr,Indianpolitics,Election2026,News");
+});
+await check("hashtags are deduplicated case-insensitively and length-limited", () => {
+  const h = harness();
+  h.state.keywords = `dailymattr, DAILYMATTR, ${"a".repeat(60)}, NEWS`;
+  h.syncXComposerLink();
+  const tags = new URL(h.xComposerLink.href).searchParams.get("hashtags").split(",");
+  assert.deepEqual(tags, ["DailyMattr", "a".repeat(40), "NEWS"]);
+});
+await check("long captions preserve the follow line and fit X's 280-character limit", () => {
+  const h = harness();
+  h.state.article = { tweet: `Major update ${"important details ".repeat(30)}\uD83C\uDDEE\uD83C\uDDF3` };
+  h.state.keywords = "India, Politics";
+  h.syncXComposerLink();
+  const url = new URL(h.xComposerLink.href);
+  const text = url.searchParams.get("text");
+  const tags = url.searchParams.get("hashtags").split(",");
+  const renderedLength = Array.from(text).length + tags.reduce((sum, tag) => sum + Array.from(tag).length + 2, 0);
+  assert.ok(renderedLength <= 280, `rendered length was ${renderedLength}`);
+  assert.match(text, /…\n\nFollow @dailymattr for more such news\.$/u);
+  assert.equal(text.includes("\uFFFD"), false);
 });
 await check("falls back to the base headline, never the selected extra page", () => {
   const h = harness();
   for (const article of [null, { tweet: "  " }, { tweet: {} }]) {
     h.state.article = article;
     h.syncXComposerLink();
-    assert.equal(new URL(h.xComposerLink.href).searchParams.get("text"), "Base poster");
+    assert.equal(new URL(h.xComposerLink.href).searchParams.get("text"), `Base poster\n\n${h.X_FOLLOW_LINE}`);
     assert.equal(h.activePageId, "story");
   }
 });
@@ -146,7 +175,7 @@ await check("latest text is read for click, middle-click, keyboard focus and con
   for (const event of ["click", "auxclick", "contextmenu", "focus"]) {
     h.state.article = { tweet: `New caption for ${event}` };
     h.handlers.get(event)();
-    assert.equal(new URL(h.xComposerLink.href).searchParams.get("text"), h.state.article.tweet);
+    assert.equal(new URL(h.xComposerLink.href).searchParams.get("text"), `${h.state.article.tweet}\n\n${h.X_FOLLOW_LINE}`);
   }
 });
 await check("clearing the post removes previous text from the link", () => {
@@ -209,7 +238,7 @@ await check("unsupported clipboard does not render or break the redirect", async
   assert.equal(h.renders.length, 0);
   assert.match(h.statuses.at(-1).message, /isn't supported/);
   h.handlers.get("click")();
-  assert.equal(new URL(h.xComposerLink.href).searchParams.get("text"), "Base poster");
+  assert.equal(new URL(h.xComposerLink.href).searchParams.get("text"), `Base poster\n\n${h.X_FOLLOW_LINE}`);
 });
 await check("blank poster does not copy or download", async () => {
   const h = harness();

@@ -479,6 +479,16 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  /* Collecting the picture that call just made. Under /api/, so the gate
+     above has already required a session; the token in the path is what
+     narrows that to the one reviewer who paid for this particular picture.
+     Not in REVIEWER_ONLY_API_ROUTES because that Set matches whole paths and
+     this one ends in a UUID — and there is nothing to spend here anyway. */
+  if (req.method === "GET" && req.url?.startsWith(`${ENHANCE_RESULT_PATH}/`)) {
+    handleEnhanceResult(req, res);
+    return;
+  }
+
   /* Direct-to-Storage upload. /api/media/sign hands the browser a one-shot
      URL, the browser sends the bytes straight to Supabase, and
      /api/media/confirm verifies the object arrived before any post is allowed
@@ -5113,6 +5123,9 @@ function enhanceCacheKey(buffer, mask, parts) {
   return h.update(JSON.stringify(parts)).digest("hex");
 }
 
+/* The entry, not the payload, because the PNG is now held beside it rather
+   than inside it — see publishEnhanceResult(). A hit has to be able to hand
+   the bytes out again under a fresh token, so it needs both halves. */
 function enhanceCacheGet(key) {
   const hit = enhanceCache.get(key);
   if (!hit) return null;
@@ -5124,13 +5137,15 @@ function enhanceCacheGet(key) {
   // Refresh insertion order so a repeatedly-used result is the last evicted.
   enhanceCache.delete(key);
   enhanceCache.set(key, hit);
-  return hit.payload;
+  return hit;
 }
 
-function enhanceCacheSet(key, payload) {
-  const bytes = payload.image ? payload.image.length : 0;
+/* `png` is the raw image, and the cap is measured on it rather than on a
+   base64 string a quarter larger than the thing it encodes. */
+function enhanceCacheSet(key, payload, png) {
+  const bytes = png ? png.length : 0;
   if (bytes === 0 || bytes > ENHANCE_CACHE_MAX_BYTES) return;
-  enhanceCache.set(key, { payload, bytes, at: Date.now() });
+  enhanceCache.set(key, { payload, png, bytes, at: Date.now() });
   enhanceCacheBytes += bytes;
   // Map preserves insertion order, so the first key is the least recently used.
   while (enhanceCacheBytes > ENHANCE_CACHE_MAX_BYTES && enhanceCache.size > 1) {
@@ -5138,6 +5153,97 @@ function enhanceCacheSet(key, payload) {
     enhanceCacheBytes -= enhanceCache.get(oldest).bytes;
     enhanceCache.delete(oldest);
   }
+}
+
+/* ── Where the finished picture is collected from ──────────────────────────
+
+   The result used to travel home inside the JSON of the request that made
+   it — `image: "data:image/png;base64,…"`, five or six megabytes of it,
+   written to a socket that had already been open for the fifty-odd seconds
+   gpt-image took. A response gets sixty seconds to flush before the platform
+   proxy gives up on it, and that one often did not make it:
+
+       ✓ AI reframe done in 53180ms (gpt-image-1.5, 1024x1536, quality=high)
+         — $0.3297
+       ✗ upscale-image error: Error: aborted … ECONNRESET      (60.002s later)
+
+   That pair is the whole failure. The picture was made, it was BILLED, and it
+   never arrived. What answered the reviewer was the proxy's own error page,
+   which carries no JSON — so the client had no `error` field to read and fell
+   back to printing "HTTP 502", a status with no sentence attached. Every
+   diagnosis that starts from the message rather than from this log goes
+   looking for an OpenAI fault that is not there.
+
+   So the bytes no longer ride home in the answer. The PNG is parked here, the
+   response carries a short URL to it, and the browser collects it as a plain
+   binary GET with its own fresh sixty seconds. Three things follow, and the
+   third is the one worth the change:
+
+     - the JSON answer is a few hundred bytes and flushes in one packet;
+     - the transfer is binary rather than base64, so a quarter less of it;
+     - a collection that fails is FREE and can simply be repeated. The money
+       was spent upstream and the picture is already sitting here.
+
+   SAME ORIGIN, deliberately. Handing back a Supabase URL would have been less
+   code and would have broken Save: describeMainImage() reads a `data:` src to
+   mean "no address yet, upload this on Save" and an https one to mean the
+   picture already has one (public/app.js). A remote URL would have published
+   posts pointing at an object that expires an hour later — the failure would
+   have been silent, and in the archive. The browser turns these bytes back
+   into a data: URL before anything else sees them.
+
+   The token is the whole authorisation: a v4 UUID, unguessable, dead in an
+   hour, and it only ever names a picture the holder just paid for. */
+const ENHANCE_RESULT_PATH = "/api/enhance-result";
+const enhanceResults = new Map();   // token -> { png, at }
+let enhanceResultBytes = 0;
+
+function publishEnhanceResult(png) {
+  const token = randomUUID();
+  enhanceResults.set(token, { png, at: Date.now() });
+  enhanceResultBytes += png.length;
+  /* Shares its ceiling with the cache because it shares its Buffers: an entry
+     in both maps is one allocation referenced twice, so the two counters
+     overlap rather than add. Sweep the expired first — they are free to drop
+     — and only then evict the merely oldest. */
+  const now = Date.now();
+  for (const [t, r] of enhanceResults) {
+    if (now - r.at <= ENHANCE_CACHE_TTL_MS) break;   // insertion order == age order
+    enhanceResults.delete(t);
+    enhanceResultBytes -= r.png.length;
+  }
+  while (enhanceResultBytes > ENHANCE_CACHE_MAX_BYTES && enhanceResults.size > 1) {
+    const oldest = enhanceResults.keys().next().value;
+    enhanceResultBytes -= enhanceResults.get(oldest).png.length;
+    enhanceResults.delete(oldest);
+  }
+  return `${ENHANCE_RESULT_PATH}/${token}`;
+}
+
+/* Collection. A miss is a 404 and not an error worth a stack trace: a token
+   goes stale on its own after an hour, and after a redeploy every token in
+   the process goes with it. The browser's answer to both is the same — say so
+   plainly and let the reviewer press again. */
+function handleEnhanceResult(req, res) {
+  const token = req.url.slice(ENHANCE_RESULT_PATH.length + 1).split("?")[0];
+  const hit = enhanceResults.get(token);
+  if (!hit || Date.now() - hit.at > ENHANCE_CACHE_TTL_MS) {
+    if (hit) {
+      enhanceResults.delete(token);
+      enhanceResultBytes -= hit.png.length;
+    }
+    sendJson(res, 404, { error: "That enhanced picture has expired. Press Enhance again." });
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "image/png",
+    "Content-Length": hit.png.length,
+    // Private: it is one reviewer's unpublished picture, and the token that
+    // names it is the only thing protecting it.
+    "Cache-Control": "private, max-age=3600",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(hit.png);
 }
 
 // The composited expand frame is a full-size RGBA PNG and runs larger than
@@ -5328,8 +5434,17 @@ async function runEnhanceEdit({
   const cached = enhanceCacheGet(cacheKey);
   if (cached) {
     console.log(`✓ AI ${job} served from cache (${size}, quality=${quality}) — no charge`);
-    // The reporting fields belong to THIS request, not the one that paid.
-    return { ...cached, decidedBy, reason: jobReason, cached: true };
+    /* A FRESH token for the same bytes. The one handed to the request that
+       paid may already have been collected, swept or evicted, and returning a
+       dead URL would turn a free hit into a press that fails for no reason.
+       The reporting fields belong to THIS request, not to the one that paid. */
+    return {
+      ...cached.payload,
+      image: publishEnhanceResult(cached.png),
+      decidedBy,
+      reason: jobReason,
+      cached: true,
+    };
   }
 
   const prompt =
@@ -5512,8 +5627,16 @@ async function runEnhanceEdit({
       : " — cost unknown (no usage in response)")
   );
 
+  /* Decoded once, here, and kept as bytes from this point on. The base64 was
+     only ever the transport OpenAI chose; carrying it any further means
+     holding the picture at 133% of its size and handing the browser the same
+     surcharge. */
+  const png = Buffer.from(b64, "base64");
+
+  /* No `image` field: it is not a property of the result, it is an address
+     issued per request. See publishEnhanceResult() — a cache hit has to be
+     able to mint a new one, so the stored payload must not carry a stale one. */
   const payload = {
-    image: `data:image/png;base64,${b64}`,
     context: description,
     engine: modelUsed,
     // Measured, not estimated. Null when OpenAI returns no usage block.
@@ -5549,11 +5672,16 @@ async function runEnhanceEdit({
     reason: jobReason,
   };
 
-  // Store only what a repeat of this exact request would get. The per-request
-  // reporting fields are re-attached on a hit rather than replayed.
-  enhanceCacheSet(cacheKey, payload);
+  /* Store only what a repeat of this exact request would get. The per-request
+     reporting fields are re-attached on a hit rather than replayed.
+
+     BEFORE the response is built, and that ordering is load-bearing: it is
+     what makes a delivery that fails recoverable. The press that lost its
+     socket to the proxy still left its picture here, so pressing again inside
+     the hour is a free hit rather than a second $0.33. */
+  enhanceCacheSet(cacheKey, payload, png);
   if (onCharge) onCharge();
-  return payload;
+  return { ...payload, image: publishEnhanceResult(png) };
 }
 
 /* Stage 1 as its own response. Everything the caller needs to build the frame

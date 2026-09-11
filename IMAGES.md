@@ -158,7 +158,7 @@ route deliberately no longer carries (§2.8).
 
 ```json
 {
-  "image":   "data:image/png;base64,…",
+  "image":   "/api/enhance-result/9f2c…-a41b",
   "engine":  "gpt-image-1.5",
   "quality": "medium",
   "size":    "1536x1024",
@@ -174,6 +174,48 @@ route deliberately no longer carries (§2.8).
 `mode` matters to the caller: the two jobs differ in **framing**, not just
 sharpness, so the client has to know which it got before deciding whether the
 writer's existing zoom and pan still apply.
+
+**`image` is an address, not the picture — and that is not a tidiness
+preference.** It used to be the PNG itself, `data:image/png;base64,…`, five or
+six megabytes inside the JSON of the request that made it. A response gets
+sixty seconds to flush before the platform proxy abandons it, and that one
+frequently did not make it. The log of a failure is unambiguous:
+
+```
+✓ AI reframe done in 53180ms (gpt-image-1.5, 1024x1536, quality=high) — $0.3297
+✗ upscale-image error: Error: aborted … ECONNRESET          (60.002s later)
+```
+
+The picture was made. It was **billed**. It never arrived. And because what
+answered the reviewer was the proxy's own error page rather than this server,
+there was no JSON to read a message out of — so the UI printed
+`Reframe failed: HTTP 502`, a status with no sentence attached. Any diagnosis
+that starts from that message goes hunting for an OpenAI fault that is not
+there; start from the log above instead.
+
+So stage 2 answers with a short same-origin URL and the browser collects the
+bytes with a plain `GET`, which gets its own fresh sixty seconds. The JSON now
+flushes in one packet, the transfer is binary rather than base64 (a quarter
+less of it), and — the part that actually matters — **a collection that fails
+is free and can simply be repeated**, because `enhanceCacheSet` runs *before*
+the response is built. The money was spent upstream and the picture is already
+held server-side.
+
+| | |
+|---|---|
+| path | `GET /api/enhance-result/<uuid>` |
+| auth | the `/api/*` session gate, plus an unguessable v4 token |
+| lifetime | 1 hour, or until the process restarts |
+| on a miss | `404` with *"That enhanced picture has expired. Press Enhance again."* |
+
+**Same origin, deliberately.** A Supabase URL would have been less code and
+would have broken Save: `describeMainImage()` reads a `data:` src to mean "no
+address yet, upload this on Save" and an https one to mean the picture already
+has one. A remote URL would have published posts pointing at an object that
+expired an hour later — silently, and in the archive. `collectEnhancedImage()`
+in `public/app.js` turns the bytes back into a `data:` URL before anything else
+sees them, and passes a `data:` URL straight through so an older server still
+works. Covered by `test/enhance-result.mjs`.
 
 ### 2.6 Cost and latency
 

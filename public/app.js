@@ -9075,14 +9075,47 @@ function canvasToPng(canvas) {
    several times larger than it was — toDataURL is synchronous and would hold
    the main thread for the whole PNG encode, freezing the editor at the very
    end of a call the reviewer has already waited a minute for. */
-async function canvasToImage(canvas) {
-  const blob = await canvasToPng(canvas);
-  const dataUrl = await new Promise((resolve, reject) => {
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
     reader.onerror = () => reject(new Error("Couldn't read the enhanced image."));
     reader.readAsDataURL(blob);
   });
+}
+
+/* Collecting the enhanced picture from the address the server answered with.
+
+   Stage 2 no longer sends the image back inside its own JSON. It sends a
+   short same-origin URL and the bytes are fetched separately — because the
+   old five-megabyte answer had to be flushed down a socket that had already
+   been held open for the fifty seconds gpt-image took, and past sixty the
+   platform proxy closed it. The picture was made and billed and thrown away;
+   see "Where the finished picture is collected from" in server.mjs.
+
+   It is turned back into a data: URL immediately, for the reason written
+   above canvasToImage(): describeMainImage() reads the src to decide whether
+   a picture still needs uploading on Save. Left as a URL, an enhanced photo
+   would be filed as one that already has an address — and that address is a
+   token that stops answering in an hour, so the post would publish and then
+   quietly lose its picture.
+
+   A data: URL is passed through untouched, so a server still answering the
+   old way keeps working. */
+async function collectEnhancedImage(src) {
+  if (src.startsWith("data:")) return src;
+  const resp = await fetch(src);
+  if (!resp.ok) {
+    let detail = `HTTP ${resp.status}`;
+    try { detail = (await resp.json())?.error || detail; } catch { /* not JSON */ }
+    throw new Error(detail);
+  }
+  return await blobToDataUrl(await resp.blob());
+}
+
+async function canvasToImage(canvas) {
+  const blob = await canvasToPng(canvas);
+  const dataUrl = await blobToDataUrl(blob);
   return await new Promise((resolve, reject) => {
     const el = new Image();
     el.onload = () => resolve(el);
@@ -9956,11 +9989,17 @@ async function runImageAI() {
     if (!resp.ok) throw enhanceError(data, resp.status);
     if (!data.image) throw new Error("No image returned.");
 
+    /* A second round trip, and a cheap one: the answer above carried an
+       address, not the picture. A failure here costs nothing and can be
+       retried — the call is already paid for and the result is held server-
+       side for an hour, so pressing again is a cache hit rather than a second
+       charge. See collectEnhancedImage(). */
+    const imageSrc = await collectEnhancedImage(data.image);
     const returned = new Image();
     await new Promise((resolve, reject) => {
       returned.onload = resolve;
       returned.onerror = () => reject(new Error("Enhanced image failed to load."));
-      returned.src = data.image;
+      returned.src = imageSrc;
     });
 
     // The unconditional half of the ghost fix — see composeExpandResult().

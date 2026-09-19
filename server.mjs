@@ -16,6 +16,7 @@ import {
   configureDb, isConfigured as dbConfigured, ping as dbPing,
   getPix, setApproval,
   claimPublish, recordPublishedId, recordPublishAttempt, releasePublishClaim, readQuery,
+  recordWebPages,
 } from "./lib/db.js";
 import {
   SESSION_COOKIE, parseCookies, sessionCookie, clearedSessionCookie,
@@ -29,6 +30,7 @@ import {
   configureStorage, isStorageConfigured, uploadMedia, pingStorage,
   createSignedUploadUrl, statMedia, deleteMedia,
 } from "./lib/storage.js";
+import { copyCardsToWeb } from "./lib/web-cards.js";
 import {
   fetchDailyMattrMeta, getDailyMattrConfig, publishDailyMattrBuzzContent,
 } from "./lib/dailymattr.js";
@@ -2313,6 +2315,31 @@ async function runDailyMattrPublish(req, res) {
     }
   }
 
+  /* Copy the finished cards to our own bucket, for the website.
+
+     DailyMattr keeps what was just sent in a private S3 bucket that the public
+     site cannot read from, so the only public copy of a finished card is the
+     one made here. Best-effort and after the receipt: the story is already
+     live, so nothing in this may be reported as a failed publish. A miss costs
+     the website its cards for this one story — it shows the background picture
+     instead — and is logged at error level so it gets noticed. */
+  let webCopy = { ok: false, reason: "post not saved" };
+  if (payload.pixId) {
+    try {
+      const pages = await copyCardsToWeb({ pixId: payload.pixId, files: payload.files });
+      if (!pages.length) {
+        webCopy = { ok: false, reason: "no picture cards in this publish" };
+      } else {
+        const saved = await recordWebPages(payload.pixId, pages);
+        webCopy = saved ? { ok: true, pages: pages.length } : { ok: false, reason: "post not found" };
+        if (saved) console.log(`✓ ${pages.length} card(s) copied to the web bucket for ${payload.pixId}`);
+      }
+    } catch (err) {
+      console.error(`✗ PUBLISHED but the cards were not copied for the website (${payload.pixId}): ${err.message}`);
+      webCopy = { ok: false, reason: err.message };
+    }
+  }
+
   /* Publishing IS approval — QA would otherwise have to remember a second
      click for a decision they have already made by sending the story live.
 
@@ -2352,7 +2379,7 @@ async function runDailyMattrPublish(req, res) {
     approval = { ok: false, reason: "post not saved" };
   }
 
-  sendJson(res, 200, { ...result, approval, publishRecord });
+  sendJson(res, 200, { ...result, approval, publishRecord, webCopy });
 }
 
 /**

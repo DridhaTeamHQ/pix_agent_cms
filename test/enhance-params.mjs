@@ -210,7 +210,15 @@ console.log("\nThe reframe prompt stays short and says the load-bearing things")
   ck("it asks to keep the subjects the same people",
      /same people|recognisably themselves/i.test(p) && /same faces/i.test(p));
   ck("it forbids inventing people", /Do not add people/i.test(p));
-  ck("it forbids text and watermarks", /Do not add text|watermarks/i.test(p));
+  ck("it forbids NEW text and watermarks", /Do not add people or NEW text, captions, logos or watermarks/.test(p));
+  for (const subject of ["people", "scene", "graphic"]) {
+    const signage = reframe("a factory with a Coca-Cola sign", "9:16", subject);
+    ck(`${subject}: existing branding on buildings is protected`,
+       /Preserve all existing logos, brand names/.test(signage) && /including those on buildings/.test(signage));
+    ck(`${subject}: no blanket ban on existing lettering`,
+       !/No text, captions, logos|Write no words/.test(signage) && /Never erase, replace or simplify/.test(signage));
+  }
+  ck("changed instructions cannot reuse an old result", api.enhanceCacheKey(IMAGE, null, { ...PARTS, prompt: "old prompt" }) !== api.enhanceCacheKey(IMAGE, null, { ...PARTS, prompt: p }));
   /* The ghost, named once. This prompt has no mask and no paste-back behind
      it, so the only thing standing between it and a photo-print-in-a-scene is
      this sentence. */

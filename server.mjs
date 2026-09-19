@@ -4384,8 +4384,10 @@ function buildEnhancePrompt(description, _headlineNotUsed, _ratioNoLongerUsed) {
     "  haze and coloured wash stay exactly as photographed.",
     "- Keep the background unchanged, including the shape of every light",
     "  source and reflection.",
-    "- Any text, logo or marking physically present in the photograph stays",
-    "  exactly as it appears — never invented, completed or extended.",
+    "- Preserve every existing logo, brand name, sign, label and watermark,",
+    "  including lettering on buildings and products: same spelling, shapes",
+    "  and colours, in the same place. Never erase, replace or simplify them;",
+    "  leave unreadable lettering soft rather than inventing or completing it.",
     "",
     "IMAGE QUALITY TARGET:",
     "Professional DSLR photograph. Natural camera sharpness. Realistic skin",
@@ -4497,9 +4499,9 @@ const EXPAND_SUBJECTS = {
     "  photograph does not already show at its edge.",
     "- Add NO new objects of interest — nothing a caption would have to",
     "  mention. This is journalism, not art.",
-    "- ADD NO TEXT OR GRAPHICS of any kind. No headline, caption, title, label,",
-    "  subtitle, watermark, banner, lower-third, scoreboard or logo. Write no",
-    "  words anywhere in the image.",
+    "- Add no NEW text or graphics in the new margin. Preserve every existing",
+    "  logo, brand name, sign, label and watermark in the supplied photograph;",
+    "  never erase, replace or simplify them.",
     "- Text physically present in the photograph (signage, jerseys, banners) is",
     "  preserved exactly as it already appears — never invented, completed,",
     "  translated or extended into the new margin.",
@@ -4520,8 +4522,9 @@ const EXPAND_SUBJECTS = {
     "  already show at its edge.",
     "- Add NO new objects of interest — no vehicles, no animals, no landmarks,",
     "  nothing a caption would have to mention. This is journalism, not art.",
-    "- ADD NO TEXT OR GRAPHICS of any kind. No caption, label, watermark,",
-    "  banner or logo. Write no words anywhere in the image.",
+    "- Add no NEW text or graphics in the new margin. Preserve every existing",
+    "  logo, brand name, sign, label and watermark, including building signage;",
+    "  never erase, replace or simplify them.",
     "- Text physically present in the photograph (signage, hoardings, number",
     "  plates) is preserved exactly as it already appears — never invented,",
     "  completed, translated or extended into the new margin.",
@@ -4743,7 +4746,8 @@ function buildReframePrompt(description, ratioLabel, subject = "people") {
     subject === "graphic"
       ? "Keep the mark, its letterforms, colours and proportions exactly as they are, drawn once, on more of its own background."
       : "The people are the same people: same faces, expressions, hair, clothing and pose.",
-    "Do not add people. No text, captions, logos or watermarks. No border,",
+    "Preserve all existing logos, brand names, signs, labels, text and watermarks, including those on buildings, clothing and products: same spelling, letterforms, colours and placement on the original surface. Never erase, replace or simplify them, even when blurred.",
+    "Do not add people or NEW text, captions, logos or watermarks. No border,",
     "frame or picture-in-picture — one continuous image.",
   ].filter((l) => l !== null).join("\n");
 }
@@ -5454,9 +5458,13 @@ async function runEnhanceEdit({
      differently are genuinely different requests. `decidedBy`, `reason` and
      `masked` are not — they are reporting, and a hit rebuilds them from the
      stored payload below. */
+  const prompt =
+    job === "reframe" ? buildReframePrompt(description, posterRatio, subject)
+    : job === "expand" ? buildExpandPrompt(description, posterRatio, amount, subject, composited)
+    : buildEnhancePrompt(description, headline, posterRatio);
   const cacheKey = enhanceCacheKey(buffer, mask?.buffer ?? null, {
     job, amount: job === "expand" ? amount : null, subject,
-    description, headline, posterRatio, size, quality, composited,
+    description, headline, posterRatio, size, quality, composited, prompt,
   });
   const cached = enhanceCacheGet(cacheKey);
   if (cached) {
@@ -5473,11 +5481,6 @@ async function runEnhanceEdit({
       cached: true,
     };
   }
-
-  const prompt =
-    job === "reframe" ? buildReframePrompt(description, posterRatio, subject)
-    : job === "expand" ? buildExpandPrompt(description, posterRatio, amount, subject, composited)
-    : buildEnhancePrompt(description, headline, posterRatio);
 
   const t0 = Date.now();
 

@@ -797,3 +797,15 @@ node test/expand-frame.mjs # expand placement, mask, paste-back, and the card cr
 They execute the real functions pulled out of `public/app.js` rather than
 reimplementing them, and read constants from the source — a test that hard-codes
 the value it checks only proves the file was edited twice.
+# Existing signage and logos
+
+Restore, Reframe and Expand must retain existing lettering and branding,
+including signs attached to buildings and products. The Reframe prompt formerly
+said "No text, captions, logos or watermarks", which conflicted with preserving
+the source. It now distinguishes existing marks from new additions in every
+subject category. The result cache includes the actual edit prompt.
+
+This improves the instructions but is not a pixel-preservation guarantee for
+generative Reframe/Restore. Review source signage before publishing. A previously
+saved result with erased signage must be restored to the original source before
+running the updated request; changing the prompt cannot repair saved images.

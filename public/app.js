@@ -7854,7 +7854,12 @@ function renderWriterRoster() {
   if (!analyticsRosterList) return;
 
   const mode = ROSTER_MODES[rosterMode] || ROSTER_MODES.writers;
-  const rows = rosterMode === "qa" ? qaRoster : writerRoster;
+  /* Ten, sliced here rather than in SQL. The query behind these rows now
+     returns everybody, because the Writers screen merges the same payload
+     into a roster keyed by account and a top-ten cut left everyone below
+     eleventh place reading "no posts yet". This panel is still a
+     leaderboard, so it still shows ten. */
+  const rows = (rosterMode === "qa" ? qaRoster : writerRoster).slice(0, 10);
 
   if (analyticsRosterTitle) analyticsRosterTitle.textContent = mode.title;
   if (analyticsRosterDesc) {
@@ -13484,6 +13489,13 @@ async function usersRequest(path, options = {}) {
 }
 
 let writerStats = new Map();     // user id -> { sent, approved, pending }
+/* The same roster, counted the other way round: user id -> verdicts recorded.
+   A reviewer authors nothing, so every figure keyed off authorship is zero for
+   them and the screen said "no posts yet" about someone who had approved five
+   hundred posts and published four hundred of them — including one an hour
+   earlier. Their work was in the database the whole time; nothing on this
+   screen was reading it. */
+let qaStats = new Map();         // user id -> { approved, rejected, published, week }
 let selectedWriterId = null;
 
 /* The roster and the output figures come from two places and are merged here:
@@ -13508,6 +13520,18 @@ async function loadWriters() {
           week: row.week_count || 0,
           approved: row.approved_count || 0,
           pending: row.pending_count || 0,
+        });
+      }
+    }
+
+    qaStats = new Map();
+    for (const row of analytics?.analytics?.qas || []) {
+      if (row.user_login_id) {
+        qaStats.set(row.user_login_id, {
+          approved: row.approved_count || 0,
+          rejected: row.rejected_count || 0,
+          published: row.published_count || 0,
+          week: row.week_count || 0,
         });
       }
     }
@@ -13554,21 +13578,31 @@ function renderWriterRow(u) {
   const meta = document.createElement("span");
   meta.className = "writers-item-meta";
   const stats = writerStats.get(u.id);
+  /* A reviewer's output is verdicts, not posts. Read their row off the QA
+     board instead, falling back to the authorship line only for a reviewer who
+     has genuinely never decided anything \u2014 otherwise "no posts yet" is a
+     true sentence answering the wrong question. Someone who does both keeps
+     whichever halves they actually did. */
+  const qa = canReviewRole(u.role) ? qaStats.get(u.id) : null;
   meta.textContent = [
     roleLabel(u.role),
-    stats ? `${stats.sent} post${stats.sent === 1 ? "" : "s"}` : "no posts yet",
+    qa
+      ? `${qa.approved} approved \u00b7 ${qa.rejected} rejected \u00b7 ${qa.published} published`
+      : (stats ? `${stats.sent} post${stats.sent === 1 ? "" : "s"}` : "no posts yet"),
+    qa && stats ? `${stats.sent} written` : null,
     u.active ? null : "disabled",
   ].filter(Boolean).join(" \u00b7 ");
   main.append(name, meta);
 
-  /* This week's output, called out rather than buried in the meta line \u2014 it is
+  /* This week's work, called out rather than buried in the meta line \u2014 it is
      the number the roster exists to answer. A lifetime total tells you who has
      been here longest, not who is producing now. */
-  if (stats) {
+  const weekOf = qa || stats;
+  if (weekOf) {
     const week = document.createElement("span");
     week.className = "writers-week";
-    week.textContent = `${stats.week} this week`;
-    week.title = "Posts created in the last 7 days";
+    week.textContent = `${weekOf.week} this week`;
+    week.title = qa ? "Verdicts recorded in the last 7 days" : "Posts created in the last 7 days";
     main.appendChild(week);
   }
   open.append(avatar, main);
@@ -13695,10 +13729,17 @@ async function openWriter(u) {
 
   document.getElementById("writer-detail-name").textContent = u.displayName || u.username;
   const stats = writerStats.get(u.id);
+  const qa = canReviewRole(u.role) ? qaStats.get(u.id) : null;
+  /* Same split as the roster row: a reviewer is summarised by the verdicts
+     they gave, a writer by how their own output fared. "approved / pending"
+     means two different things in those two sentences, which is why the
+     reviewer line names publishing rather than reusing the writer wording. */
   document.getElementById("writer-detail-meta").textContent = [
     u.username,
     roleLabel(u.role),
-    stats ? `${stats.approved} approved \u00b7 ${stats.pending} pending` : "no posts yet",
+    qa
+      ? `${qa.approved} approved \u00b7 ${qa.rejected} rejected \u00b7 ${qa.published} published`
+      : (stats ? `${stats.approved} approved \u00b7 ${stats.pending} pending` : "no posts yet"),
   ].join(" \u00b7 ");
 
   listEl.textContent = "";
@@ -13708,7 +13749,13 @@ async function openWriter(u) {
   listEl.appendChild(loading);
 
   try {
-    const res = await fetch(`/api/pix?limit=100&user=${encodeURIComponent(u.id)}`, { credentials: "same-origin" });
+    /* Ask the question that fits the account. `?user=` is authorship, which
+       is the whole story for a writer and none of it for a reviewer: pointed
+       at a QA login it returned nothing and the pane said they had never
+       written anything, which is true and useless. `?reviewer=` lists what
+       they approved, rejected or published instead. */
+    const scope = qa ? `reviewer=${encodeURIComponent(u.id)}` : `user=${encodeURIComponent(u.id)}`;
+    const res = await fetch(`/api/pix?limit=100&${scope}`, { credentials: "same-origin" });
     if (res.status === 401) return handleSignedOut();
     const payload = await res.json().catch(() => ({}));
     listEl.textContent = "";
@@ -13716,7 +13763,9 @@ async function openWriter(u) {
     if (!posts.length) {
       const none = document.createElement("li");
       none.className = "writer-posts-empty";
-      none.textContent = `${u.displayName || u.username} has not written anything yet.`;
+      none.textContent = qa
+        ? `${u.displayName || u.username} has not reviewed anything yet.`
+        : `${u.displayName || u.username} has not written anything yet.`;
       listEl.appendChild(none);
       return;
     }

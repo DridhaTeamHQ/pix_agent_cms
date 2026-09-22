@@ -25,6 +25,7 @@ import {
   ROLES, canReview, createUser, listUsers, setPassword, setUserActive, normaliseUsername, isAdmin, updateUser, deleteUser,
 } from "./lib/auth.js";
 import { handlePixRequest } from "./lib/pix-api.js";
+import { createSpendGuard, priceTextUsage } from "./lib/spend-guard.js";
 import { handlePixAnalyticsRequest } from "./lib/pix-analytics.js";
 import {
   configureStorage, isStorageConfigured, uploadMedia, pingStorage,
@@ -567,6 +568,13 @@ const server = http.createServer(async (req, res) => {
         database: dbConfigured(),
         storage: isStorageConfigured(),
       },
+      /* What this box has spent since it booted, against the ceilings in
+         force. Here because the alternative is reading Railway logs: the
+         per-call figures were already measured and logged, but nothing added
+         them up anywhere you could look. A number you can curl is the
+         difference between noticing a runaway and hearing about it from the
+         billing page a week later. */
+      spend: spendGuard.snapshot(),
     });
     return;
   }
@@ -2896,6 +2904,9 @@ async function analyzeImageWithOpenAI(apiKey, imageData) {
     throw new Error(detail);
   }
 
+  /* The Responses API reports usage under the same key with different field
+     names; priceTextUsage() reads both spellings. */
+  meterText(payload);
   const text = extractOpenAIOutputText(payload).trim();
   try {
     return normalizeImageAnalysis(JSON.parse(text.replace(/^```json\s*|\s*```$/g, "")));
@@ -3208,6 +3219,7 @@ async function buildImageSearchQuery(title, articleText = "") {
     });
     if (!r.ok) return "";
     const data = await r.json();
+    meterText(data);
     const q = (data?.choices?.[0]?.message?.content || "")
       .replace(/["'\n]/g, " ").replace(/\s+/g, " ").trim();
     if (q) console.log(`✓ image query: "${q}"`);
@@ -3920,6 +3932,7 @@ async function handleGenerateCaption(req, res) {
     }
 
     const data = await aiRes.json();
+    meterText(data);
     let caption = data?.choices?.[0]?.message?.content?.trim() || "";
 
     // Strip surrounding quotes if model added any
@@ -4123,6 +4136,7 @@ async function rectifyBullets({ headline, articleText, bullets, register, issues
     });
     if (!r.ok) return null;
     const data = await r.json();
+    meterText(data);
     const parsed = JSON.parse(data?.choices?.[0]?.message?.content || "{}");
     const b = Array.isArray(parsed.bullets)
       ? parsed.bullets.slice(0, BULLET_COUNT).map((x) => String(x).replace(/\s+/g, " ").trim())
@@ -4248,6 +4262,7 @@ async function handleGenerateArticle(req, res) {
     }
 
     const data = await aiRes.json();
+    meterText(data);
     let parsed = {};
     try { parsed = JSON.parse(data?.choices?.[0]?.message?.content || "{}"); } catch { /* handled below */ }
 
@@ -5019,6 +5034,7 @@ async function planEnhance(buffer, mime, { posterRatio = "", sourceW = 0, source
       return fallback;
     }
     const data = await r.json();
+    meterText(data);
     const raw = data?.choices?.[0]?.message?.content || "";
     let parsed;
     try {
@@ -5126,6 +5142,69 @@ const enhanceLimiter = createRateLimiter({
   windowMs: ENHANCE_RATE_WINDOW_MS,
   max: ENHANCE_RATE_MAX,
 });
+
+/* ── The global ceiling ─────────────────────────────────────
+   The limiter above is per user. This one is the org's, and it counts DOLLARS
+   rather than presses, because that is the thing being protected: forty
+   restores and forty reframes are the same number of calls and seven times
+   the money.
+
+   These are runaway numbers, not budget numbers. Measured against this
+   deployment: the whole text pipeline runs about $2 a week, and image work at
+   the tiers in force costs $0.05-$0.33 a press. $20 in an hour is roughly
+   sixty reframes back to back — far past what anyone reviewing by hand will
+   reach, and reached in seconds by something stuck. $60 in a day is the same
+   guarantee against the slower kind of runaway, the one an hourly ceiling
+   never sees because it never spends much in any single hour.
+
+   Set either to 0 to meter without ever refusing. Both are env-overridable
+   because the right ceiling is a property of the deployment rather than of
+   the code — and once /health has shown a few days of real figures they can
+   be pulled in with confidence instead of guessed at. */
+/* `env()` returns "" for an unset variable, not undefined, so `?? default`
+   never fires and Number("") is 0 — which this guard reads as "no ceiling".
+   Written the obvious way, the breaker shipped switched off and said so only
+   in a boot line nobody would have read twice. Parse explicitly: absent or
+   unreadable falls back to the default, and only a deliberate 0 disables. */
+function capFromEnv(name, fallback) {
+  const raw = env(name);
+  if (raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    console.warn(`⚠ ${name}="${raw}" is not a number — using $${fallback}`);
+    return fallback;
+  }
+  return n;
+}
+const SPEND_CAP_USD_HOUR = capFromEnv("SPEND_CAP_USD_HOUR", 20);
+const SPEND_CAP_USD_DAY = capFromEnv("SPEND_CAP_USD_DAY", 60);
+const spendGuard = createSpendGuard([
+  { name: "hour", ms: 60 * 60_000, capUsd: SPEND_CAP_USD_HOUR },
+  { name: "day", ms: 24 * 60 * 60_000, capUsd: SPEND_CAP_USD_DAY },
+]);
+console.log(
+  `Spend guard: $${SPEND_CAP_USD_HOUR || "∞"}/hour, $${SPEND_CAP_USD_DAY || "∞"}/day on billed image calls`
+  + " (text is metered, never refused). Totals on /health."
+);
+
+/* What one image edit might cost, booked before the call and corrected to the
+   measured figure after. The expensive end of the range on purpose: see the
+   reserve/settle note in lib/spend-guard.js — guessing low is the only
+   direction that breaks the guarantee. */
+const ENHANCE_RESERVE_USD = capFromEnv("ENHANCE_RESERVE_USD", 0.35) || 0.35;
+
+/* Text spend is METERED but never refused — see recordUngated() in the guard
+   for why. Called on every chat/responses reply that carried a usage block; a
+   reply without one contributes nothing rather than a guess, because unlike
+   the image path there is no reservation standing behind it to fall back on.
+
+   This exists so the figure on /health is the whole of what this deployment
+   spends, not just its expensive half. A total that quietly omitted the text
+   pipeline would be the wrong number to hold a billing page up against. */
+function meterText(data) {
+  const usd = priceTextUsage(data?.usage);
+  if (usd) spendGuard.recordUngated(usd);
+}
 
 const ENHANCE_CACHE_MAX_BYTES = 96 * 1024 * 1024;
 const ENHANCE_CACHE_TTL_MS = 60 * 60_000;
@@ -5710,7 +5789,7 @@ async function runEnhanceEdit({
      socket to the proxy still left its picture here, so pressing again inside
      the hour is a free hit rather than a second $0.33. */
   enhanceCacheSet(cacheKey, payload, png);
-  if (onCharge) onCharge();
+  if (onCharge) onCharge(cost?.usd ?? null);
   return { ...payload, image: publishEnhanceResult(png) };
 }
 
@@ -5906,7 +5985,44 @@ async function enhanceSpendGate(req, res) {
     });
     return null;
   }
-  return () => enhanceLimiter.record(key);
+
+  /* The org's ceiling, checked after the caller's own. The order matters only
+     for the message: someone who has burnt their own allowance should be told
+     that, not told the company is out of money. */
+  const spend = spendGuard.reserve(ENHANCE_RESERVE_USD);
+  if (!spend.allowed) {
+    const mins = Math.ceil(spend.retryAfterSeconds / 60);
+    console.error(
+      `⛔ GLOBAL SPEND CAP — $${spend.spentUsd} of $${spend.capUsd} this ${spend.window}. `
+      + `Billed image calls refused for ${mins} more minute(s). Raise SPEND_CAP_USD_${spend.window.toUpperCase()}, `
+      + "or find what is looping."
+    );
+    /* Named plainly, and addressed to someone who has done nothing wrong and
+       cannot lift it themselves. A bare "rate limited" here would read as a
+       fault in their own work rather than a ceiling on the deployment. */
+    sendJson(res, 429, {
+      error: `AI image work is paused: this deployment has reached its $${spend.capUsd} ${spend.window}ly spend ceiling. `
+        + `It frees up in ${mins} minute(s). If that is unexpected, tell an admin — something may be looping.`,
+    });
+    return null;
+  }
+
+  /* Releasing the reservation is tied to the RESPONSE, not to the happy path.
+     Every way this request can end — returned, threw, timed out, socket
+     dropped by the proxy — ends with the response closing, and exactly one of
+     those ways involves OpenAI having billed anything. Hooking the lifecycle
+     rather than wrapping each handler in try/catch means there is no error
+     path left to forget about, and no handler had to be restructured to get
+     it. The guard also reaps abandoned tickets on a timer, which covers the
+     case where even 'close' never fires. */
+  let charged = false;
+  res.once("close", () => { if (!charged) spendGuard.release(spend.ticket); });
+
+  return (usd) => {
+    charged = true;
+    enhanceLimiter.record(key);
+    spendGuard.settle(spend.ticket, usd ?? null);
+  };
 }
 
 /* Stage 2's entry point. Reads the multipart body, sanity-checks the plan the

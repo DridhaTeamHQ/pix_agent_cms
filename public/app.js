@@ -585,6 +585,8 @@ document.fonts.ready.then(async () => {
        lines once the real faces arrived. */
     await document.fonts.load("700 46px 'Roboto Serif'");
     await document.fonts.load("500 41px 'Roboto Serif'");
+    // Numbers in the poster headline are set in Roboto — see numeralFont().
+    await document.fonts.load("600 49px 'Roboto'", "0123456789");
     await document.fonts.load(TAG_FONT);
   } catch (e) { /* font may already be loaded */ }
   await waitForImage(defaultMain);
@@ -6945,9 +6947,10 @@ function drawHeadline() {
       // two colours; the segment carries it so each box fills its own.
       if (isOpening) currentlyHighlighted = highlightToneFor(rawWord);
 
-      const wordWidth = ctx.measureText(cleanWord).width;
-      const spaceWidth = ctx.measureText(" ").width;
-      const totalAdvance = wordWidth + spaceWidth;
+      // Advance exactly as pass 2 does (it measures `word + " "` and skips
+      // bracket-only tokens), so each box starts under its first glyph.
+      const wordWidth = measureHeadlineText(cleanWord);
+      const totalAdvance = cleanWord.length ? measureHeadlineText(cleanWord + " ") : 0;
 
       if (currentlyHighlighted && cleanWord.length > 0) {
         if (segmentStartX === null) {
@@ -6978,18 +6981,39 @@ function drawHeadline() {
     const fontMatch = layout.font.match(/(\d+(?:\.\d+)?)px/);
     const fontSize  = fontMatch ? parseFloat(fontMatch[1]) : Math.round(layout.lineHeight / 1.22);
 
-    const PAD_X        = Math.max(6, Math.round(fontSize * 0.16));  // horizontal breathing room
-    const OVERSHOOT_T  = Math.max(2, Math.round(fontSize * 0.06));  // box top above cap line
-    const BOX_HEIGHT   = Math.round(fontSize * 0.94);                // hugs glyph height
-    const CORNER_RAD   = Math.max(6, Math.round(fontSize * 0.18));
+    const PAD_X        = Math.max(8, Math.round(fontSize * 0.16));  // horizontal breathing room
+    const CORNER_RAD   = Math.max(4, Math.round(fontSize * 4 / 18)); // Figma: 4px at 18px
+
+    // Where the ink actually sits. The serif face has a tall ascent, so its
+    // glyphs land well below the em-box top — a box sized from the font size
+    // alone rode high and cut the letters. With textBaseline "top",
+    // measurements are offsets from y (the top line), not from the alphabetic
+    // baseline. Every box is placed from the same measurements and has the
+    // same height, so the gap between one line's box and the next is
+    // identical on every line.
+    //
+    // The box spans the tallest ascender (b, d, l — they rise above the caps)
+    // to the lowest descender (g, p, y), plus equal padding above and below,
+    // so no letter touches an edge. The padding is whatever the line height
+    // leaves after a small fixed gap between boxes, capped so a loosely
+    // spaced headline doesn't get oversized boxes.
+    const inkTop    = -ctx.measureText("Hbdfhkl").actualBoundingBoxAscent;
+    const inkBottom = ctx.measureText("gjpqy").actualBoundingBoxDescent;
+    const inkHeight = inkBottom - inkTop;
+    const LINE_GAP  = Math.max(5, Math.round(fontSize * 0.08) + 2);
+    const PAD_Y     = Math.max(0, Math.min(
+      Math.round(fontSize * 0.14),
+      (layout.lineHeight - LINE_GAP - inkHeight) / 2,
+    ));
+    const drawH  = inkHeight + PAD_Y * 2;
+    const boxTop = y + inkTop - PAD_Y;
 
     segments.forEach(seg => {
       // Per segment: two runs on one line can now be two colours.
       ctx.fillStyle = highlightColor(seg.tone);
       const drawX = seg.x - PAD_X;
       const widthToFill = seg.w + PAD_X * 2;
-      const drawY = y - OVERSHOOT_T;
-      const drawH = BOX_HEIGHT;
+      const drawY = boxTop;
 
       ctx.beginPath();
       ctx.roundRect(drawX, drawY, widthToFill, drawH, CORNER_RAD);
@@ -7000,8 +7024,10 @@ function drawHeadline() {
   // reset for pass 2
   currentlyHighlighted = null;
 
-  // PASS 2: Draw White Text with Shadow
-  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  // PASS 2: Draw White Text with Shadow — at half its former 0.6 opacity,
+  // so it still lifts the words off the photo without muddying the
+  // highlight boxes it falls on.
+  ctx.shadowColor = "rgba(0,0,0,0.3)";
   ctx.shadowBlur = 22;
   ctx.shadowOffsetY = 8;
 
@@ -7014,8 +7040,8 @@ function drawHeadline() {
       const cleanWord = rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '');
       if (cleanWord.length > 0) {
         ctx.fillStyle = "#ffffff"; // All text is white
-        ctx.fillText(cleanWord + " ", cursor, y);
-        cursor += ctx.measureText(cleanWord + " ").width;
+        fillHeadlineText(cleanWord + " ", cursor, y);
+        cursor += measureHeadlineText(cleanWord + " ");
       }
     }
   });
@@ -7198,7 +7224,7 @@ function buildHeadlineLayoutFixed(text, maxWidth, size) {
   const font = `600 ${size}px 'Roboto Serif', 'Poppins', serif`;
   ctx.font = font;
   const lines = wrapTextBlock(cleaned, maxWidth);
-  return { font, lines, lineHeight: Math.round(size * 1.1) };
+  return { font, lines, lineHeight: headlineLineHeight(cleaned, size, 1.1) };
 }
 
 /* ── Headline Layout ── */
@@ -7211,7 +7237,18 @@ function buildHeadlineLayout(text, maxWidth, _maxLines) {
   const font = `600 ${size}px 'Roboto Serif', 'Poppins', serif`;
   ctx.font = font;
   const lines = wrapTextBlock(cleaned, maxWidth);
-  return { font, lines, lineHeight: Math.round(size * 1.22) };
+  return { font, lines, lineHeight: headlineLineHeight(cleaned, size, 1.22) };
+}
+
+/* Line spacing for the poster headline. A headline with [highlighted] words
+   gets a little more: each highlight box has to hold the tallest ascender
+   (l, H) to the lowest descender (g, y) — about the font size itself — plus
+   padding above and below and a gap to the next line's box. At the plain
+   spacing the boxes had only 2–3px of padding and letters touched the edges.
+   Headlines without highlights keep their original spacing. */
+function headlineLineHeight(text, size, plainRatio) {
+  const ratio = HIGHLIGHT_OPEN_CHAR.test(text) ? Math.max(plainRatio, 1.38) : plainRatio;
+  return Math.round(size * ratio);
 }
 
 function normalizeHeadlineForPoster(text) {
@@ -7231,6 +7268,46 @@ function normalizeHeadlineForPoster(text) {
  * segment is wrapped (and rebalanced) on its own, so an author's break is
  * always honoured and auto-wrapping never pulls words across it.
  */
+/* ── Numbers in the poster headline are set in Roboto ──
+   Dates, scores, ages and figures ("13-10-2005", "37", "2-1", "10:30",
+   "4.5%") read better in the sans than in Roboto Serif. A numeric run is
+   digits plus the separators BETWEEN digits, so "37," keeps its comma in the
+   serif and "13-10-2005" stays one run. Everything that measures or draws
+   the headline goes through measureHeadlineText / fillHeadlineText, so the
+   wrapping, the highlight boxes and the glyphs all agree on widths. */
+const NUMERIC_RUN = /(\d+(?:[-–\/:.,]\d+)*%?)/;
+
+/* The headline font with its family swapped for Roboto, same weight/size. */
+function numeralFont(font) {
+  return font.replace(/(\d+(?:\.\d+)?px)\s.*$/, "$1 'Roboto', 'Poppins', sans-serif");
+}
+
+function measureHeadlineText(text) {
+  if (!/\d/.test(text)) return ctx.measureText(text).width;
+  const base = ctx.font;
+  let width = 0;
+  text.split(NUMERIC_RUN).forEach((part, i) => {
+    if (!part) return;
+    ctx.font = i % 2 ? numeralFont(base) : base;
+    width += ctx.measureText(part).width;
+  });
+  ctx.font = base;
+  return width;
+}
+
+function fillHeadlineText(text, x, y) {
+  if (!/\d/.test(text)) { ctx.fillText(text, x, y); return; }
+  const base = ctx.font;
+  let cursor = x;
+  text.split(NUMERIC_RUN).forEach((part, i) => {
+    if (!part) return;
+    ctx.font = i % 2 ? numeralFont(base) : base;
+    ctx.fillText(part, cursor, y);
+    cursor += ctx.measureText(part).width;
+  });
+  ctx.font = base;
+}
+
 function wrapTextBlock(text, maxWidth) {
   const out = [];
   for (const segment of text.split("\n")) {
@@ -7251,7 +7328,7 @@ function wrapWords(words, maxWidth) {
   for (const word of words) {
     const test = current ? `${current} ${word}` : word;
     // Strip bracket markers when measuring text width
-    if (ctx.measureText(test.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '')).width <= maxWidth) {
+    if (measureHeadlineText(test.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '')) <= maxWidth) {
       current = test;
     } else {
       if (current) lines.push(current);
@@ -7274,7 +7351,7 @@ function rebalanceLines(lines, maxWidth) {
 
     const moved = `${balanced[i]} ${nextWords[0]}`;
     // Strip bracket markers when measuring text width
-    if (ctx.measureText(moved.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '')).width <= maxWidth * 0.98) {
+    if (measureHeadlineText(moved.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '')) <= maxWidth * 0.98) {
       balanced[i] = moved;
       nextWords.shift();
       balanced[i + 1] = nextWords.join(" ");

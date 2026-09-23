@@ -585,8 +585,6 @@ document.fonts.ready.then(async () => {
        lines once the real faces arrived. */
     await document.fonts.load("700 46px 'Roboto Serif'");
     await document.fonts.load("500 41px 'Roboto Serif'");
-    // Numbers in the poster headline are set in Roboto — see numeralFont().
-    await document.fonts.load("600 49px 'Roboto'", "0123456789");
     await document.fonts.load(TAG_FONT);
   } catch (e) { /* font may already be loaded */ }
   await waitForImage(defaultMain);
@@ -6949,8 +6947,8 @@ function drawHeadline() {
 
       // Advance exactly as pass 2 does (it measures `word + " "` and skips
       // bracket-only tokens), so each box starts under its first glyph.
-      const wordWidth = measureHeadlineText(cleanWord);
-      const totalAdvance = cleanWord.length ? measureHeadlineText(cleanWord + " ") : 0;
+      const wordWidth = ctx.measureText(cleanWord).width;
+      const totalAdvance = cleanWord.length ? ctx.measureText(cleanWord + " ").width : 0;
 
       if (currentlyHighlighted && cleanWord.length > 0) {
         if (segmentStartX === null) {
@@ -7040,8 +7038,8 @@ function drawHeadline() {
       const cleanWord = rawWord.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '');
       if (cleanWord.length > 0) {
         ctx.fillStyle = "#ffffff"; // All text is white
-        fillHeadlineText(cleanWord + " ", cursor, y);
-        cursor += measureHeadlineText(cleanWord + " ");
+        ctx.fillText(cleanWord + " ", cursor, y);
+        cursor += ctx.measureText(cleanWord + " ").width;
       }
     }
   });
@@ -7268,46 +7266,6 @@ function normalizeHeadlineForPoster(text) {
  * segment is wrapped (and rebalanced) on its own, so an author's break is
  * always honoured and auto-wrapping never pulls words across it.
  */
-/* ── Numbers in the poster headline are set in Roboto ──
-   Dates, scores, ages and figures ("13-10-2005", "37", "2-1", "10:30",
-   "4.5%") read better in the sans than in Roboto Serif. A numeric run is
-   digits plus the separators BETWEEN digits, so "37," keeps its comma in the
-   serif and "13-10-2005" stays one run. Everything that measures or draws
-   the headline goes through measureHeadlineText / fillHeadlineText, so the
-   wrapping, the highlight boxes and the glyphs all agree on widths. */
-const NUMERIC_RUN = /(\d+(?:[-–\/:.,]\d+)*%?)/;
-
-/* The headline font with its family swapped for Roboto, same weight/size. */
-function numeralFont(font) {
-  return font.replace(/(\d+(?:\.\d+)?px)\s.*$/, "$1 'Roboto', 'Poppins', sans-serif");
-}
-
-function measureHeadlineText(text) {
-  if (!/\d/.test(text)) return ctx.measureText(text).width;
-  const base = ctx.font;
-  let width = 0;
-  text.split(NUMERIC_RUN).forEach((part, i) => {
-    if (!part) return;
-    ctx.font = i % 2 ? numeralFont(base) : base;
-    width += ctx.measureText(part).width;
-  });
-  ctx.font = base;
-  return width;
-}
-
-function fillHeadlineText(text, x, y) {
-  if (!/\d/.test(text)) { ctx.fillText(text, x, y); return; }
-  const base = ctx.font;
-  let cursor = x;
-  text.split(NUMERIC_RUN).forEach((part, i) => {
-    if (!part) return;
-    ctx.font = i % 2 ? numeralFont(base) : base;
-    ctx.fillText(part, cursor, y);
-    cursor += ctx.measureText(part).width;
-  });
-  ctx.font = base;
-}
-
 function wrapTextBlock(text, maxWidth) {
   const out = [];
   for (const segment of text.split("\n")) {
@@ -7328,7 +7286,7 @@ function wrapWords(words, maxWidth) {
   for (const word of words) {
     const test = current ? `${current} ${word}` : word;
     // Strip bracket markers when measuring text width
-    if (measureHeadlineText(test.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '')) <= maxWidth) {
+    if (ctx.measureText(test.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '')).width <= maxWidth) {
       current = test;
     } else {
       if (current) lines.push(current);
@@ -7351,7 +7309,7 @@ function rebalanceLines(lines, maxWidth) {
 
     const moved = `${balanced[i]} ${nextWords[0]}`;
     // Strip bracket markers when measuring text width
-    if (measureHeadlineText(moved.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '')) <= maxWidth * 0.98) {
+    if (ctx.measureText(moved.replace(HIGHLIGHT_ANY_CHARS_GLOBAL, '')).width <= maxWidth * 0.98) {
       balanced[i] = moved;
       nextWords.shift();
       balanced[i + 1] = nextWords.join(" ");

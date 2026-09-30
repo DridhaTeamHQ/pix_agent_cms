@@ -49,6 +49,7 @@ function makeApi() {
   const drawn = [];
   const api = new Function("canvas", "ctx", "clamp", "IMAGE_PAN_HEADROOM", "buildFilterString", "drawn", "ZOOM_MIN", `
     ${fnSrc("fitZoomFor")}
+    ${fnSrc("deviceFilter")}
     ${fnSrc("drawCoverImage")}
     return { fitZoomFor, drawCoverImage };
   `)(

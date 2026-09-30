@@ -430,6 +430,20 @@ function buildFilterString() {
   ].join(" ");
 }
 
+/* ctx.filter ignores the current transform. Every other draw call on the
+   export context is multiplied by its ctx.scale(), but a blur(38px) stays 38
+   DEVICE pixels — so on a 4.5x export the Text slide came out with under a
+   quarter of the blur the preview shows, and that is the image the CMS got.
+   Radii are written in design pixels, so they are scaled here to match. */
+function deviceFilter(filter, target = ctx) {
+  if (!filter || filter === "none") return filter;
+  const m = typeof target.getTransform === "function" ? target.getTransform() : null;
+  const k = m ? Math.hypot(m.a, m.b) : 1;
+  if (!(k > 0) || k === 1) return filter;
+  return filter.replace(/blur\(\s*([\d.]+)px\s*\)/g, (_, px) =>
+    `blur(${Math.round(Number(px) * k * 100) / 100}px)`);
+}
+
 // Filter presets — pure value bundles, applied by clicking a chip.
 const FILTER_PRESETS = {
   "none":    { brightness: 100, contrast: 100, saturation: 100, blur: 0 },
@@ -5196,9 +5210,9 @@ function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom
      band. */
   const backdropScale = baseScale * IMAGE_PAN_HEADROOM;
   const paintStaticLayers = () => {
-    ctx.filter = `blur(${Math.round(26 * scale)}px) brightness(52%) saturate(78%)`;
+    ctx.filter = deviceFilter(`blur(${Math.round(26 * scale)}px) brightness(52%) saturate(78%)`);
     drawLayer(backdropScale, null);
-    ctx.filter = sharpFilter;
+    ctx.filter = deviceFilter(sharpFilter);
     drawLayer(imageScale, null);
   };
 
@@ -5227,7 +5241,7 @@ function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom
     paintStaticLayers();
   }
 
-  ctx.filter = sharpFilter;
+  ctx.filter = deviceFilter(sharpFilter);
   drawLayer(imageScale, offset);
   ctx.restore();
 
@@ -7361,7 +7375,7 @@ function drawCoverImage(image, x, y, width, height, offset, zoom) {
   // layer — gradient, headline, logo, etc. should NOT be filtered. Reset to
   // "none" immediately after the draw so subsequent layers render normally.
   ctx.save();
-  ctx.filter = buildFilterString();
+  ctx.filter = deviceFilter(buildFilterString());
   ctx.drawImage(image, dx, dy, drawWidth, drawHeight);
   ctx.restore();
 }

@@ -5157,6 +5157,65 @@ function drawTimestamp(x, y, s) {
    the wrong resolution — the export paints directly, as it always did. */
 const backdropCache = new Map();
 const BACKDROP_CACHE_MAX = 6;
+
+/* ── The Text slide's blur, computed here rather than asked of the browser ──
+
+   It used to be ctx.filter = "blur(39px)", and that is a request the browser
+   is free to ignore: Safari has no canvas filters at all, and a browser that
+   drops one does so silently, with no error and no sign in the preview a
+   reviewer is looking at on another machine. Posts reached DailyMattr with
+   the Text slide's photograph completely sharp while Pix showed it frosted.
+
+   So the blur is done in JS on pixels. It is cheap because a blur this heavy
+   has no detail left to keep: the frame is drawn into a small canvas sized so
+   the radius there is SOFT_SIGMA_SMALL pixels, blurred there with three box
+   passes (a close Gaussian), and scaled back up. The small canvas depends only
+   on the design, never on the output size, so the preview and every export
+   rung are built from the same pixels and cannot disagree. */
+const SOFT_SIGMA_SMALL = 8;
+const softBackdropCache = new Map();
+
+function boxSizesForGauss(sigma, n = 3) {
+  const wIdeal = Math.sqrt((12 * sigma * sigma) / n + 1);
+  let wl = Math.floor(wIdeal);
+  if (wl % 2 === 0) wl -= 1;
+  const m = Math.round((12 * sigma * sigma - n * wl * wl - 4 * n * wl - 3 * n) / (-4 * wl - 4));
+  return Array.from({ length: n }, (_, i) => (i < m ? wl : wl + 2));
+}
+
+// One running-sum box pass along rows or columns, edges clamped so the frame's
+// border is not darkened by sampling the nothing beyond it.
+function boxBlurPass(src, dst, w, h, r, horizontal) {
+  const len = horizontal ? w : h;
+  const lines = horizontal ? h : w;
+  const step = horizontal ? 4 : w * 4;
+  const lineStep = horizontal ? w * 4 : 4;
+  const inv = 1 / (2 * r + 1);
+  const last = len - 1;
+  for (let l = 0; l < lines; l += 1) {
+    const base = l * lineStep;
+    for (let c = 0; c < 4; c += 1) {
+      let sum = 0;
+      for (let k = -r; k <= r; k += 1) sum += src[base + Math.min(last, Math.max(0, k)) * step + c];
+      for (let i = 0; i < len; i += 1) {
+        dst[base + i * step + c] = sum * inv;
+        sum += src[base + Math.min(last, i + r + 1) * step + c] - src[base + Math.max(0, i - r) * step + c];
+      }
+    }
+  }
+}
+
+function gaussianBlurPixels(data, w, h, sigma) {
+  if (!(sigma > 0.3)) return;
+  let a = Float32Array.from(data);
+  let b = new Float32Array(data.length);
+  for (const size of boxSizesForGauss(sigma)) {
+    const r = (size - 1) / 2;
+    boxBlurPass(a, b, w, h, r, true);
+    boxBlurPass(b, a, w, h, r, false);
+  }
+  data.set(a);
+}
 let imageUidSeq = 0;
 
 function imageUid(image) {
@@ -5183,6 +5242,47 @@ function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom
   const focal = image.__focalPoint || { x: image.width / 2, y: image.height / 2 };
 
   const sharpFilter = filter || `blur(${Math.round(18 * scale)}px) brightness(62%) contrast(108%) saturate(72%)`;
+
+  // A plain blur — the Text slide — is computed, not requested; see
+  // softBackdropCache above.
+  const blurOnly = /^\s*blur\(\s*([\d.]+)px\s*\)\s*$/.exec(sharpFilter);
+  if (blurOnly && Number(blurOnly[1]) > 0) {
+    const sigma = Number(blurOnly[1]);
+    const f = Math.min(1, SOFT_SIGMA_SMALL / sigma);
+    const off = offset || { x: 0, y: 0 };
+    const key = [imageUid(image), focal.x, focal.y, off.x, off.y, x, y, width, height,
+      zoom || 1, scale, sigma].join("|");
+    let soft = softBackdropCache.get(key);
+    if (!soft) {
+      soft = document.createElement("canvas");
+      soft.width = Math.max(2, Math.round(width * f));
+      soft.height = Math.max(2, Math.round(height * f));
+      const g = soft.getContext("2d", { willReadFrequently: true });
+      g.imageSmoothingEnabled = true;
+      g.imageSmoothingQuality = "high";
+      g.setTransform(soft.width / width, 0, 0, soft.height / height, -x * soft.width / width, -y * soft.height / height);
+      g.fillStyle = "#070707";
+      g.fillRect(x, y, width, height);
+      // The backdrop's dimming as a fill rather than a filter, for the same
+      // reason the blur is not one: it must not depend on filter support.
+      drawLayer(baseScale * IMAGE_PAN_HEADROOM, null, g);
+      g.fillStyle = "rgba(0, 0, 0, 0.48)";
+      g.fillRect(x, y, width, height);
+      drawLayer(imageScale, off, g);
+      const px = g.getImageData(0, 0, soft.width, soft.height);
+      gaussianBlurPixels(px.data, soft.width, soft.height, sigma * (soft.width / width));
+      g.putImageData(px, 0, 0);
+      cacheKeep(softBackdropCache, BACKDROP_CACHE_MAX, key, soft);
+    }
+    ctx.save();
+    ctx.filter = "none";
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(soft, x, y, width, height);
+    ctx.restore();
+    return;
+  }
+
   const m = typeof ctx.getTransform === "function" ? ctx.getTransform() : null;
   const unscaled = !m || (m.a === 1 && m.d === 1 && m.b === 0 && m.c === 0 && m.e === 0 && m.f === 0);
   const cacheKey = unscaled && ctx.canvas
@@ -5245,7 +5345,7 @@ function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom
   drawLayer(imageScale, offset);
   ctx.restore();
 
-  function drawLayer(layerScale, layerOffset) {
+  function drawLayer(layerScale, layerOffset, target = ctx) {
     const w = image.width * layerScale;
     const h = image.height * layerScale;
     let dx = drawX + drawW / 2 - focal.x * layerScale;
@@ -5262,7 +5362,7 @@ function drawTextPreviewBackgroundImage(image, x, y, width, height, offset, zoom
        small picture into the corner instead of leaving it centred. */
     if (w >= drawW) dx = clamp(dx, drawX + drawW - w, drawX);
     if (h >= drawH) dy = clamp(dy, drawY + drawH - h, drawY);
-    ctx.drawImage(image, dx, dy, w, h);
+    target.drawImage(image, dx, dy, w, h);
   }
 }
 

@@ -378,6 +378,10 @@ const state = {
   storedImageUrl: null,
   storedVideoFor: null,
   storedVideoUrl: null,
+  // The bucket copy the trim range is measured on, when a reopened post is
+  // being cut from one. Unlike storedVideoUrl it does not move when Save
+  // uploads a new encode — see videoClipKey().
+  clipSourceUrl: "",
   // The last MP4 the server rendered, kept so Export then Save does not
   // encode the same range twice.
   renderedClip: null,
@@ -3213,7 +3217,7 @@ const VIDEO_PAGE_FIELDS  = [
      was added — only that something was. */
   "videoFileName",
   "trimStart", "trimEnd", "videoMuted", "videoFocus", "videoCaption", "videoCaptionSize",
-  "storedVideoUrl", "storedVideoFor", "renderedClip",
+  "storedVideoUrl", "storedVideoFor", "clipSourceUrl", "renderedClip",
 ];
 
 // The spine is poster + text. Video is not part of it, so the base page
@@ -3599,6 +3603,7 @@ function blankPageContent(type) {
     videoFocus: { x: 0.5, y: 0.5 },
     storedVideoUrl: null,
     storedVideoFor: null,
+    clipSourceUrl: "",
     renderedClip: null,
     videoCaption: "",
     videoCaptionSize: state.videoCaptionSize,
@@ -3826,6 +3831,7 @@ function restorePages(list, spine) {
       /* Seed the player source too, so the card can paint without waiting to
          be selected and adoptPageVideo has something to load. */
       content.videoSrc = entry.video?.storedUrl || "";
+      content.clipSourceUrl = entry.video?.storedUrl || "";
       content.storedVideoFor = entry.video?.storedFor || null;
       content.videoSourceKind = entry.video?.sourceKind || "link";
       content.trimStart = numberOr(entry.video?.trimStart, 0);
@@ -10457,6 +10463,7 @@ function loadLocalVideoFile(file) {
      all. QA then published the old video, to a write-only API. */
   state.storedVideoUrl = null;
   state.storedVideoFor = null;
+  state.clipSourceUrl = "";
   state.renderedClip = null;
   if (videoFileLabel) videoFileLabel.textContent = file.name;
 
@@ -10729,11 +10736,15 @@ async function renderTrimmedClip({ width, height, onStatus = () => {} } = {}) {
        element is showing the already-trimmed copy from our bucket (a reopened
        post) while this sent the original URL, ffmpeg would cut those seconds
        out of the wrong footage — and fail outright when the original is a
-       dead YouTube link or an expired signed URL. */
-    const previewSrc = state.storedVideoUrl && videoPreviewEl?.src === state.storedVideoUrl
-      ? state.storedVideoUrl
-      : state.videoUrl;
-    form.append("url", previewSrc);
+       dead YouTube link or an expired signed URL.
+
+       clipSourceUrl, not storedVideoUrl: the first Save after a re-encode
+       moves storedVideoUrl to the NEW upload while the preview keeps playing
+       the copy it opened with. Comparing the two then fell through to
+       videoUrl, which is "" for an uploaded file, so every later encode in
+       that session was refused ("Supply either a url or a video file") and
+       the row saved the new caption next to the old, captionless clip. */
+    form.append("url", state.clipSourceUrl || state.videoUrl);
     onStatus(`Downloading and encoding ${duration.toFixed(1)}s… this can take a few minutes.`);
   }
 
@@ -12632,6 +12643,7 @@ function startNewPix() {
   state.storedImageUrl = null;
   state.storedVideoFor = null;
   state.storedVideoUrl = null;
+  state.clipSourceUrl = "";
   state.renderedClip = null;
   state.headlineTouched = false;
   state.detailTouched = false;
@@ -12990,6 +13002,9 @@ function collectDesignSnapshot(view) {
         // and with the caption burned in. `url` above is the original link,
         // which for a scraped clip is a signed URL that expires within hours.
         storedUrl: v.storedVideoUrl || null,
+        // The key that copy was rendered under. Reopening compares its tail
+        // with the caption and framing below before trusting the copy.
+        storedFor: v.storedVideoFor || null,
         storedTrimmed: Boolean(v.storedVideoUrl),
         title: v.videoMeta?.title || null,
         // What the writer actually added, so a reviewer can see it later.
@@ -13411,7 +13426,12 @@ async function loadPixIntoEditor(post) {
       if (videoPage) {
         renumberPages();
         setActivePage(videoPage.id);
-        restoreStoredVideo(design.video);
+        /* Rows saved before design.video carried storedFor still have it on
+           the page entry, which restorePages has just put on this page. */
+        restoreStoredVideo({
+          ...design.video,
+          storedFor: design.video.storedFor || videoPage.content?.storedVideoFor || null,
+        });
         bindRestoredVideoToPage(videoPage, loadToken);
         setActivePage("base");
       } else {
@@ -15314,16 +15334,32 @@ function videoClipKey() {
      and this returned null. resolvePublishClip() bails immediately on a null
      key, so the clip was skipped silently — even though the trimmed copy was
      sitting in our bucket, playing in the preview the whole time. */
+  /* The stored source is the copy being CUT FROM (clipSourceUrl), not the
+     newest upload. storedVideoUrl is the encode's output: keyed on it, every
+     upload changed the key of the clip it had just stored, so the next Save
+     saw a mismatch and tried to encode again. */
+  const storedSource = state.clipSourceUrl || state.storedVideoUrl;
   const source = state.videoFile
     ? `file:${state.videoFile.name}:${state.videoFile.size}:${state.videoFile.lastModified}`
     : (state.videoUrl ? `url:${state.videoUrl}`
-      : (state.storedVideoUrl ? `stored:${state.storedVideoUrl}` : ""));
+      : (storedSource ? `stored:${storedSource}` : ""));
   if (!source) return null;
   if (!(state.trimEnd > state.trimStart)) return null;
   return [
     source,
     state.trimStart.toFixed(2),
     state.trimEnd.toFixed(2),
+    videoLookKey(),
+  ].join("|");
+}
+
+/* The part of the clip key that is burned into the pixels: everything but
+   the source and the range. It is the key's tail, so a stored key can be
+   tested against the current settings with endsWith — which is how a
+   reopened post tells whether its bucket copy carries the caption the row
+   now asks for (see restoreStoredVideo). */
+function videoLookKey() {
+  return [
     state.videoMuted ? "muted" : "sound",
     (state.videoFocus?.x ?? 0.5).toFixed(3),
     (state.videoFocus?.y ?? 0.5).toFixed(3),
@@ -15361,8 +15397,13 @@ function restoreStoredVideo(video) {
   const url = video?.storedUrl || "";
   if (!url || !videoPreviewEl) return;
 
+  /* What the bucket copy was actually rendered with. The page entry has
+     always carried it; design.video does from now on. */
+  const renderedFor = video.storedFor || null;
+
   state.videoUrl = video.url || "";
   state.storedVideoUrl = url;
+  state.clipSourceUrl = url;
   state.videoFile = null;
   state.videoSourceKind = video.sourceKind || "file";
   state.videoFileName = video.fileName || video.title || "";
@@ -15398,7 +15439,27 @@ function restoreStoredVideo(video) {
     // those bytes instead of re-encoding from state.videoUrl — which points at
     // the ORIGINAL source (a YouTube link or an expiring signed URL) and is
     // frequently gone, or needs yt-dlp all over again, by the time QA publishes.
-    state.storedVideoFor = videoClipKey();
+    //
+    // But only when that copy was rendered with the caption and framing the
+    // row now holds. The row's caption is whatever was typed by the last
+    // save; the copy is whatever the last SUCCESSFUL encode burned in, and a
+    // save whose encode failed (or was still running while the caption was
+    // typed) writes the first without the second. Stamping regardless told
+    // publish the old file already had the new caption, so DailyMattr got the
+    // clip with no title on it. A mismatch keeps the copy's real key, which
+    // can never equal the current one, so publish and Save re-encode this
+    // copy with the caption the preview is showing — and a save before that
+    // re-encode succeeds still records the copy as stale, where null would
+    // read as "no record" and be trusted on the next open. Rows with no
+    // record at all keep the old trust, as before.
+    const look = videoLookKey();
+    const current = !renderedFor || renderedFor.endsWith(`|${look}`);
+    state.storedVideoFor = current ? videoClipKey() : renderedFor;
+    if (!current) {
+      console.warn("[pix] stored clip predates its caption/framing; publish will re-encode it", {
+        renderedFor, look,
+      });
+    }
     if (typeof syncTrimUI === "function") syncTrimUI();
     if (videoEditor) videoEditor.hidden = false;
 

@@ -561,6 +561,42 @@ shortlyLogo.onerror = () => {
   console.error("✗ Shortly logo failed to load from", shortlyLogo.src, "— X exports will fall back to Pix logo.");
 };
 
+/* ── 4:5 (Feed) poster footer assets ──
+   The DailyMattr wordmark plus the two store-badge glyphs. The glyphs are
+   tiny inline SVGs so the badges need no extra files; their text is drawn
+   with ctx so it uses the Poppins the page already loads. */
+const footerImages = {};
+const FOOTER_IMAGE_SOURCES = {
+  logo: "./assests/logo.svg",
+  play: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+      <polygon points="3,2.5 13,12 3,21.5" fill="#00A0FF"/>
+      <polygon points="3,2.5 16.5,9.2 13,12" fill="#00D86F"/>
+      <polygon points="3,21.5 13,12 16.5,14.8" fill="#FF3A44"/>
+      <polygon points="13,12 16.5,9.2 21.5,12 16.5,14.8" fill="#FFC000"/>
+    </svg>`),
+  apple: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><path fill="#fff" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>`),
+};
+function loadFooterImage(key, src) {
+  const img = new Image();
+  img.onload = () => { footerImages[key] = img; renderPoster(); };
+  img.onerror = () => console.warn(`Footer ${key} image failed to load.`);
+  img.src = src;
+}
+Object.entries(FOOTER_IMAGE_SOURCES).forEach(([key, src]) => {
+  if (key !== "logo") { loadFooterImage(key, src); return; }
+  // The wordmark file is brand blue; the footer wants it white. Recolour the
+  // SVG source on load rather than keeping a second copy of the file.
+  fetch(src)
+    .then((r) => (r.ok ? r.text() : Promise.reject(new Error(r.status))))
+    .then((svg) => {
+      const white = svg.replace(/fill="(?!none)[^"]*"/gi, 'fill="#FFFFFF"');
+      loadFooterImage(key, "data:image/svg+xml;charset=utf-8," + encodeURIComponent(white));
+    })
+    .catch(() => loadFooterImage(key, src));
+});
+
 
 /* ── Load tag SVGs ── */
 const tagFiles = {
@@ -3145,7 +3181,7 @@ function computeHeadlineLayoutAndTop() {
   const blockHeight = (layout.lines.length - 1) * layout.lineHeight + fontSize;
   const bottomPadding = isXRenderMode()
     ? 56
-    : L.headline.bottomPadding;
+    : L.headline.bottomPadding + (hasPosterFooter() ? POSTER_FOOTER.headlineLift : 0);
   const top = Math.max(0, canvas.height - bottomPadding - blockHeight);
   return { layout, top, fontSize, blockHeight, bottomPadding };
 }
@@ -4366,6 +4402,7 @@ function paintPoster() {
   drawTag();
   drawHeadline();
   drawHeadlineTimestamp();
+  drawPosterFooter();
 
   // Preview-only UI elements (not included in download).
   // Only the 9:16 preset shows the Reels-style engagement + nav bars; on
@@ -5139,6 +5176,133 @@ function drawTimestamp(x, y, s) {
   ctx.fillStyle = TIMESTAMP_COLOR;
   ctx.fillText(formatCreatedAt(state.createdAt), x, y);
   ctx.restore();
+}
+
+/* ── The "Get latest updates on DailyMattr" footer ──
+   4:5 Feed posters only, and only on the poster itself (page 1) — never the X
+   card, the text/story/video slides or the other ratios. The headline is
+   lifted by `headlineLift` so the copy, the date and the footer stack without
+   overlapping; everything below is in 1080×1350 design px. */
+const POSTER_FOOTER = {
+  headlineLift: 80,    // added to the 4:5 headline bottomPadding (110 → 190)
+  sideMargin: 56,
+  ruleFromBottom: 118, // the divider line above the row
+  rowCenterFromBottom: 68,
+  textSize: 27,
+  logoHeight: 40,
+  // Where the wordmark's letters sit inside logo.svg, as a fraction of its
+  // height (y≈23.4 of the 32-unit viewBox). Used to put the logo on the
+  // same baseline as the lead text.
+  logoBaseline: 23.4 / 32,
+  badgeHeight: 62,
+  badgeGap: 12,
+};
+
+function hasPosterFooter() {
+  return state.aspectRatio === "4:5" && state.previewMode === "pix" && !isXRenderMode();
+}
+
+function drawPosterFooter() {
+  if (!hasPosterFooter()) return;
+  const F = POSTER_FOOTER;
+  const W = canvas.width;
+  const H = canvas.height;
+  const left = F.sideMargin;
+  const right = W - F.sideMargin;
+  const ruleY = H - F.ruleFromBottom;
+  const cy = H - F.rowCenterFromBottom;
+
+  ctx.save();
+
+  // Deepen the bottom so the row reads on any photo.
+  const shade = ctx.createLinearGradient(0, ruleY - 80, 0, H);
+  shade.addColorStop(0, "rgba(0,0,0,0)");
+  shade.addColorStop(0.45, "rgba(0,0,0,0.55)");
+  shade.addColorStop(1, "rgba(0,0,0,0.85)");
+  ctx.fillStyle = shade;
+  ctx.fillRect(0, ruleY - 80, W, H - (ruleY - 80));
+
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillRect(left, ruleY - 1, right - left, 2);
+
+  // Left: lead text + wordmark, sharing one baseline. The baseline is placed
+  // so the text's cap height is centred on the row.
+  ctx.font = `600 ${F.textSize}px ${PREVIEW_TEXT_FONT}`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#ffffff";
+  const baseline = cy + Math.round(F.textSize * 0.36);
+  const lead = "Get latest updates on";
+  ctx.fillText(lead, left, baseline);
+  let leftEnd = left + ctx.measureText(lead).width;
+  const logo = footerImages.logo;
+  if (logo) {
+    const lw = (logo.naturalWidth || 156) / (logo.naturalHeight || 32) * F.logoHeight;
+    const lx = leftEnd + 10;
+    ctx.drawImage(logo, lx, baseline - F.logoBaseline * F.logoHeight, lw, F.logoHeight);
+    leftEnd = lx + lw;
+  } else {
+    ctx.fillStyle = "#ffffff";
+    const lx = leftEnd + 10;
+    ctx.fillText("daily mattr", lx, baseline);
+    leftEnd = lx + ctx.measureText("daily mattr").width;
+  }
+
+  // Right: the two store badges, right-aligned
+  const apple = drawStoreBadge(right, cy, footerImages.apple, "Download on the", "App Store");
+  const google = drawStoreBadge(apple - F.badgeGap, cy, footerImages.play, "GET IT ON", "Google Play");
+
+  // Vertical divider centred in the gap between the two groups
+  const dx = Math.round((leftEnd + google) / 2);
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillRect(dx - 1, cy - F.badgeHeight / 2 + 4, 2, F.badgeHeight - 8);
+
+  ctx.restore();
+}
+
+/* One store badge whose RIGHT edge sits at `rightX`. Returns its left edge. */
+function drawStoreBadge(rightX, cy, icon, small, big) {
+  const h = POSTER_FOOTER.badgeHeight;
+  const padX = 16;
+  const iconSize = 34;
+  const smallFont = `500 13px ${PREVIEW_TEXT_FONT}`;
+  const bigFont = `500 25px ${PREVIEW_TEXT_FONT}`;
+  ctx.font = smallFont;
+  const smallW = ctx.measureText(small).width;
+  ctx.font = bigFont;
+  const bigW = ctx.measureText(big).width;
+  const w = padX + iconSize + 10 + Math.max(smallW, bigW) + padX;
+  const x = rightX - w;
+  const y = cy - h / 2;
+
+  ctx.save();
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, 10);
+  else ctx.rect(x, y, w, h);
+  ctx.fillStyle = "#000000";
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = "rgba(255,255,255,0.55)";
+  ctx.stroke();
+
+  if (icon) {
+    const iw = (icon.naturalWidth || 1) / (icon.naturalHeight || 1) * iconSize;
+    const ih = iconSize;
+    const fitW = Math.min(iw, iconSize);
+    const fitH = fitW === iw ? ih : ih * (iconSize / iw);
+    ctx.drawImage(icon, x + padX + (iconSize - fitW) / 2, cy - fitH / 2, fitW, fitH);
+  }
+
+  const tx = x + padX + iconSize + 10;
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = smallFont;
+  ctx.fillText(small, tx, cy - 6);
+  ctx.font = bigFont;
+  ctx.fillText(big, tx, cy + 20);
+  ctx.restore();
+  return x;
 }
 
 /* `filter` defaults to the Text slide's treatment: heavily blurred and dimmed,

@@ -2701,6 +2701,10 @@ body.view-writers .edit-sheet {
   left: 0;
   z-index: 30;
   min-width: 100%;
+  /* A closed menu is only invisible, so it still counts toward the page's
+     scroll height. Uncapped, a long writer/category list pushed the document
+     past .cms-layout and the sticky sidebar scrolled away with it. */
+  max-height: min(320px, 50vh);
   margin: 0;
   padding: 6px;
   list-style: none;

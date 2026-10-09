@@ -322,7 +322,7 @@ const state = {
   keywords: "",
   showTimestamp: true,
   videoCaption: "",         // burned into the clip, bottom-anchored
-  videoCaptionSize: 40,     // design px at 920×1700; scaled per ratio
+  videoCaptionSize: 48,     // design px at 920×1700; scaled per ratio — poster headline size
   secondLogoImage: null,
   tag: "none",       // "none" | "trending" | "breaking" | "swipe-video" (+ "-text" variants)
   tagImages: {},     // { trending: Image, breaking: Image } — SVG-backed tags only
@@ -4512,9 +4512,11 @@ function drawVideoCaption() {
 
   const maxWidth = L.headline.maxWidth;
   const left = L.headline.x;
-  const fontSize = Math.round((state.videoCaptionSize || 40) * s);
-  const lineHeight = Math.round(fontSize * 1.32);
-  const font = `${PREVIEW_TEXT_WEIGHT} ${fontSize}px ${PREVIEW_TEXT_FONT}`;
+  const fontSize = Math.round((state.videoCaptionSize || 48) * s);
+  const lineHeight = headlineLineHeight(raw, fontSize, 1.22);
+  // Same face and weight as the poster headline (buildHeadlineLayout), so the
+  // video slide and the poster read as one system.
+  const font = `600 ${fontSize}px 'Roboto Serif', 'Poppins', serif`;
 
   ctx.save();
   ctx.font = font;
@@ -10832,7 +10834,7 @@ if (videoCaptionInput) {
 const videoCaptionSizeInput = document.getElementById("video-caption-size");
 if (videoCaptionSizeInput) {
   videoCaptionSizeInput.addEventListener("input", () => {
-    state.videoCaptionSize = Number(videoCaptionSizeInput.value) || 40;
+    state.videoCaptionSize = Number(videoCaptionSizeInput.value) || 48;
     scheduleRender();
   });
 }
@@ -15527,7 +15529,10 @@ function videoLookKey() {
     state.videoMuted ? "muted" : "sound",
     (state.videoFocus?.x ?? 0.5).toFixed(3),
     (state.videoFocus?.y ?? 0.5).toFixed(3),
-    state.videoCaption || "",
+    // The caption's face is burned in too: tagging it means a clip encoded
+    // in the old Poppins caption reads as stale and gets re-encoded in the
+    // poster's Roboto Serif. Uncaptioned clips are unaffected.
+    state.videoCaption ? `serif:${state.videoCaption}` : "",
     state.videoCaptionSize,
     state.aspectRatio,
   ].join("|");

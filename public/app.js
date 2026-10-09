@@ -13748,19 +13748,116 @@ const reviewDesc = document.getElementById("review-desc");
    has to begin by reopening the exact post that went out. */
 let reviewFilter = "all";
 
-/* Selecting a tab means two things — which rows to ask for, and which button
-   looks pressed — and they have to move together. The variable used to be
-   assigned directly in two places, one of which (the role clamp below) left
-   the buttons showing a tab that was no longer the one being listed. */
-function selectReviewFilter(name) {
-  reviewFilter = name;
+/* The tabs are multi-select: statuses OR together, "mine" narrows whose posts
+   on top of them, and All clears the lot. `reviewFilter` stays the single name
+   the rest of the list reads (row stamp, empty line) — the one status when
+   exactly one is on, "mine" when only that is, "multi" when statuses mix. */
+const reviewStatuses = new Set();
+let reviewMine = false;
+
+/* Selecting a tab means two things — which rows to ask for, and which buttons
+   look pressed — and they have to move together, so every change goes
+   through here. */
+function selectReviewFilter(name, { toggle = false } = {}) {
+  if (name === "all") {
+    reviewStatuses.clear();
+    reviewMine = false;
+  } else if (name === "mine") {
+    reviewMine = toggle ? !reviewMine : true;
+    if (!toggle) reviewStatuses.clear();
+  } else {
+    if (!toggle) { reviewStatuses.clear(); reviewMine = false; }
+    if (toggle && reviewStatuses.has(name)) reviewStatuses.delete(name);
+    else reviewStatuses.add(name);
+  }
+  reviewFilter = reviewStatuses.size > 1 ? "multi"
+    : reviewStatuses.size === 1 ? [...reviewStatuses][0]
+    : reviewMine ? "mine" : "all";
   if (!reviewFilters) return;
   reviewFilters.querySelectorAll(".review-filter").forEach((t) => {
-    const active = t.dataset.filter === name;
+    const f = t.dataset.filter;
+    const active = f === "all"
+      ? !reviewStatuses.size && !reviewMine
+      : f === "mine" ? reviewMine : reviewStatuses.has(f);
     t.classList.toggle("active", active);
     t.setAttribute("aria-selected", active ? "true" : "false");
   });
 }
+
+const reviewDateFrom = document.getElementById("review-date-from");
+const reviewDateTo = document.getElementById("review-date-to");
+const reviewDateClear = document.getElementById("review-date-clear");
+const reviewDateApply = document.getElementById("review-date-apply");
+
+/* The range the list is actually filtered by. Picking a date only fills the
+   box; Apply is what moves it here, so a half-picked range (From set, To not
+   yet) never fires a query of its own. */
+const reviewAppliedDates = { from: "", to: "" };
+
+/* <input type=date> values are local calendar days. Turned into instants here
+   — start of From, start of the day AFTER To — so the server compares
+   timestamps without having to know the reader's timezone. */
+function reviewDateBounds() {
+  const day = (value, addDays = 0) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + addDays).toISOString();
+  };
+  return { from: day(reviewAppliedDates.from), to: day(reviewAppliedDates.to, 1) };
+}
+
+/* Every date box in the app — Review, Analytics, the editor's post date —
+   opens its calendar on a click anywhere in it, not only on the small icon.
+   Delegated, so a date input added later gets it too. showPicker() throws
+   outside a user gesture or on older browsers, where the icon still works. */
+document.addEventListener("click", (event) => {
+  const input = event.target.closest?.('input[type="date"]');
+  if (!input || input.disabled || input.readOnly) return;
+  if (typeof input.showPicker !== "function") return; // old browser: icon only
+  try {
+    input.showPicker();
+  } catch (err) {
+    // Blocked, e.g. inside a cross-origin iframe. The icon still works.
+    console.warn("Date picker could not open:", err?.message || err);
+  }
+}, true); // capture: runs before any handler that might stop the click
+
+[reviewDateFrom, reviewDateTo].forEach((input) => {
+  // Enter applies, like the search box.
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); reviewDateApply?.click(); }
+  });
+});
+// The calendar for To starts no earlier than From, and vice versa.
+reviewDateFrom?.addEventListener("change", () => { if (reviewDateTo) reviewDateTo.min = reviewDateFrom.value; });
+reviewDateTo?.addEventListener("change", () => { if (reviewDateFrom) reviewDateFrom.max = reviewDateTo.value; });
+
+reviewDateApply?.addEventListener("click", () => {
+  let from = reviewDateFrom?.value || "";
+  let to = reviewDateTo?.value || "";
+  // Typed back to front: swap rather than list nothing.
+  if (from && to && from > to) {
+    [from, to] = [to, from];
+    reviewDateFrom.value = from;
+    reviewDateTo.value = to;
+  }
+  reviewAppliedDates.from = from;
+  reviewAppliedDates.to = to;
+  loadReviewQueue();
+});
+
+reviewDateClear?.addEventListener("click", () => {
+  [reviewDateFrom, reviewDateTo].forEach((input) => {
+    if (!input) return;
+    input.value = "";
+    input.min = "";
+    input.max = "";
+  });
+  const wasApplied = reviewAppliedDates.from || reviewAppliedDates.to;
+  reviewAppliedDates.from = "";
+  reviewAppliedDates.to = "";
+  if (wasApplied) loadReviewQueue();
+});
 
 /* Title, tab label and blurb all follow the role. Called whenever a session
    resolves, so a writer signing in after QA never sees QA's wording. */
@@ -13782,7 +13879,9 @@ function syncReviewCopy() {
      role change in one tab — QA signing out and a writer signing in — where a
      filter left behind would otherwise keep listing under a tab that has just
      been hidden. */
-  if (!isQa && reviewFilter !== "all" && reviewFilter !== "drafts") selectReviewFilter("all");
+  if (!isQa && (reviewMine || [...reviewStatuses].some((s) => s !== "drafts"))) {
+    selectReviewFilter(reviewStatuses.has("drafts") ? "drafts" : "all");
+  }
 }
 
 function setReviewStatus(message, kind) {
@@ -13795,7 +13894,7 @@ if (reviewFilters) {
   reviewFilters.addEventListener("click", (event) => {
     const btn = event.target.closest(".review-filter");
     if (!btn) return;
-    selectReviewFilter(btn.dataset.filter);
+    selectReviewFilter(btn.dataset.filter, { toggle: true });
     loadReviewQueue();
   });
 }
@@ -14463,13 +14562,14 @@ async function loadReviewQueue() {
      unset. The server has taken ?user= all along (the analytics Writers screen
      uses it); the review list simply never asked, which is why a reviewer who
      also writes could not find their own work in a library of everyone's. */
-  if (reviewFilter === "mine") {
-    if (state.user?.id) params.set("user", String(state.user.id));
-  } else if (reviewFilter !== "all") {
-    params.set("status", reviewFilter);
-  }
+  if (reviewMine && state.user?.id) params.set("user", String(state.user.id));
+  if (reviewStatuses.size) params.set("status", [...reviewStatuses].join(","));
   const term = (reviewSearchInput?.value || "").trim();
   if (term) params.set("q", term);
+  const { from, to } = reviewDateBounds();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const narrowed = reviewFilter !== "all" || Boolean(from || to);
 
   try {
     const response = await fetch(`/api/pix?${params}`, { credentials: "same-origin" });
@@ -14484,7 +14584,9 @@ async function loadReviewQueue() {
     if (!posts.length) {
       const empty = document.createElement("li");
       empty.className = "review-empty";
-      empty.textContent = reviewFilter === "mine"
+      empty.textContent = reviewFilter === "multi" || (reviewMine && reviewStatuses.size) || from || to
+        ? "Nothing matches these filters."
+        : reviewFilter === "mine"
         ? "You have not written a post yet. Build one, then press Save."
         : reviewFilter === "published"
         ? "Nothing has been published to DailyMattr yet."
@@ -14502,6 +14604,7 @@ async function loadReviewQueue() {
                 ? "No posts saved yet."
                 : "You have not saved a post yet. Build one, then press Save.";
       reviewList.appendChild(empty);
+      syncReviewBulk();
       /* Redraw the tiles on the empty path too. Returning early left the
          PREVIOUS filter's numbers sitting above an empty list — "3 approved"
          over "no drafts of yours" — which reads as a contradiction rather
@@ -14511,7 +14614,7 @@ async function loadReviewQueue() {
         counts: lastPixCounts,
         approved: 0, rejected: 0, awaiting: 0, drafts: 0, published: 0,
         total: 0,
-        filtered: reviewFilter !== "all",
+        filtered: narrowed,
       });
       setReviewStatus("");
       return;
@@ -14550,15 +14653,173 @@ async function loadReviewQueue() {
       drafts: draftCount,
       published: publishedCount,
       total: posts.length,
-      filtered: reviewFilter !== "all",
+      filtered: narrowed,
     });
     setReviewStatus("");
 
     posts.forEach((post) => reviewList.appendChild(renderReviewItem(post)));
+    syncReviewBulk();
   } catch (err) {
     setReviewStatus(err.message || "Could not load the queue.", "error");
   }
 }
+
+/* ── Bulk select (QA only) ──
+   Tick rows, then Reject or Delete them together. Each post still goes
+   through the same per-post endpoint the row buttons use, so the server's
+   rules apply to every one exactly as if it had been pressed by hand. The
+   selection is of rows ON SCREEN: every reload redraws the list and starts
+   it empty, so nothing can be acted on that the reviewer cannot see. */
+const reviewSelected = new Map(); // id -> post
+const reviewBulk = document.getElementById("review-bulk");
+const reviewSelectAll = document.getElementById("review-select-all");
+const reviewBulkCount = document.getElementById("review-bulk-count");
+const reviewBulkReject = document.getElementById("review-bulk-reject");
+const reviewBulkDelete = document.getElementById("review-bulk-delete");
+const reviewBulkClear = document.getElementById("review-bulk-clear");
+
+function reviewRowBoxes() {
+  return reviewList ? [...reviewList.querySelectorAll(".review-select")] : [];
+}
+
+function syncReviewBulk() {
+  const boxes = reviewRowBoxes();
+  // Drop selections whose row is gone (reloaded, deleted, filtered away).
+  const onScreen = new Set(boxes.map((b) => b.dataset.id));
+  for (const id of [...reviewSelected.keys()]) if (!onScreen.has(id)) reviewSelected.delete(id);
+
+  const n = reviewSelected.size;
+  if (reviewBulk) reviewBulk.hidden = !boxes.length || !canReviewRole(state.user?.role);
+  if (reviewBulkCount) reviewBulkCount.textContent = n ? `${n} selected` : "Select all";
+  if (reviewSelectAll) {
+    reviewSelectAll.checked = n > 0 && n === boxes.length;
+    reviewSelectAll.indeterminate = n > 0 && n < boxes.length;
+  }
+  const rejectable = [...reviewSelected.values()].filter((p) => !p.rejected).length;
+  if (reviewBulkReject) {
+    reviewBulkReject.disabled = !rejectable;
+    reviewBulkReject.textContent = rejectable ? `Reject ${rejectable}` : "Reject selected";
+  }
+  if (reviewBulkDelete) {
+    reviewBulkDelete.disabled = !n;
+    reviewBulkDelete.textContent = n ? `Delete ${n}` : "Delete selected";
+  }
+  if (reviewBulkClear) reviewBulkClear.hidden = !n;
+  boxes.forEach((b) => b.closest(".review-item")?.classList.toggle("is-selected", b.checked));
+}
+
+reviewSelectAll?.addEventListener("change", () => {
+  reviewRowBoxes().forEach((box) => {
+    box.checked = reviewSelectAll.checked;
+    if (box.checked) reviewSelected.set(box.dataset.id, box._post);
+    else reviewSelected.delete(box.dataset.id);
+  });
+  syncReviewBulk();
+});
+
+reviewBulkClear?.addEventListener("click", () => {
+  reviewSelected.clear();
+  reviewRowBoxes().forEach((box) => { box.checked = false; });
+  syncReviewBulk();
+});
+
+/* Runs one request per post, a few at a time, and reports what failed
+   rather than stopping at the first error — half a batch done and the rest
+   silently skipped is the worst outcome for a bulk action. */
+async function runReviewBulk(posts, label, request) {
+  const buttons = [reviewBulkReject, reviewBulkDelete, reviewBulkClear, reviewSelectAll];
+  buttons.forEach((b) => b && (b.disabled = true));
+  let done = 0;
+  const failed = [];
+  const queue = [...posts];
+  const worker = async () => {
+    while (queue.length) {
+      const post = queue.shift();
+      try {
+        const response = await request(post);
+        if (response.status === 401) { queue.length = 0; handleSignedOut(); return; }
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          failed.push({ post, message: `${post.headline || "Untitled"}: ${payload.error || response.status}` });
+        }
+      } catch (err) {
+        failed.push({ post, message: `${post.headline || "Untitled"}: ${err.message || "network error"}` });
+      }
+      done += 1;
+      setReviewStatus(`${label} ${done} of ${posts.length}…`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, posts.length) }, worker));
+  if (reviewSelectAll) reviewSelectAll.disabled = false;
+  if (reviewBulkClear) reviewBulkClear.disabled = false;
+  return failed;
+}
+
+reviewBulkReject?.addEventListener("click", async () => {
+  const posts = [...reviewSelected.values()].filter((p) => !p.rejected);
+  if (!posts.length) return;
+  const live = posts.filter((p) => p.published_at).length;
+  const ok = await confirmAction({
+    title: `Reject ${posts.length} post${posts.length === 1 ? "" : "s"}?`,
+    body: "They go back to their writers to fix. You can undo a reject from the Rejected tab.",
+    facts: [
+      live ? `${live} of them ${live === 1 ? "is" : "are"} already on DailyMattr — rejecting will not take ${live === 1 ? "it" : "them"} down.` : "",
+      reviewSelected.size > posts.length ? `${reviewSelected.size - posts.length} already rejected will be skipped.` : "",
+    ].filter(Boolean),
+    confirmLabel: `Reject ${posts.length}`,
+    danger: true,
+  });
+  if (!ok) return;
+  const failed = await runReviewBulk(posts, "Rejecting", (post) =>
+    fetch(`/api/pix/approve?id=${encodeURIComponent(post.id)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ approved: false, rejected: true }),
+    }));
+  reviewSelected.clear();
+  await loadReviewQueue();
+  refreshMyPixCount();
+  announceCountChange();
+  setReviewStatus(
+    failed.length
+      ? `Rejected ${posts.length - failed.length} of ${posts.length}. Failed — ${failed.map((f) => f.message).join("; ")}`
+      : `Rejected ${posts.length} post${posts.length === 1 ? "" : "s"}.`,
+    failed.length ? "error" : "success",
+  );
+});
+
+reviewBulkDelete?.addEventListener("click", async () => {
+  const posts = [...reviewSelected.values()];
+  if (!posts.length) return;
+  const live = posts.filter((p) => p.published_at).length;
+  const ok = await confirmAction({
+    title: `Delete ${posts.length} post${posts.length === 1 ? "" : "s"}?`,
+    body: "They will be removed from the library for everyone. This cannot be undone.",
+    facts: [
+      ...posts.slice(0, 5).map((p) => `"${p.headline || "Untitled post"}" — ${p.user_name || "unknown"}`),
+      posts.length > 5 ? `…and ${posts.length - 5} more` : "",
+      live ? `${live} ${live === 1 ? "is" : "are"} on DailyMattr — deleting here does not remove ${live === 1 ? "it" : "them"} there.` : "",
+    ].filter(Boolean),
+    confirmLabel: `Delete ${posts.length}`,
+    danger: true,
+  });
+  if (!ok) return;
+  const failed = await runReviewBulk(posts, "Deleting", (post) =>
+    fetch(`/api/pix?id=${encodeURIComponent(post.id)}`, { method: "DELETE", credentials: "same-origin" }));
+  const kept = new Set(failed.map((f) => f.post.id));
+  if (posts.some((p) => p.id === state.pixId && !kept.has(p.id))) state.pixId = null;
+  reviewSelected.clear();
+  await loadReviewQueue();
+  refreshMyPixCount();
+  announceCountChange();
+  setReviewStatus(
+    failed.length
+      ? `Deleted ${posts.length - failed.length} of ${posts.length}. Failed — ${failed.map((f) => f.message).join("; ")}`
+      : `Deleted ${posts.length} post${posts.length === 1 ? "" : "s"}.`,
+    failed.length ? "error" : "success",
+  );
+});
 
 /* "Still unsubmitted", matching what the server lists: a row that carries a
    verdict has left the drafts stage whatever its flag says, and the few rows
@@ -14586,6 +14847,23 @@ function renderReviewItem(post) {
      impossible to pick out of the Approved list. */
   li.className = "review-item"
     + (post.published_at ? " is-published" : post.approved ? " is-approved" : post.rejected ? " is-rejected" : "");
+
+  // Bulk-select tick box — reviewers only, since Reject and Delete are theirs.
+  if (canReviewRole(state.user?.role)) {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "review-select";
+    box.dataset.id = post.id;
+    box._post = post;
+    box.checked = reviewSelected.has(post.id);
+    box.setAttribute("aria-label", `Select "${post.headline || "untitled"}"`);
+    box.addEventListener("change", () => {
+      if (box.checked) reviewSelected.set(post.id, post);
+      else reviewSelected.delete(post.id);
+      syncReviewBulk();
+    });
+    li.appendChild(box);
+  }
 
   // The stored image is a URL, so the thumbnail is the real poster image
   // rather than a re-render — cheap, and enough to recognise a post by.

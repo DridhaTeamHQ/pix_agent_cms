@@ -1131,7 +1131,7 @@
              Awaiting / Approved / Rejected stay reviewer-only: they are the
              states of QA's queue, and a writer's own posts are already all
              theirs under All. -->
-        <div class="review-filters" id="review-filters" role="tablist" aria-label="Filter">
+        <div class="review-filters" id="review-filters" role="tablist" aria-multiselectable="true" aria-label="Filter (pick several)" title="Click to toggle — several can be on at once">
           <button type="button" class="review-filter active" data-filter="all" role="tab" aria-selected="true">All</button>
           <!-- Reviewer-only, and the counterpart to a writer's whole view. A
                writer's list IS their own posts; the moment someone is QA the
@@ -1153,10 +1153,34 @@
         <label class="review-search">
           <input type="search" id="review-search" placeholder="Search headline, writer or source…" />
         </label>
+        <!-- Filters on the date each row shows: published / approved /
+             rejected / edited under a single status tab, created otherwise. -->
+        <div class="review-dates" id="review-dates" role="group" aria-label="Date range">
+          <div class="review-dates-range">
+            <span class="review-dates-label">Date</span>
+            <input type="date" id="review-date-from" aria-label="From date" />
+            <span class="review-dates-sep">to</span>
+            <input type="date" id="review-date-to" aria-label="To date" />
+          </div>
+          <button type="button" class="review-dates-apply" id="review-date-apply">Apply</button>
+          <button type="button" class="review-dates-reset" id="review-date-clear">Reset</button>
+        </div>
         <button type="button" class="btn-ghost" id="review-refresh">Refresh</button>
       </div>
 
       <p class="status-text" id="review-status" role="status" aria-live="polite"></p>
+      <!-- Bulk actions (QA only): tick rows, then reject or delete them in one go. -->
+      <div class="review-bulk qa-only" id="review-bulk" hidden>
+        <label class="review-bulk-all">
+          <input type="checkbox" id="review-select-all" aria-label="Select all posts shown" />
+          <span id="review-bulk-count">Select all</span>
+        </label>
+        <div class="review-bulk-actions">
+          <button type="button" class="btn-ghost btn-reject" id="review-bulk-reject" disabled>Reject selected</button>
+          <button type="button" class="btn-ghost review-bulk-delete" id="review-bulk-delete" disabled>Delete selected</button>
+          <button type="button" class="btn-ghost" id="review-bulk-clear" hidden>Clear</button>
+        </div>
+      </div>
       <ul class="review-list" id="review-list"></ul>
     </div>
   </section>

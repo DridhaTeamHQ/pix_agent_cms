@@ -5115,6 +5115,95 @@ textarea:focus {
   border-color: var(--accent);
 }
 
+.review-dates {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* One pill holding the whole range — "Date [from] to [to]" — so the two
+   boxes read as a single control rather than two loose fields. */
+.review-dates-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 14px;
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+}
+
+.review-dates-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--accent-dim);
+}
+
+.review-dates-sep {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.review-dates input {
+  padding: 7px 10px;
+  background: var(--surface-card);
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-md) - 3px);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* The icon follows the APP's theme, not the OS's: `color-scheme: light dark`
+   here drew it white on a light box whenever the OS was dark. */
+.review-dates input::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+:root[data-theme="dark"] .review-dates input {
+  color-scheme: dark;
+}
+
+.review-dates input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.review-dates-apply,
+.review-dates-reset {
+  padding: 9px 18px;
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.review-dates-apply {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.review-dates-apply:hover {
+  filter: brightness(1.08);
+}
+
+.review-dates-reset {
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.review-dates-reset:hover {
+  background: var(--surface-input);
+}
+
 .review-search input::placeholder,
 .analytics-search input::placeholder {
   color: var(--text-muted);
@@ -6465,4 +6554,65 @@ select option[value=""] {
   opacity: 0.75;
   margin-left: auto;
   letter-spacing: 0.04em;
+}
+
+/* Clicking anywhere in a date box opens its calendar (see app.js), so the
+   whole box reads as clickable, not just the icon. */
+input[type="date"]:not(:disabled),
+input[type="date"]:not(:disabled)::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+}
+
+/* ─── Review: bulk select ─────────────────────────────────────────── */
+.review-bulk {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-input);
+}
+
+.review-bulk[hidden] {
+  display: none;
+}
+
+.review-bulk-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.review-bulk-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.review-bulk-delete:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #dc2626;
+}
+
+.review-bulk input[type="checkbox"],
+.review-select {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.review-item.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }

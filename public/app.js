@@ -4549,7 +4549,10 @@ function drawVideoCaption() {
     lines[MAX_LINES - 1] = `${lines[MAX_LINES - 1].replace(/[\s.,;:]+$/, "")}…`;
   }
 
-  const blockHeight = lines.length * lineHeight;
+  // Measured to the last line's glyphs, not its full line step — the same
+  // block height computeHeadlineLayoutAndTop uses, so caption and date land
+  // exactly where the poster's headline and date do.
+  const blockHeight = (lines.length - 1) * lineHeight + fontSize;
   const top = H - L.headline.bottomPadding * (H / 1700) - blockHeight;
 
   // Pass 1 — accent boxes behind highlighted runs.
@@ -4614,6 +4617,10 @@ function drawVideoCaption() {
   });
 
   ctx.restore();
+
+  // The poster's date stamp, placed the way drawHeadlineTimestamp places it:
+  // just under the last line's glyphs, left edge shared with the caption.
+  drawTimestamp(left, top + blockHeight + Math.round(14 * s), s);
 }
 
 /**
@@ -15531,8 +15538,11 @@ function videoLookKey() {
     (state.videoFocus?.y ?? 0.5).toFixed(3),
     // The caption's face is burned in too: tagging it means a clip encoded
     // in the old Poppins caption reads as stale and gets re-encoded in the
-    // poster's Roboto Serif. Uncaptioned clips are unaffected.
-    state.videoCaption ? `serif:${state.videoCaption}` : "",
+    // poster's Roboto Serif. Uncaptioned clips are unaffected. The date stamp
+    // under the caption is burned in as well, so it is part of the tag.
+    state.videoCaption
+      ? `serif:${state.showTimestamp ? formatCreatedAt(state.createdAt) : "nodate"}:${state.videoCaption}`
+      : "",
     state.videoCaptionSize,
     state.aspectRatio,
   ].join("|");
